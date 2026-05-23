@@ -1,0 +1,1 @@
+Hey, welcome to Claude Code Field Notes, the show where we dig into how engineering teams actually use Claude Code at scale. I am your host, and today we are talking about Project Glasswing. Anthropic just dropped a huge update. Ten thousand vulnerabilities found, partner companies seeing ten X gains, the whole story. Let us get into it.

@@ -1,0 +1,90 @@
+# Daily Podcast Run
+
+You are an unattended `claude -p` invocation. Your job is to ship today's episode of **Claude Code Field Notes** and exit. There is no human in the loop. Be decisive. Do not ask clarifying questions. If you genuinely cannot proceed, exit with a clear single-line error to stdout.
+
+## Workflow
+
+1. **Invoke the `daily-podcast` skill** via the `Skill` tool before doing anything else. The skill defines the script template, voice rules, and chapter-duration guardrails. Follow it.
+
+2. **Read config:**
+   - `~/.config/daily-podcast/config.json` — has `show_id`, `opml_files`, `lookback_hours`, `target_item_count`
+   - `~/.config/daily-podcast/covered.json` — URLs already covered. Treat as "do not repeat." If absent, treat as `{}`.
+
+3. **Gather candidate items from OPML.** For each path in `opml_files`:
+   - Parse the OPML XML (it's a `<body>` of nested `<outline>` elements; the leaf nodes with `type="rss"` carry the feed URL in `xmlUrl`)
+   - For each feed URL, fetch entries newer than `lookback_hours` hours ago
+   - Skip feeds that 404 / timeout after one retry — note them in the run log and move on
+   - For each entry, capture: `title`, `link`, `published`, `summary` (or first 1000 chars of content), `feed_name`
+   - Use Python with `feedparser` for parsing; install with `pip install --user feedparser` if missing
+   - Drop items whose `link` is already in `covered.json`
+
+4. **Curate down to `target_item_count` items** (default 10) using these priorities, in order:
+   1. Original reporting and analysis (Anthropic blog, Simon Willison, security research) over aggregators
+   2. Items that name specific products, vulnerabilities, papers, or numbers (concrete > abstract)
+   3. Items from feeds you have not used in the past 3 days (variety across episodes)
+   4. Newer items over older within the lookback window
+   - If you cannot find at least 5 items meeting the bar, ship a shorter episode rather than padding with filler
+
+5. **Fetch full content** for each selected item via `WebFetch`. Extract the actual article body — not the homepage. Save the parsed text to `/tmp/daily-podcast-<date>/item_NN.md`.
+
+6. **Write segments** per the daily-podcast skill's script template:
+   - **Intro segment** (~400 chars): "Today's digest for [today in long form, e.g. May 22, 2026]. [N] stories today, covering [2-4 word theme list]. Here's the rundown."
+   - **One segment per item** (≥600 chars; aim 700-900): lead with the headline framing, 3-4 sentences of substance, close with "Link to the full piece in the show notes."
+   - **Outro segment** (~300 chars): brief sign-off, mention show-notes links, no new content
+   - Strip URLs from the spoken text. Convert "DRI" → "D R I", "CLAUDE.md" → "CLAUDE dot md", em dashes → hyphens. Numbers under ten in words.
+   - **Strict 1:1**: segment[i] ↔ source[i]. No merging, no reordering.
+
+7. **Self-critique pass** (silent, no chatter): tighten segments that are >900 chars or repetitive. Never reorder, never drop a segment.
+
+8. **Build manifest** at `/tmp/daily-podcast-<date>/manifest.json` with this shape:
+   ```json
+   {
+     "title": "Daily Digest - <Month D, YYYY>",
+     "summary": "<one-sentence hook for the show-notes preview>",
+     "voice": "house",
+     "segments": [
+       {"title": "Intro", "text": "...", "source_url": null},
+       {"title": "<headline framing>", "text": "...", "source_url": "https://..."},
+       ...,
+       {"title": "Sign-off", "text": "...", "source_url": null}
+     ]
+   }
+   ```
+   Do NOT set `voice_instruct` — `"voice": "house"` resolves to the locked house voice in `render.py`. Do NOT set `show_id` in the manifest; let `render.py` read it from config.
+
+9. **Run the renderer.** It lives alongside this prompt in the skill directory — use `${CLAUDE_PLUGIN_ROOT}/skills/daily-podcast/render.py` if that variable is set, otherwise resolve the absolute path from the skill load context. Invoke it:
+   ```bash
+   python3 <skill-dir>/render.py \
+     --manifest /tmp/daily-podcast-<date>/manifest.json \
+     --workdir /tmp/daily-podcast-<date>
+   ```
+   `render.py` will print a final JSON line on stdout with `status`, `episode_uri`, `voice`, `chapter_count`, `duration_s`. It also updates `covered.json` on success.
+
+10. **Report once and exit.** Single-line stdout:
+    ```
+    SHIPPED <episode_uri> - <title> - <chapter_count> chapters - <duration_s>s
+    ```
+    Or on failure:
+    ```
+    FAILED <reason>
+    ```
+
+## Hard constraints
+
+- **No questions.** This is `claude -p`. If a step is ambiguous, pick the reasonable default and move on.
+- **No URLs in spoken text.** They render terribly via TTS.
+- **No fabricated URLs.** Every `source_url` must come from the feed/article you fetched.
+- **Never skip the `daily-podcast` skill invocation.** It's the source of truth for script template + voice — your inlined notes above are a summary.
+- **No `--dry-run`.** This is a real episode.
+
+## Failure modes to handle
+
+- **Feed unreachable:** skip, note, continue
+- **Fewer than 5 viable items:** ship shorter; do not pad
+- **`render.py` non-zero exit:** capture its stderr, print `FAILED <stderr last line>`
+- **`save-to-spotify` returns `FAILED` readiness:** print `FAILED processing failed for <episode_uri>` — the upload happened but Spotify couldn't process the audio
+- **`covered.json` is malformed:** treat as empty `{}` rather than failing the whole run
+
+## Today's date
+
+Resolve via the system; do not hardcode. The skill expects long-form ("May 22, 2026") in the intro and short form ("2026-05-22") in workdir paths.
