@@ -76,6 +76,14 @@ Hard requirements that must be present on the host (not pip-installable workarou
 - Apple Silicon Mac (the cover uses `/System/Library/Fonts/Supplemental/Futura.ttc` directly; Qwen3-TTS via MLX needs Metal). The Futura path is a portability hazard — if you ever move this off macOS, change `build_cover`'s font resolution before anything else.
 - Python 3.10+ with `mlx-audio`, `soundfile`, `mutagen`, `Pillow`. The headless prompt additionally needs `feedparser` (it self-installs if missing).
 
+### `save-to-spotify` 0.1.1 quirks (verified 2026-05-23)
+
+These are diagnostic gotchas, not runtime issues — `render.py` itself works correctly against this CLI. They mainly affect humans verifying server state.
+
+- **`timeline get --episode-id <id>` returns a spurious `RESOURCE_NOT_FOUND` 404** even when the timeline exists. Use the positional form to inspect server state: `save-to-spotify --json timeline get <episode_id> --show-id <show_id>`. The positional form returns the full timeline including `link` companions.
+- **`--json timeline set` returns `{"items":[]}` even on success.** The items aren't echoed back; verify via `timeline get` (positional form) instead. `render.py` only checks for the `error` key, so this doesn't break the pipeline.
+- **The passive update check advertises a sentinel `9.9.9` release that doesn't exist.** `save-to-spotify update` correctly reports "Already up to date (0.1.1)". Set `SAVE_TO_SPOTIFY_NO_UPDATE_CHECK=1` to silence the nag.
+
 ## Editing conventions specific to this repo
 
 - **Keep `render.py` single-file.** It's deliberately not split into a package — the skill ships as a flat directory and the prompt at `prompts/daily.md` resolves its path via `${CLAUDE_PLUGIN_ROOT}/skills/daily-podcast/render.py`. Don't introduce sibling modules without also updating that resolution path.
