@@ -85,6 +85,8 @@ Other voice options (set in manifest):
 - `"voice": "Ryan"` (or any preset) — single fixed preset
 - `"voice_instruct": "..."` — VoiceDesign mode, full natural-language override
 
+**Want to design your own voice from scratch?** See [docs/durable-voices.md](docs/durable-voices.md) — covers why `ref_audio` cloning beats VoiceDesign for long-running shows, the iteration workflow that produced the bundled house voice, common failure modes to avoid (over-enunciation, theatrical drift, noir weight), and how to verify a new clip is stable.
+
 ## License
 
 MIT
