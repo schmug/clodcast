@@ -48,9 +48,12 @@ SAMPLE_RATE = 24000
 #
 # The reference clip is one good render of F2_human's instruct (~22s). For voice
 # cloning, Qwen3 needs both the audio and a transcript of what was said.
+#
+# Resolution: user copies in ~/.config/daily-podcast/voices/ win; bundled defaults
+# below are copied there on first run so plugin updates can't clobber user changes.
 SCRIPT_DIR = Path(__file__).resolve().parent
-HOUSE_REF_AUDIO = SCRIPT_DIR / "refs" / "house_voice.wav"
-HOUSE_REF_TEXT_PATH = SCRIPT_DIR / "refs" / "house_voice.txt"
+BUNDLED_HOUSE_AUDIO = SCRIPT_DIR / "refs" / "house_voice.wav"
+BUNDLED_HOUSE_TEXT = SCRIPT_DIR / "refs" / "house_voice.txt"
 
 # Kept for reference (and for anyone who wants to re-derive a new house clip from
 # VoiceDesign rather than ref_audio cloning). NOT used by the default house voice path.
@@ -67,6 +70,9 @@ LAST_SILENCE_MS = 0                 # no silence after the final segment
 CONFIG_DIR = Path.home() / ".config" / "daily-podcast"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 COVERED_PATH = CONFIG_DIR / "covered.json"
+VOICES_DIR = CONFIG_DIR / "voices"
+USER_HOUSE_AUDIO = VOICES_DIR / "house.wav"
+USER_HOUSE_TEXT = VOICES_DIR / "house.txt"
 
 # --- helpers ---------------------------------------------------------------
 
@@ -105,6 +111,28 @@ def load_covered() -> dict[str, Any]:
 def save_covered(data: dict[str, Any]) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     COVERED_PATH.write_text(json.dumps(data, indent=2, sort_keys=True))
+
+
+def resolve_house_voice() -> tuple[Path, Path]:
+    """
+    Return (audio, text) paths for the house voice, copying bundled defaults to
+    ~/.config/daily-podcast/voices/ on first run so user edits survive plugin updates.
+    """
+    if not USER_HOUSE_AUDIO.exists() or not USER_HOUSE_TEXT.exists():
+        if not BUNDLED_HOUSE_AUDIO.exists() or not BUNDLED_HOUSE_TEXT.exists():
+            die(
+                f"bundled house voice missing: {BUNDLED_HOUSE_AUDIO} / {BUNDLED_HOUSE_TEXT}. "
+                "Reinstall the plugin or provide your own at "
+                f"{USER_HOUSE_AUDIO} + {USER_HOUSE_TEXT}."
+            )
+        VOICES_DIR.mkdir(parents=True, exist_ok=True)
+        if not USER_HOUSE_AUDIO.exists():
+            shutil.copy2(BUNDLED_HOUSE_AUDIO, USER_HOUSE_AUDIO)
+            log(f"installed bundled house voice -> {USER_HOUSE_AUDIO}")
+        if not USER_HOUSE_TEXT.exists():
+            shutil.copy2(BUNDLED_HOUSE_TEXT, USER_HOUSE_TEXT)
+            log(f"installed bundled house transcript -> {USER_HOUSE_TEXT}")
+    return USER_HOUSE_AUDIO, USER_HOUSE_TEXT
 
 
 def mp3_duration_ms(path: Path) -> int:
@@ -491,15 +519,13 @@ def main() -> int:
         # VoiceDesign mode with explicit instruct; voice becomes a label only.
         voice = requested if requested not in ("random", "house") else "custom"
     elif requested == "house":
-        # The locked house voice — resolves to Base + ref_audio cloning from the
-        # canonical F2_human reference clip bundled with the skill.
+        # The locked house voice — resolves to Base + ref_audio cloning from
+        # ~/.config/daily-podcast/voices/house.{wav,txt} (seeded from the bundled
+        # F2_human clip on first run).
         voice = "house"
-        if not HOUSE_REF_AUDIO.exists():
-            die(f"house ref audio missing: {HOUSE_REF_AUDIO}")
-        if not HOUSE_REF_TEXT_PATH.exists():
-            die(f"house ref text missing: {HOUSE_REF_TEXT_PATH}")
-        ref_audio = str(HOUSE_REF_AUDIO)
-        ref_text = HOUSE_REF_TEXT_PATH.read_text().strip()
+        house_audio, house_text = resolve_house_voice()
+        ref_audio = str(house_audio)
+        ref_text = house_text.read_text().strip()
     elif requested == "random":
         voice = random.choice(VOICES)
     elif requested in VOICES:

@@ -96,19 +96,21 @@ Already-written segments. Skip straight to rendering.
 
 ## Voice selection
 
-The default is the **locked house voice** — `ref_audio` cloning from `refs/house_voice.wav`, a ~22-second reference clip bundled with the skill. The Base 1.7B model regenerates that voice's timbre and prosody for any new text, so the voice stays consistent across episodes.
+The default is the **locked house voice** — `ref_audio` cloning from a ~22-second reference clip. The Base 1.7B model regenerates that voice's timbre and prosody for any new text, so the voice stays consistent across episodes.
+
+The bundled default lives at `refs/house_voice.{wav,txt}` in the skill directory. On the first `voice: "house"` render, `render.py` copies it to `~/.config/daily-podcast/voices/house.{wav,txt}` and reads from there forever after — so plugin updates can't overwrite a customized voice.
 
 Manifest options:
-- `"voice": "house"` (default) — Base model + `refs/house_voice.wav` + `refs/house_voice.txt` (transcript)
+- `"voice": "house"` (default) — Base model + `~/.config/daily-podcast/voices/house.{wav,txt}` (seeded from bundle on first run)
 - `"voice": "random"` — preset rotation over `[Ryan, Aiden, Ethan, Chelsie]`
 - `"voice": "Ryan"` (or any preset) — single fixed preset
 - `"voice_instruct": "..."` — VoiceDesign mode, full override; `voice` becomes a label
 
-The house clip is one good render of a VoiceDesign instruct (`HOUSE_VOICE_INSTRUCT`, kept in `render.py` for reference) — mature female, even prosody, bright but human, not performative. To replace the house voice:
+The bundled house clip is one good render of a VoiceDesign instruct (`HOUSE_VOICE_INSTRUCT`, kept in `render.py` for reference) — mature female, even prosody, bright but human, not performative. To replace the house voice:
 
 1. Capture a new ~20-30 second reference clip (any TTS or human recording)
-2. Save it to `refs/house_voice.wav` (PCM_16, mono, 24 kHz preferred)
-3. Update `refs/house_voice.txt` with the exact transcript
+2. Save it to `~/.config/daily-podcast/voices/house.wav` (PCM_16, mono, 24 kHz preferred)
+3. Update `~/.config/daily-podcast/voices/house.txt` with the exact transcript
 4. Done — every subsequent `voice: "house"` render uses the new clip
 
 `ref_audio` precedence: if `voice_instruct` is also set in a manifest, the explicit instruct wins (so you can A/B against the house voice without unwiring it).

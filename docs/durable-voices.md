@@ -1,6 +1,6 @@
 # Creating a Durable Voice
 
-The default `voice: "house"` in clodcast uses **`ref_audio` voice cloning** — every episode is generated from a single reference clip stored at `skills/daily-podcast/refs/house_voice.wav`. This document explains why that matters, how the bundled clip was made, and how to make your own.
+The default `voice: "house"` in clodcast uses **`ref_audio` voice cloning** — every episode is generated from a single reference clip stored at `~/.config/daily-podcast/voices/house.wav` (seeded on first run from the bundled default at `skills/daily-podcast/refs/house_voice.wav`). This document explains why that matters, how the bundled clip was made, and how to make your own.
 
 ## Why "durable" matters
 
@@ -116,18 +116,19 @@ The best prompts are short, with concrete anchors (age, register, resonance) and
 
 ### 5. Lock in your favorite render as the reference
 
-Once a render sounds right, save it as `skills/daily-podcast/refs/house_voice.wav`:
+Once a render sounds right, save it as `~/.config/daily-podcast/voices/house.wav`:
 
 ```python
+import os
 sf.write(
-    "/path/to/clodcast/skills/daily-podcast/refs/house_voice.wav",
+    os.path.expanduser("~/.config/daily-podcast/voices/house.wav"),
     audio,
     24000,
     subtype="PCM_16",  # smaller file, no quality loss for voice cloning
 )
 ```
 
-And the exact transcript to `skills/daily-podcast/refs/house_voice.txt`:
+And the exact transcript to `~/.config/daily-podcast/voices/house.txt`:
 
 ```
 Hey, welcome to the show. Today we're talking about something interesting.
@@ -155,7 +156,7 @@ The skill supports four voice modes (set in the manifest):
 
 ```jsonc
 {
-  "voice": "house",          // ref_audio clone from refs/house_voice.wav (default)
+  "voice": "house",          // ref_audio clone from ~/.config/daily-podcast/voices/house.wav (default)
   "voice": "random",         // preset rotation over [Ryan, Aiden, Ethan, Chelsie]
   "voice": "Ryan",           // single fixed preset
   "voice_instruct": "..."    // VoiceDesign mode, full natural-language override
@@ -171,14 +172,14 @@ Common triggers and the right response:
 | Trigger | Right move |
 |---|---|
 | "The voice sounds different in long form than the short test" | Expected with VoiceDesign; switch to `ref_audio` cloning (you already have it as the default) |
-| "I'm tired of this voice" | Make a new reference clip (Path A or Path B above), swap the `wav` + `txt` in `refs/`, you're done |
+| "I'm tired of this voice" | Make a new reference clip (Path A or Path B above), swap the `wav` + `txt` in `~/.config/daily-podcast/voices/`, you're done |
 | "I want a more energetic intro" | Don't re-tune; use `voice_instruct` on just the intro segment if needed (per-segment voice is an open extension point) |
 | "Listeners say it sounds robotic" | The reference clip is probably too short or too uniform in prosody. Re-record with more vocal variety |
 | "I want a male voice for one episode" | Use `"voice": "Ryan"` (or another preset) for that single manifest; leaves the house voice intact for everything else |
 
 ## TL;DR
 
-1. **Default state:** `voice: "house"` uses `refs/house_voice.wav` (stable across runs)
-2. **To change the voice:** replace the `.wav` and `.txt` in `skills/daily-podcast/refs/`
+1. **Default state:** `voice: "house"` uses `~/.config/daily-podcast/voices/house.wav` (seeded from the bundled clip on first run, stable across runs)
+2. **To change the voice:** replace the `.wav` and `.txt` in `~/.config/daily-podcast/voices/`
 3. **To design a new one:** iterate VoiceDesign prompts using subtractive framing + concrete anchors, then save the rendered audio as your new reference
 4. **To verify durability:** render the same script twice with the new reference; durations should match

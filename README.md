@@ -72,12 +72,14 @@ Hook it up to launchd, cron, or any scheduler.
 
 ## Voice
 
-The default "house" voice is `ref_audio` cloning from `skills/daily-podcast/refs/house_voice.wav` — a ~22 second reference clip. The Base 1.7B Qwen3-TTS model regenerates that voice's timbre and prosody for any new text, so the voice stays consistent across episodes.
+The default "house" voice is `ref_audio` cloning from a ~22 second reference clip. The Base 1.7B Qwen3-TTS model regenerates that voice's timbre and prosody for any new text, so the voice stays consistent across episodes.
+
+On first run, the bundled default is copied to `~/.config/daily-podcast/voices/house.{wav,txt}`. Anything you put there wins over the bundled copy and survives plugin updates.
 
 To change the voice:
 1. Capture a new ~20-30 second reference clip (any TTS or human recording)
-2. Save it to `skills/daily-podcast/refs/house_voice.wav` (PCM_16, mono, 24 kHz preferred)
-3. Update `skills/daily-podcast/refs/house_voice.txt` with the exact transcript
+2. Save it to `~/.config/daily-podcast/voices/house.wav` (PCM_16, mono, 24 kHz preferred)
+3. Update `~/.config/daily-podcast/voices/house.txt` with the exact transcript
 4. Done — every subsequent `voice: "house"` render uses the new clip
 
 Other voice options (set in manifest):
