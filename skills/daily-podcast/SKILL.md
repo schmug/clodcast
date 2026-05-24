@@ -80,11 +80,11 @@ Already-written segments. Skip straight to rendering.
 **Per-item segment** (≥600 chars; aim for 700-900):
 - Lead with the headline or one-sentence framing
 - 3-4 sentences of substance: what, why, key detail
-- Close with the deep-link reference: "Link to the full piece in the show notes."
+- End on the last sentence of substantive analysis. Never verbally reference the source URL, the show notes, the description, or "the link" — source attribution is handled non-verbally by the per-segment `link` companion in the timeline and by the timestamped chapter links in the HTML description.
 - Never read URLs aloud
 - One source per segment — strict 1:1 mapping
 
-**Outro** (~300 chars): brief sign-off, mention show-notes links, no new content.
+**Outro** (~300 chars): brief sign-off, no new content. Same rule as segments: don't tell listeners to check the show notes or description.
 
 ### Rules
 - Convert relative dates from sources to absolute (today's date is available via the system clock)

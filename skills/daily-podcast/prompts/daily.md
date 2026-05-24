@@ -29,8 +29,8 @@ You are an unattended `claude -p` invocation. Your job is to ship today's episod
 
 6. **Write segments** per the daily-podcast skill's script template:
    - **Intro segment** (~400 chars): "Today's digest for [today in long form, e.g. May 22, 2026]. [N] stories today, covering [2-4 word theme list]. Here's the rundown."
-   - **One segment per item** (≥600 chars; aim 700-900): lead with the headline framing, 3-4 sentences of substance, close with "Link to the full piece in the show notes."
-   - **Outro segment** (~300 chars): brief sign-off, mention show-notes links, no new content
+   - **One segment per item** (≥600 chars; aim 700-900): lead with the headline framing, then 3-4 sentences of substance. End on the last sentence of analysis — never verbally reference the source URL, the show notes, the description, or "the link." Source attribution is handled non-verbally by the per-segment `link` companion in the timeline and the timestamped chapter links in the HTML description.
+   - **Outro segment** (~300 chars): brief sign-off, no new content. Same rule: don't tell listeners to check the show notes or description.
    - Strip URLs from the spoken text. Convert "DRI" → "D R I", "CLAUDE.md" → "CLAUDE dot md", em dashes → hyphens. Numbers under ten in words.
    - **Strict 1:1**: segment[i] ↔ source[i]. No merging, no reordering.
 
