@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "clodcast",
+  "description": "Daily-digest podcast skill — turns saved URLs into a fully-produced Spotify episode using Qwen3-TTS on top of the save-to-spotify CLI.",
+  "owner": {
+    "name": "schmug",
+    "url": "https://cortech.online"
+  },
+  "plugins": [
+    {
+      "name": "clodcast",
+      "description": "Daily-digest podcast skill. Ships the `daily-podcast` skill: manifest → mp3 → cover → Spotify upload → timeline with chapters and per-segment link companions.",
+      "source": "./",
+      "category": "productivity",
+      "tags": ["podcast", "tts", "spotify", "qwen3-tts", "save-to-spotify"],
+      "homepage": "https://github.com/schmug/clodcast",
+      "license": "MIT"
+    }
+  ]
+}
