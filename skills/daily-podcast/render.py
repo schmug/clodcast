@@ -103,9 +103,16 @@ def load_config() -> dict[str, Any]:
 
 
 def load_covered() -> dict[str, Any]:
+    # Malformed covered.json should not abort a run: the dedup log is best-effort and
+    # the headless prompt (prompts/daily.md) treats unparseable content as empty.
     if not COVERED_PATH.exists():
         return {}
-    return json.loads(COVERED_PATH.read_text())
+    try:
+        data = json.loads(COVERED_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        log(f"warn: {COVERED_PATH} unreadable/malformed, treating as empty")
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def save_covered(data: dict[str, Any]) -> None:
@@ -138,6 +145,38 @@ def resolve_house_voice() -> tuple[Path, Path]:
 def mp3_duration_ms(path: Path) -> int:
     from mutagen.mp3 import MP3
     return int(MP3(str(path)).info.length * 1000)
+
+
+def resolve_voice(manifest: dict[str, Any]) -> tuple[str, str | None, str | None, str | None]:
+    """
+    Resolve voice precedence into (voice, voice_instruct, ref_audio, ref_text).
+
+    Precedence (documented in SKILL.md and docs/durable-voices.md — keep in sync):
+      1. `voice_instruct` in manifest → VoiceDesign mode; voice acts as a label only
+         (becomes "custom" when the requested voice is the default "house" or "random")
+      2. `voice: "house"` (default) → Base model + ref_audio clone of the bundled clip
+      3. `voice: "random"` → random preset from VOICES
+      4. `voice: "<preset>"` → that preset name (must be in VOICES)
+    """
+    voice_instruct = manifest.get("voice_instruct")
+    ref_audio: str | None = None
+    ref_text: str | None = None
+    requested = manifest.get("voice", "house")
+    if voice_instruct:
+        voice = requested if requested not in ("random", "house") else "custom"
+    elif requested == "house":
+        voice = "house"
+        house_audio, house_text = resolve_house_voice()
+        ref_audio = str(house_audio)
+        ref_text = house_text.read_text().strip()
+    elif requested == "random":
+        voice = random.choice(VOICES)
+    elif requested in VOICES:
+        voice = requested
+    else:
+        die(f"unknown voice: {requested}. Expected 'house', 'random', "
+            f"one of {VOICES}, or set voice_instruct directly.")
+    return voice, voice_instruct, ref_audio, ref_text
 
 
 # --- audio rendering -------------------------------------------------------
@@ -510,29 +549,7 @@ def main() -> int:
         die("show_id required (in manifest or ~/.config/daily-podcast/config.json)")
     show_name = config.get("show_name") or "Daily Digest"
 
-    voice_instruct = manifest.get("voice_instruct")
-    ref_audio: str | None = None
-    ref_text: str | None = None
-    # Default voice is the locked house voice unless the manifest says otherwise.
-    requested = manifest.get("voice", "house")
-    if voice_instruct:
-        # VoiceDesign mode with explicit instruct; voice becomes a label only.
-        voice = requested if requested not in ("random", "house") else "custom"
-    elif requested == "house":
-        # The locked house voice — resolves to Base + ref_audio cloning from
-        # ~/.config/daily-podcast/voices/house.{wav,txt} (seeded from the bundled
-        # F2_human clip on first run).
-        voice = "house"
-        house_audio, house_text = resolve_house_voice()
-        ref_audio = str(house_audio)
-        ref_text = house_text.read_text().strip()
-    elif requested == "random":
-        voice = random.choice(VOICES)
-    elif requested in VOICES:
-        voice = requested
-    else:
-        die(f"unknown voice: {requested}. Expected 'house', 'random', "
-            f"one of {VOICES}, or set voice_instruct directly.")
+    voice, voice_instruct, ref_audio, ref_text = resolve_voice(manifest)
 
     today = dt.date.today().strftime("%B %-d, %Y")
 
