@@ -25,6 +25,7 @@ import html
 import json
 import os
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -235,12 +236,108 @@ def resolve_cover_date(manifest: dict[str, Any]) -> str:
         die(f"manifest.date must be ISO YYYY-MM-DD, got: {raw!r}")
 
 
+# --- input safety ----------------------------------------------------------
+
+def validate_manifest(manifest: dict[str, Any]) -> None:
+    """
+    Fail fast (via die) on a malformed manifest BEFORE the ~15s model load, naming
+    the offending field. Structural safety net for hand-authored manifests or any
+    caller that bypassed the skill writer. Pure: no I/O, no mutation.
+    """
+    if not isinstance(manifest, dict):
+        die("manifest must be a JSON object")
+
+    for field in ("title", "summary"):
+        val = manifest.get(field)
+        if not isinstance(val, str) or not val.strip():
+            die(f"manifest '{field}' is required and must be a non-empty string")
+
+    segments = manifest.get("segments")
+    if not isinstance(segments, list) or not segments:
+        die("manifest 'segments' is required and must be a non-empty list")
+    for i, seg in enumerate(segments):
+        if not isinstance(seg, dict):
+            die(f"manifest segment[{i}] must be an object")
+        if not isinstance(seg.get("text"), str):
+            die(f"manifest segment[{i}] missing required field 'text'")
+        if not seg["text"].strip():
+            die(f"manifest segment[{i}] field 'text' must be non-empty")
+        for opt in ("title", "source_title"):
+            if seg.get(opt) is not None and not isinstance(seg[opt], str):
+                die(f"manifest segment[{i}].{opt} must be a string")
+        url = seg.get("source_url")
+        if url is not None and not (isinstance(url, str) and url.startswith(("http://", "https://"))):
+            die(f"manifest segment[{i}].source_url must be an http(s) URL (got {url!r})")
+
+    voice = manifest.get("voice")
+    if voice is not None:
+        if manifest.get("voice_instruct"):
+            # With voice_instruct set, resolve_voice treats `voice` as a free-form
+            # label (SKILL.md) — only require it to be a string, don't gate on presets.
+            if not isinstance(voice, str):
+                die("manifest 'voice' must be a string")
+        else:
+            allowed = ["house", "random", *VOICES]
+            if voice not in allowed:
+                shown = "{" + ", ".join(f'"{v}"' for v in allowed) + "}"
+                die(f"manifest 'voice' must be one of {shown} or unset (got {voice!r})")
+    for field in ("voice_instruct", "show_id"):
+        if manifest.get(field) is not None and not isinstance(manifest[field], str):
+            die(f"manifest '{field}' must be a string")
+    if manifest.get("date"):  # treat "" as absent, matching resolve_cover_date
+        try:
+            dt.date.fromisoformat(manifest["date"])
+        except (ValueError, TypeError):
+            die(f"manifest 'date' must be ISO YYYY-MM-DD (got {manifest['date']!r})")
+    if manifest.get("raw_text") is not None and not isinstance(manifest["raw_text"], bool):
+        die("manifest 'raw_text' must be a boolean")
+
+
+# Bare URLs, markdown code fences, and leading heading markers — characters that
+# TTS reads badly. Compiled once; normalize_for_tts runs per segment.
+_URL_RE = re.compile(r"https?://[^\s)\]>—–]+")  # stop at ws, brackets, em/en dash
+_CODE_BLOCK_RE = re.compile(r"(```|~~~).*?\1", flags=re.DOTALL)  # backtick or tilde fence
+_HEADING_RE = re.compile(r"^[ \t]{0,3}#+[ \t]*", flags=re.MULTILINE)  # any leading-# run
+_SMART_QUOTES = {"“": '"', "”": '"', "‘": "'", "’": "'"}
+
+
+def normalize_for_tts(text: str) -> str:
+    """
+    Strip TTS-hostile characters from spoken text — defense in depth at the rendering
+    boundary, since the skill writer is *supposed* to do this but external manifests
+    may not. Pure. Removes: em/en dashes -> hyphen, smart quotes -> ASCII, code
+    fences + inline backticks, leading markdown heading markers, and bare URLs.
+    Deliberately leaves emoji, numbers, abbreviations, and identifiers like
+    "CLAUDE.md" alone — those are stylistic and the script writer's job (see #19).
+    """
+    # URLs first, with a boundary-aware pattern (stops at whitespace, brackets, and
+    # em/en dashes) so a URL flanked by an em dash can't swallow the next word. Must
+    # precede the dash->hyphen step, which would turn that boundary into a plain char
+    # the greedy URL match would run straight through.
+    text = _URL_RE.sub("", text)
+    text = text.replace("—", "-").replace("–", "-")  # em / en dash
+    for smart, plain in _SMART_QUOTES.items():
+        text = text.replace(smart, plain)
+    text = _CODE_BLOCK_RE.sub("", text)  # whole fenced blocks (fences + content)
+    text = text.replace("`", "")         # stray inline backticks
+    text = _HEADING_RE.sub("", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)  # collapse runs left by stripped tokens
+    return text.strip()
+
+
+def _prep_segment_text(text: str, raw_text: bool) -> str:
+    """Strip + (unless raw_text) normalize one segment's text for the TTS model."""
+    text = text.strip()
+    return text if raw_text else normalize_for_tts(text)
+
+
 # --- audio rendering -------------------------------------------------------
 
 def render_segments(segments: list[dict], voice: str, workdir: Path,
                    voice_instruct: str | None = None,
                    ref_audio: str | None = None,
-                   ref_text: str | None = None) -> list[Path]:
+                   ref_text: str | None = None,
+                   raw_text: bool = False) -> list[Path]:
     """
     Render each segment text to an mp3 in workdir; return list of mp3 paths.
 
@@ -265,7 +362,7 @@ def render_segments(segments: list[dict], voice: str, workdir: Path,
 
     paths: list[Path] = []
     for i, seg in enumerate(segments, start=1):
-        text = seg["text"].strip()
+        text = _prep_segment_text(seg["text"], raw_text)
         if not text:
             die(f"segment {i} has empty text")
         if use_clone:
@@ -678,12 +775,14 @@ def main() -> int:
     if not args.manifest.exists():
         die(f"manifest not found: {args.manifest}")
 
-    manifest = json.loads(args.manifest.read_text())
-    title = manifest.get("title") or die("manifest.title is required")
-    summary = manifest.get("summary") or die("manifest.summary is required")
-    segments = manifest.get("segments") or die("manifest.segments is required")
-    if not isinstance(segments, list) or not segments:
-        die("manifest.segments must be a non-empty list")
+    try:
+        manifest = json.loads(args.manifest.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        die(f"manifest is not valid JSON: {e}")
+    validate_manifest(manifest)
+    title = manifest["title"]
+    summary = manifest["summary"]
+    segments = manifest["segments"]
 
     workdir = args.workdir or Path(tempfile.mkdtemp(prefix="daily-podcast-"))
     workdir.mkdir(parents=True, exist_ok=True)
@@ -719,7 +818,8 @@ def main() -> int:
     # 1-3: render, plan silences, concat
     seg_paths = render_segments(segments, voice, workdir,
                                 voice_instruct=voice_instruct,
-                                ref_audio=ref_audio, ref_text=ref_text)
+                                ref_audio=ref_audio, ref_text=ref_text,
+                                raw_text=manifest.get("raw_text", False))
     silences_ms = plan_silences(seg_paths)
     episode_mp3 = concat_and_normalize(seg_paths, silences_ms, workdir)
 

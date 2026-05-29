@@ -486,3 +486,139 @@ def test_resume_dies_when_artifact_missing(tmp_path, monkeypatch):
 
     with pytest.raises(SystemExit):
         render.main()
+
+
+# --- validate_manifest ----------------------------------------------------
+
+
+def _valid_manifest() -> dict:
+    return {
+        "title": "Daily Digest",
+        "summary": "hook",
+        "segments": [
+            {"text": "intro", "source_url": None},
+            {"text": "body", "source_url": "https://example.com/a", "source_title": "A"},
+        ],
+    }
+
+
+def test_validate_manifest_accepts_valid():
+    render.validate_manifest(_valid_manifest())  # no raise
+
+
+def test_validate_manifest_accepts_optional_fields():
+    m = _valid_manifest()
+    m.update({"voice": "house", "date": "2026-05-20", "raw_text": True,
+              "show_id": "spotify:show:1", "voice_instruct": "calm"})
+    render.validate_manifest(m)  # no raise
+
+
+def test_validate_manifest_allows_label_voice_with_voice_instruct():
+    # With voice_instruct set, resolve_voice treats `voice` as a free-form label, so
+    # a non-preset name must NOT be rejected (regression guard for the A/B workflow).
+    m = _valid_manifest()
+    m.update({"voice": "NarratorBob", "voice_instruct": "a calm narrator"})
+    render.validate_manifest(m)  # no raise
+
+
+def test_validate_manifest_still_rejects_bad_voice_without_instruct():
+    m = _valid_manifest()
+    m["voice"] = "NarratorBob"  # no voice_instruct -> must still be a known preset
+    with pytest.raises(SystemExit):
+        render.validate_manifest(m)
+
+
+def test_validate_manifest_allows_null_raw_text():
+    m = _valid_manifest()
+    m["raw_text"] = None  # explicit null behaves like absent
+    render.validate_manifest(m)  # no raise
+
+
+def test_validate_manifest_missing_segment_text(capsys):
+    m = _valid_manifest()
+    del m["segments"][1]["text"]
+    with pytest.raises(SystemExit):
+        render.validate_manifest(m)
+    err = capsys.readouterr().err
+    assert "segment[1]" in err and "text" in err
+
+
+def test_validate_manifest_rejects_bad_voice(capsys):
+    m = _valid_manifest()
+    m["voice"] = "Bob"
+    with pytest.raises(SystemExit):
+        render.validate_manifest(m)
+    assert "Bob" in capsys.readouterr().err
+
+
+def test_validate_manifest_rejects_non_http_source_url():
+    m = _valid_manifest()
+    m["segments"][1]["source_url"] = "ftp://example.com/a"
+    with pytest.raises(SystemExit):
+        render.validate_manifest(m)
+
+
+def test_validate_manifest_rejects_bad_date():
+    m = _valid_manifest()
+    m["date"] = "2026/05/20"
+    with pytest.raises(SystemExit):
+        render.validate_manifest(m)
+
+
+# --- normalize_for_tts ----------------------------------------------------
+
+
+def test_normalize_em_dash_and_smart_quotes():
+    raw = "Hello — world’s “best” CLAUDE.md tip"
+    # em dash -> hyphen, smart quotes -> ASCII, identifier left alone
+    assert render.normalize_for_tts(raw) == 'Hello - world\'s "best" CLAUDE.md tip'
+
+
+def test_normalize_strips_code_block_and_inline_backticks():
+    out = render.normalize_for_tts("run ```python\nx=1\n``` then `pip install` it")
+    assert "`" not in out
+    assert "x=1" not in out          # fenced block content removed
+    assert "pip install" in out      # inline content kept, backticks gone
+
+
+def test_normalize_strips_urls_and_headings():
+    out = render.normalize_for_tts("## Heading\nsee https://example.com/x for more")
+    assert "https://" not in out
+    assert not out.startswith("#")
+    assert "Heading" in out and "for more" in out
+
+
+def test_normalize_leaves_clean_text_unchanged():
+    clean = "A plain sentence with numbers like 7 and an identifier CLAUDE.md."
+    assert render.normalize_for_tts(clean) == clean
+
+
+def test_normalize_url_flanked_by_em_dash_keeps_next_word():
+    # Regression: a boundary-naive URL regex swallowed the word after a dash-flanked URL.
+    out = render.normalize_for_tts("The fix—see https://github.com/x/y—landed today.")
+    assert "https://" not in out
+    assert "landed" in out
+
+
+def test_normalize_strips_tilde_fence():
+    out = render.normalize_for_tts("a ~~~\nx=1\n~~~ b")
+    assert "x=1" not in out and "~~~" not in out
+
+
+def test_normalize_is_idempotent():
+    raw = "####### deep — “smart” `code` https://x.com/a — end"
+    once = render.normalize_for_tts(raw)
+    assert render.normalize_for_tts(once) == once  # second pass is a no-op
+    assert "#" not in once  # a 7-hash run is fully stripped in one pass
+
+
+# --- _prep_segment_text (raw_text bypass) ---------------------------------
+
+
+def test_prep_segment_text_normalizes_by_default():
+    assert render._prep_segment_text("a — b", raw_text=False) == "a - b"
+
+
+def test_prep_segment_text_raw_bypasses_normalization():
+    # raw_text=True keeps the em dash (strip only) for pre-normalized callers.
+    assert render._prep_segment_text("  a — b  ", raw_text=True) == "a — b"
