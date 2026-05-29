@@ -58,7 +58,7 @@ This prompt is self-contained: the script template, voice rules, and chapter-dur
      --manifest /tmp/daily-podcast-<date>/manifest.json \
      --workdir /tmp/daily-podcast-<date>
    ```
-   If `${CLAUDE_PLUGIN_ROOT}` is somehow unset, exit immediately with `FAILED CLAUDE_PLUGIN_ROOT unset` — do not search the filesystem for `render.py`. `render.py` will print a final JSON line on stdout with `status`, `episode_uri`, `voice`, `voice_mode` (`clone`/`design`/`preset` — the engine actually used), `chapter_count`, `duration_s`. It also updates `covered.json` on success.
+   If `${CLAUDE_PLUGIN_ROOT}` is somehow unset, exit immediately with `FAILED CLAUDE_PLUGIN_ROOT unset` — do not search the filesystem for `render.py`. `render.py` will print a final JSON line on stdout with `status`, `episode_uri`, `voice`, `voice_mode` (`clone`/`design`/`preset` — the engine actually used), `chapter_count`, `duration_s`, and `resumed` (`true` if it picked up a prior partial run from the workdir). It also updates `covered.json` on success.
 
 9. **Report once and exit.** Single-line stdout:
     ```
@@ -82,6 +82,7 @@ This prompt is self-contained: the script template, voice rules, and chapter-dur
 - **Fewer than 5 viable items:** ship shorter; do not pad
 - **`render.py` non-zero exit:** capture its stderr, print `FAILED <stderr last line>`
 - **`save-to-spotify` returns `FAILED` readiness:** print `FAILED processing failed for <episode_uri>` — the upload happened but Spotify couldn't process the audio
+- **`render.py` failed *after* upload (e.g. a `poll_ready` timeout):** the episode may already be live. Because this prompt always passes a stable `--workdir`, re-running `render.py` with the same `--manifest` and `--workdir` resumes — it skips the re-upload, re-runs only `timeline set` + poll + dedup, and reports `"resumed": true`. Prefer this over re-shipping, which would create a duplicate episode.
 - **`covered.json` is malformed:** treat as empty `{}` rather than failing the whole run
 
 ## Today's date

@@ -8,6 +8,7 @@ save-to-spotify CLI. The audio I/O seam (`mp3_duration_ms`) is monkeypatched.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -402,3 +403,86 @@ def test_save_covered_atomic_keeps_prior_on_crash(tmp_path, monkeypatch):
     assert json.loads(covered.read_text()) == prior
     leftover = [p.name for p in tmp_path.iterdir() if p.name != "covered.json"]
     assert leftover == [], f"temp files left behind: {leftover}"
+
+
+# --- resolve_cover_date ---------------------------------------------------
+
+
+def test_resolve_cover_date_from_manifest():
+    # A dated manifest reproduces its own date, not today's.
+    assert render.resolve_cover_date({"date": "2026-05-20"}) == "May 20, 2026"
+
+
+def test_resolve_cover_date_defaults_to_today():
+    assert render.resolve_cover_date({}) == render.dt.date.today().strftime("%B %-d, %Y")
+
+
+def test_resolve_cover_date_bad_value_dies():
+    with pytest.raises(SystemExit):
+        render.resolve_cover_date({"date": "not-a-date"})
+
+
+# --- resume (idempotent post-upload) --------------------------------------
+
+
+def _seed_uploaded_workdir(wd: Path, *, with_artifacts: bool = True) -> None:
+    wd.mkdir(parents=True, exist_ok=True)
+    (wd / "uploaded.json").write_text(json.dumps({
+        "episode_uri": "spotify:episode:abc123",
+        "title": "T",
+        "voice": "house",
+        "voice_mode": "clone",
+    }))
+    if with_artifacts:
+        (wd / "episode.mp3").write_bytes(b"x")
+        (wd / "cover.jpg").write_bytes(b"x")
+        (wd / "timeline.json").write_text(json.dumps(
+            {"items": [{"chapter": {"title": "A", "start_time_ms": 0}}]}
+        ))
+
+
+def test_resume_skips_upload_and_runs_idempotent_tail(tmp_path, monkeypatch, capsys):
+    wd = tmp_path / "wd"
+    _seed_uploaded_workdir(wd)
+    manifest = tmp_path / "m.json"
+    manifest.write_text(json.dumps({
+        "title": "T", "summary": "s",
+        "segments": [{"text": "hi", "source_url": "https://example.com/a"}],
+    }))
+
+    # Prove the upload + config are never touched on resume; record the tail.
+    monkeypatch.setattr(render, "upload",
+                        lambda *a, **k: pytest.fail("upload must not run on resume"))
+    monkeypatch.setattr(render, "load_config",
+                        lambda: pytest.fail("load_config must not run on resume"))
+    calls = []
+    monkeypatch.setattr(render, "set_timeline", lambda eid, tp: calls.append(("set_timeline", eid)))
+    monkeypatch.setattr(render, "poll_ready", lambda eid: calls.append(("poll_ready", eid)))
+    monkeypatch.setattr(render, "mp3_duration_ms", lambda p: 60_000)
+    covered_path = tmp_path / "covered.json"
+    monkeypatch.setattr(render, "COVERED_PATH", covered_path)
+    monkeypatch.setattr(sys, "argv",
+                        ["render.py", "--manifest", str(manifest), "--workdir", str(wd)])
+
+    assert render.main() == 0
+
+    assert ("set_timeline", "abc123") in calls
+    assert ("poll_ready", "abc123") in calls
+    # The previously-orphaned URLs are now marked covered.
+    covered = json.loads(covered_path.read_text())
+    assert covered["https://example.com/a"]["episode_uri"] == "spotify:episode:abc123"
+    out = json.loads(capsys.readouterr().out)
+    assert out["resumed"] is True and out["status"] == "ready"
+
+
+def test_resume_dies_when_artifact_missing(tmp_path, monkeypatch):
+    wd = tmp_path / "wd"
+    _seed_uploaded_workdir(wd, with_artifacts=False)  # marker only, no episode.mp3
+    manifest = tmp_path / "m.json"
+    manifest.write_text(json.dumps({"title": "T", "summary": "s", "segments": [{"text": "hi"}]}))
+    monkeypatch.setattr(render, "upload", lambda *a, **k: pytest.fail("upload must not run"))
+    monkeypatch.setattr(sys, "argv",
+                        ["render.py", "--manifest", str(manifest), "--workdir", str(wd)])
+
+    with pytest.raises(SystemExit):
+        render.main()

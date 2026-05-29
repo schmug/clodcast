@@ -49,6 +49,7 @@ Already-written segments. Skip straight to rendering.
   "title": "Daily Digest - May 22, 2026",
   "summary": "Today's one-sentence hook.",
   "show_id": "spotify:show:...",
+  "date": "2026-05-22",                    // optional ISO date; stamps the cover. Omit to use today (re-renders of a dated manifest reproduce its date)
   "voice": "house",                        // default; or "random" / preset name; set voice_instruct for custom VoiceDesign
   "segments": [
     {"text": "Intro segment...",            "source_url": null},
@@ -163,6 +164,24 @@ The prompt reads OPML feeds from config, filters against the dedup log, writes t
 `render.py` exits non-zero with a diagnostic on any failure. Always check the exit code; do not assume success.
 
 For testing without uploading, use `--dry-run` — produces the MP3, cover, and timeline.json locally and reports paths, but skips the `save-to-spotify upload` and `timeline set` calls.
+
+### Recovering from a partial failure
+
+The upload → `timeline set` → poll-until-`READY` → dedup sequence can fail *after* the episode is already live on Spotify — most commonly a `poll_ready` timeout where processing simply took longer than the window. To make this recoverable, `render.py` writes `<workdir>/uploaded.json` (the episode URI + title) the moment `upload()` succeeds, before the failure-prone steps.
+
+To resume, **re-run the same manifest with the same `--workdir`**:
+
+```bash
+python3 <skill-dir>/render.py --manifest manifest.json --workdir /tmp/daily-podcast-<date>
+```
+
+When `--workdir` is passed and it contains `uploaded.json`, `render.py` skips TTS rendering, the cover, and the upload, reuses the existing `episode.mp3` / `cover.jpg` / `timeline.json`, and re-runs only the idempotent tail (`timeline set` + poll + dedup). The final report carries `"resumed": true`. Notes:
+
+- Resume only triggers with an **explicit** `--workdir`; an auto tmpdir cannot be resumed. Keep the workdir around if you want this safety net.
+- If the workdir has `uploaded.json` but is missing an artifact, `render.py` fails fast (`workdir has uploaded.json but missing …`) rather than re-uploading.
+- `--dry-run` never resumes (it never uploads).
+- This is a **manual** recovery path keyed on the workdir. The unattended cron uses a per-date workdir, so a timeout on one day is **not** auto-recovered on the next day's run — that's the separate "in-flight episode log" work, out of scope here.
+- After a *fully successful* run, `uploaded.json` stays in the workdir, so re-running the same `--workdir` resumes the existing episode (an idempotent no-op) instead of rendering fresh. To force a fresh render (e.g. you fixed the script and want to re-ship), delete the workdir or its `uploaded.json`.
 
 ## Dependencies
 
