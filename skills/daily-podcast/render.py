@@ -116,19 +116,17 @@ def load_covered() -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def save_covered(data: dict[str, Any]) -> None:
-    # Atomic write: a crash mid-write must not truncate the dedup log, or the next
-    # run loses its dedup state and re-uploads every URL as a duplicate episode.
-    # Write a temp file in the SAME dir (cross-filesystem rename isn't atomic), then
-    # os.replace() — consistent on every platform, unlike os.rename which fails on
-    # Windows when the target exists. Formatting is preserved (indent=2, sort_keys).
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(data, indent=2, sort_keys=True)
-    fd, tmp = tempfile.mkstemp(dir=CONFIG_DIR, prefix=".covered.", suffix=".tmp")
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write text to path atomically: temp file in the SAME dir, then os.replace.
+    A crash mid-write leaves the prior file intact instead of a truncated one, and
+    os.replace is a consistent atomic rename across platforms (unlike os.rename,
+    which fails on Windows when the target exists)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
-            f.write(payload)
-        os.replace(tmp, COVERED_PATH)
+            f.write(text)
+        os.replace(tmp, path)
     except BaseException:
         # On any failure/interrupt, drop the temp file so it can't masquerade as state.
         try:
@@ -136,6 +134,12 @@ def save_covered(data: dict[str, Any]) -> None:
         except OSError:
             pass
         raise
+
+
+def save_covered(data: dict[str, Any]) -> None:
+    # The dedup log is load-bearing for "don't re-upload the same URLs", so write it
+    # atomically — a crash mid-write must not truncate it. Formatting preserved.
+    _atomic_write_text(COVERED_PATH, json.dumps(data, indent=2, sort_keys=True))
 
 
 def resolve_house_voice() -> tuple[Path, Path]:
@@ -214,6 +218,21 @@ def resolve_voice_mode(voice_instruct: str | None, ref_audio: str | None) -> str
     if voice_instruct:
         return "design"
     return "preset"
+
+
+def resolve_cover_date(manifest: dict[str, Any]) -> str:
+    """
+    Date for the cover subtitle. Prefer the manifest's ISO `date` so re-rendering a
+    dated manifest reproduces its original date (archive / back-fill workflows);
+    fall back to the wall clock when absent. A present-but-unparseable date is fatal.
+    """
+    raw = manifest.get("date")
+    if not raw:
+        return dt.date.today().strftime("%B %-d, %Y")
+    try:
+        return dt.date.fromisoformat(raw).strftime("%B %-d, %Y")
+    except (ValueError, TypeError):
+        die(f"manifest.date must be ISO YYYY-MM-DD, got: {raw!r}")
 
 
 # --- audio rendering -------------------------------------------------------
@@ -589,6 +608,62 @@ def poll_ready(episode_id: str, timeout_s: int = 600) -> None:
     die(f"episode not READY after {timeout_s}s")
 
 
+def _save_dedup(segments: list[dict], episode_uri: str) -> None:
+    """Mark every segment's source_url as covered by this episode. Idempotent:
+    re-writing the same keys is a no-op, which is what makes resume safe."""
+    covered = load_covered()
+    today_iso = dt.date.today().isoformat()
+    for seg in segments:
+        url = seg.get("source_url")
+        if url:
+            covered[url] = {"date": today_iso, "episode_uri": episode_uri}
+    save_covered(covered)
+
+
+def _resume(workdir: Path, marker: Path, segments: list[dict], title: str) -> int:
+    """
+    Resume a run whose upload already succeeded (uploaded.json present). Skip TTS,
+    cover, and upload; reuse the workdir artifacts and re-run only the idempotent
+    tail: set_timeline -> poll_ready -> dedup. This recovers the common failure —
+    a poll_ready timeout where the episode is actually live and Spotify was just
+    slow — without re-uploading a duplicate.
+    """
+    try:
+        data = json.loads(marker.read_text())
+        episode_uri = data["episode_uri"]
+    except (json.JSONDecodeError, OSError, KeyError) as e:
+        die(f"{marker} unreadable or missing episode_uri ({e}); cannot resume")
+
+    episode_id = episode_uri.removeprefix("spotify:episode:")
+    log(f"resume: upload already complete ({episode_uri}); skipping render + upload")
+
+    episode_mp3 = workdir / "episode.mp3"
+    cover = workdir / "cover.jpg"
+    timeline_path = workdir / "timeline.json"
+    for path, name in ((episode_mp3, "episode.mp3"), (cover, "cover.jpg"),
+                       (timeline_path, "timeline.json")):
+        if not path.exists():
+            die(f"workdir has uploaded.json but missing {name}; cannot resume safely")
+
+    set_timeline(episode_id, timeline_path)
+    log("timeline set; polling for READY...")
+    poll_ready(episode_id)
+    _save_dedup(segments, episode_uri)
+
+    timeline = json.loads(timeline_path.read_text())
+    print(json.dumps({
+        "status": "ready",
+        "episode_uri": episode_uri,
+        "title": data.get("title", title),
+        "voice": data.get("voice"),
+        "voice_mode": data.get("voice_mode"),
+        "chapter_count": sum(1 for it in timeline.get("items", []) if "chapter" in it),
+        "duration_s": mp3_duration_ms(episode_mp3) / 1000,
+        "resumed": True,
+    }, indent=2))
+    return 0
+
+
 # --- main ------------------------------------------------------------------
 
 def main() -> int:
@@ -610,6 +685,17 @@ def main() -> int:
     if not isinstance(segments, list) or not segments:
         die("manifest.segments must be a non-empty list")
 
+    workdir = args.workdir or Path(tempfile.mkdtemp(prefix="daily-podcast-"))
+    workdir.mkdir(parents=True, exist_ok=True)
+    marker = workdir / "uploaded.json"
+
+    # Resume: a prior run already uploaded into this workdir, so skip render + upload
+    # and re-run only the idempotent tail. Only when --workdir was given explicitly
+    # (an auto tmpdir can't be resumed) and never for --dry-run (which never uploads).
+    if args.workdir is not None and marker.exists() and not args.dry_run:
+        log(f"workdir: {workdir}")
+        return _resume(workdir, marker, segments, title)
+
     config = load_config()
     show_id = manifest.get("show_id") or config.get("show_id")
     if not show_id:
@@ -618,11 +704,8 @@ def main() -> int:
 
     voice, voice_instruct, ref_audio, ref_text = resolve_voice(manifest)
     voice_mode = resolve_voice_mode(voice_instruct, ref_audio)
+    cover_date = resolve_cover_date(manifest)
 
-    today = dt.date.today().strftime("%B %-d, %Y")
-
-    workdir = args.workdir or Path(tempfile.mkdtemp(prefix="daily-podcast-"))
-    workdir.mkdir(parents=True, exist_ok=True)
     log(f"workdir: {workdir}")
     if ref_audio:
         log(f"voice: {voice} (ref_audio clone)")
@@ -642,7 +725,7 @@ def main() -> int:
 
     # 4: cover
     cover = workdir / "cover.jpg"
-    build_cover(cover, show_name, today, title)
+    build_cover(cover, show_name, cover_date, title)
 
     # 5: timeline + description
     timeline, description = build_timeline_and_description(
@@ -670,22 +753,24 @@ def main() -> int:
         }, indent=2))
         return 0
 
-    # 6: upload + timeline + poll
+    # 6: upload, then immediately record the upload — BEFORE the failure-prone tail
+    # (set_timeline / poll_ready). If either fails, a re-run with the same --workdir
+    # resumes from here instead of re-uploading a duplicate episode.
     episode_uri = upload(episode_mp3, title, description, cover, show_id)
     episode_id = episode_uri.removeprefix("spotify:episode:")
+    _atomic_write_text(marker, json.dumps({
+        "episode_uri": episode_uri,
+        "title": title,
+        "voice": voice,
+        "voice_mode": voice_mode,
+    }, indent=2))
     log(f"uploaded: {episode_uri}")
     set_timeline(episode_id, timeline_path)
     log("timeline set; polling for READY...")
     poll_ready(episode_id)
 
-    # 7: dedup log update
-    covered = load_covered()
-    today_iso = dt.date.today().isoformat()
-    for seg in segments:
-        url = seg.get("source_url")
-        if url:
-            covered[url] = {"date": today_iso, "episode_uri": episode_uri}
-    save_covered(covered)
+    # 7: dedup log update (only after READY)
+    _save_dedup(segments, episode_uri)
 
     print(json.dumps({
         "status": "ready",
@@ -695,6 +780,7 @@ def main() -> int:
         "voice_mode": voice_mode,
         "chapter_count": sum(1 for it in timeline["items"] if "chapter" in it),
         "duration_s": mp3_duration_ms(episode_mp3) / 1000,
+        "resumed": False,
     }, indent=2))
     return 0
 

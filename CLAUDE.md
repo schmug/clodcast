@@ -44,6 +44,7 @@ These are subtle and easy to break. Preserve them or the produced episode is rej
 - **Max 3 chapters under 30 seconds.** Spotify rejects timelines that violate this. `plan_silences` auto-pads trailing silence after short segments up to a 12 s cap; if more padding is needed it dies with a script-rewrite error. Don't lower the cap to "make it work" — the script is the problem.
 - **The last segment gets `LAST_SILENCE_MS = 0` trailing silence.** Padding the tail breaks chapter math (`last_chapter_start_ms >= episode_duration_ms` is fatal).
 - **`covered.json` is only written after `poll_ready` returns READY.** Don't move the `save_covered` call earlier; a failed upload must leave the dedup log untouched so the next run retries those URLs.
+- **A successful `upload()` writes `<workdir>/uploaded.json` before the `set_timeline`/`poll_ready` tail.** This is the resume marker: re-running with the same explicit `--workdir` skips re-upload and re-runs only the idempotent tail (`set_timeline`/`poll_ready`/`save_covered`). Don't write it before `upload()` succeeds, and don't gate dedup on it — `covered.json` is still only written after READY. Resume is a manual, same-workdir recovery path; the cron's cross-day duplicate risk (per-date workdirs) is deferred to the in-flight-log work.
 - **MP3 is mono 44.1k throughout.** Every ffmpeg invocation re-asserts this. Concat-protocol is fragile across mismatched sample rates / channels; don't relax it.
 
 ### The "house" voice is `ref_audio` cloning, not VoiceDesign
