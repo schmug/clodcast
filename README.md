@@ -1,5 +1,7 @@
 # clodcast
 
+[![CI](https://github.com/schmug/clodcast/actions/workflows/ci.yml/badge.svg)](https://github.com/schmug/clodcast/actions/workflows/ci.yml)
+
 A Claude Code skill that turns a list of saved articles (or RSS items) into a fully-produced Spotify episode in one pass:
 
 - Pulls full content for each item
