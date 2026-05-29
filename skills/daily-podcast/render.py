@@ -116,8 +116,25 @@ def load_covered() -> dict[str, Any]:
 
 
 def save_covered(data: dict[str, Any]) -> None:
+    # Atomic write: a crash mid-write must not truncate the dedup log, or the next
+    # run loses its dedup state and re-uploads every URL as a duplicate episode.
+    # Write a temp file in the SAME dir (cross-filesystem rename isn't atomic), then
+    # os.replace() — consistent on every platform, unlike os.rename which fails on
+    # Windows when the target exists. Formatting is preserved (indent=2, sort_keys).
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    COVERED_PATH.write_text(json.dumps(data, indent=2, sort_keys=True))
+    payload = json.dumps(data, indent=2, sort_keys=True)
+    fd, tmp = tempfile.mkstemp(dir=CONFIG_DIR, prefix=".covered.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(payload)
+        os.replace(tmp, COVERED_PATH)
+    except BaseException:
+        # On any failure/interrupt, drop the temp file so it can't masquerade as state.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def resolve_house_voice() -> tuple[Path, Path]:

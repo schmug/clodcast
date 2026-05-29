@@ -7,6 +7,7 @@ save-to-spotify CLI. The audio I/O seam (`mp3_duration_ms`) is monkeypatched.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -241,3 +242,38 @@ def test_load_covered_returns_dict_when_well_formed(tmp_path, monkeypatch):
     assert render.load_covered() == {
         "https://example.com/a": {"date": "2026-01-01"}
     }
+
+
+# --- save_covered (atomic write) -----------------------------------------
+
+
+def test_save_covered_round_trips(tmp_path, monkeypatch):
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(render, "COVERED_PATH", tmp_path / "covered.json")
+    data = {"https://example.com/a": {"date": "2026-01-01", "episode_uri": "spotify:episode:x"}}
+
+    render.save_covered(data)
+
+    assert render.load_covered() == data
+
+
+def test_save_covered_atomic_keeps_prior_on_crash(tmp_path, monkeypatch):
+    # A crash AFTER the temp write but BEFORE os.replace must leave the prior
+    # covered.json untouched and not promote the partial temp file.
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    covered = tmp_path / "covered.json"
+    monkeypatch.setattr(render, "COVERED_PATH", covered)
+    prior = {"https://example.com/old": {"date": "2026-01-01"}}
+    render.save_covered(prior)
+
+    def boom(_src, _dst):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(render.os, "replace", boom)
+    with pytest.raises(KeyboardInterrupt):
+        render.save_covered({"https://example.com/new": {"date": "2026-02-02"}})
+
+    # Prior file intact, new data not promoted, and no temp turds left behind.
+    assert json.loads(covered.read_text()) == prior
+    leftover = [p.name for p in tmp_path.iterdir() if p.name != "covered.json"]
+    assert leftover == [], f"temp files left behind: {leftover}"
