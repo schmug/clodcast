@@ -14,7 +14,6 @@ import pytest
 
 import render
 
-
 # --- plan_silences --------------------------------------------------------
 
 
@@ -32,7 +31,11 @@ def test_plan_silences_no_padding_when_all_chapters_long(tmp_path, monkeypatch):
 
     silences = render.plan_silences(paths)
 
-    assert silences == [render.DEFAULT_SILENCE_MS, render.DEFAULT_SILENCE_MS, render.LAST_SILENCE_MS]
+    assert silences == [
+        render.DEFAULT_SILENCE_MS,
+        render.DEFAULT_SILENCE_MS,
+        render.LAST_SILENCE_MS,
+    ]
 
 
 def test_plan_silences_exactly_three_shorts_no_padding(tmp_path, monkeypatch):
@@ -43,7 +46,11 @@ def test_plan_silences_exactly_three_shorts_no_padding(tmp_path, monkeypatch):
 
     silences = render.plan_silences(paths)
 
-    assert silences == [render.DEFAULT_SILENCE_MS, render.DEFAULT_SILENCE_MS, render.LAST_SILENCE_MS]
+    assert silences == [
+        render.DEFAULT_SILENCE_MS,
+        render.DEFAULT_SILENCE_MS,
+        render.LAST_SILENCE_MS,
+    ]
 
 
 def test_plan_silences_pads_when_over_budget_with_room(tmp_path, monkeypatch):

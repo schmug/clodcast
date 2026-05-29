@@ -36,3 +36,20 @@ build-backend = "setuptools.build_meta"
 # imported as a package. `pip install -e .` therefore provides dependencies only
 # (a metadata-only wheel); there are no modules to package.
 py-modules = []
+
+[tool.ruff]
+line-length = 100            # matches the de-facto wrap in render.py
+target-version = "py310"
+# The reference clip's transcript must stay byte-exact (it has to match the audio);
+# never let a formatter or whitespace rule touch the refs.
+extend-exclude = ["skills/daily-podcast/refs"]
+
+[tool.ruff.lint]
+# Small ruleset: pycodestyle (E/W), pyflakes (F), import-sort (I), pyupgrade (UP),
+# bugbear (B). No D (docstrings) — the codebase uses module-level docstrings only.
+select = ["E", "W", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+# render.py is a local module loaded via sys.path (see tests/conftest.py), so keep
+# it in its own first-party import group rather than lumping it with third-party.
+known-first-party = ["render"]

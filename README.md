@@ -89,6 +89,29 @@ Other voice options (set in manifest):
 
 **Want to design your own voice from scratch?** See [docs/durable-voices.md](docs/durable-voices.md) — covers why `ref_audio` cloning beats VoiceDesign for long-running shows, the iteration workflow that produced the bundled house voice, common failure modes to avoid (over-enunciation, theatrical drift, noir weight), and how to verify a new clip is stable.
 
+## Development
+
+Install the dev tools (lint + tests). The runtime deps are Apple-Silicon-only, so for tooling alone just install the two tools directly:
+
+```bash
+pip install ruff pytest      # tooling only (no MLX)
+# or, for a full editable env on Apple Silicon:
+pip install -e ".[dev]"
+```
+
+**Lint** — `ruff check` is enforced; `ruff format --check` is advisory (the renderer keeps a hand-tuned layout):
+
+```bash
+ruff check .
+ruff format --check .   # advisory
+```
+
+**Tests:**
+
+```bash
+pytest
+```
+
 ## License
 
 MIT
