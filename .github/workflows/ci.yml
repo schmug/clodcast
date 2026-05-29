@@ -29,9 +29,12 @@ jobs:
       # The runtime deps (mlx-audio) are Apple-Silicon-only and won't install on
       # Linux, so CI installs only the dev tools. The pytest suite is invariant-only
       # by design — heavy imports are function-local, so it needs neither MLX,
-      # ffmpeg, nor the save-to-spotify CLI. Versions mirror pyproject's `dev` extra.
+      # ffmpeg, nor the save-to-spotify CLI.
+      # ruff is pinned exactly so CI matches the version validated locally and in
+      # .pre-commit-config.yaml — a floating ruff can promote rules and redden CI.
+      # Keep this in lockstep with the pre-commit rev and pyproject's `dev` extra.
       - name: Install dev tools
-        run: python -m pip install "ruff>=0.14" "pytest>=8.0"
+        run: python -m pip install "ruff==0.14.10" "pytest>=8.0"
 
       - name: Ruff lint
         run: ruff check .

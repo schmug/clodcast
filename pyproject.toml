@@ -21,7 +21,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
-    "ruff>=0.14",
+    # ruff is pinned exactly (not a floor) so lint results are reproducible across
+    # local dev, the pre-commit rev (v0.14.10), and CI — a linter's version decides
+    # pass/fail. Bump all three sites together.
+    "ruff==0.14.10",
 ]
 
 [project.urls]
