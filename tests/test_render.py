@@ -146,6 +146,58 @@ def test_resolve_voice_unknown_name_fails():
         render.resolve_voice({"voice": "Nonexistent"})
 
 
+# --- resolve_voice_mode ---------------------------------------------------
+
+
+def test_resolve_voice_mode_clone_when_ref_audio():
+    assert render.resolve_voice_mode(None, "/x/house.wav") == "clone"
+
+
+def test_resolve_voice_mode_design_when_instruct_only():
+    assert render.resolve_voice_mode("a calm narrator", None) == "design"
+
+
+def test_resolve_voice_mode_clone_wins_over_instruct():
+    # render_segments clones when ref_audio is set even if instruct is present.
+    assert render.resolve_voice_mode("a calm narrator", "/x/house.wav") == "clone"
+
+
+def test_resolve_voice_mode_preset_when_neither():
+    assert render.resolve_voice_mode(None, None) == "preset"
+
+
+# The four acceptance scenarios from issue #12: the `voice` label is unchanged
+# (backwards-compatible), but voice_mode now disambiguates what actually ran.
+
+
+def test_voice_label_and_mode_preset_plus_instruct(house_voice_files):
+    voice, voice_instruct, ref_audio, _ = render.resolve_voice(
+        {"voice": "Ryan", "voice_instruct": "a calm narrator"}
+    )
+    assert voice == "Ryan"  # label preserved
+    assert render.resolve_voice_mode(voice_instruct, ref_audio) == "design"
+
+
+def test_voice_label_and_mode_house_plus_instruct():
+    voice, voice_instruct, ref_audio, _ = render.resolve_voice(
+        {"voice": "house", "voice_instruct": "a calm narrator"}
+    )
+    assert voice == "custom"  # existing behaviour preserved
+    assert render.resolve_voice_mode(voice_instruct, ref_audio) == "design"
+
+
+def test_voice_label_and_mode_house_default(house_voice_files):
+    voice, voice_instruct, ref_audio, _ = render.resolve_voice({})
+    assert voice == "house"
+    assert render.resolve_voice_mode(voice_instruct, ref_audio) == "clone"
+
+
+def test_voice_label_and_mode_explicit_preset():
+    voice, voice_instruct, ref_audio, _ = render.resolve_voice({"voice": "Ryan"})
+    assert voice == "Ryan"
+    assert render.resolve_voice_mode(voice_instruct, ref_audio) == "preset"
+
+
 # --- resolve_font ---------------------------------------------------------
 
 

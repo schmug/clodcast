@@ -197,6 +197,25 @@ def resolve_voice(manifest: dict[str, Any]) -> tuple[str, str | None, str | None
     return voice, voice_instruct, ref_audio, ref_text
 
 
+def resolve_voice_mode(voice_instruct: str | None, ref_audio: str | None) -> str:
+    """
+    The rendering engine actually used, independent of the `voice` label.
+
+    The label can read "Ryan" while voice_instruct routes to VoiceDesign, so the
+    label alone lies about what the listener hears. Operators read the SHIPPED line
+    to catch voice regressions, so the mode is reported truthfully alongside it:
+      - "clone"  : ref_audio cloning (the house voice)
+      - "design" : VoiceDesign instruct
+      - "preset" : a named Qwen3 preset voice
+    Mirrors the clone-wins-over-design precedence in render_segments().
+    """
+    if ref_audio:
+        return "clone"
+    if voice_instruct:
+        return "design"
+    return "preset"
+
+
 # --- audio rendering -------------------------------------------------------
 
 def render_segments(segments: list[dict], voice: str, workdir: Path,
@@ -598,6 +617,7 @@ def main() -> int:
     show_name = config.get("show_name") or "Daily Digest"
 
     voice, voice_instruct, ref_audio, ref_text = resolve_voice(manifest)
+    voice_mode = resolve_voice_mode(voice_instruct, ref_audio)
 
     today = dt.date.today().strftime("%B %-d, %Y")
 
@@ -644,6 +664,7 @@ def main() -> int:
             "cover": str(cover),
             "timeline": str(timeline_path),
             "voice": voice,
+            "voice_mode": voice_mode,
             "chapter_count": sum(1 for it in timeline["items"] if "chapter" in it),
             "duration_s": mp3_duration_ms(episode_mp3) / 1000,
         }, indent=2))
@@ -671,6 +692,7 @@ def main() -> int:
         "episode_uri": episode_uri,
         "title": title,
         "voice": voice,
+        "voice_mode": voice_mode,
         "chapter_count": sum(1 for it in timeline["items"] if "chapter" in it),
         "duration_s": mp3_duration_ms(episode_mp3) / 1000,
     }, indent=2))

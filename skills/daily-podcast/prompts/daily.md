@@ -58,7 +58,7 @@ You are an unattended `claude -p` invocation. Your job is to ship today's episod
      --manifest /tmp/daily-podcast-<date>/manifest.json \
      --workdir /tmp/daily-podcast-<date>
    ```
-   `render.py` will print a final JSON line on stdout with `status`, `episode_uri`, `voice`, `chapter_count`, `duration_s`. It also updates `covered.json` on success.
+   `render.py` will print a final JSON line on stdout with `status`, `episode_uri`, `voice`, `voice_mode` (`clone`/`design`/`preset` — the engine actually used), `chapter_count`, `duration_s`. It also updates `covered.json` on success.
 
 10. **Report once and exit.** Single-line stdout:
     ```
