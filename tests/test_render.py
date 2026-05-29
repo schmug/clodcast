@@ -146,6 +146,28 @@ def test_resolve_voice_unknown_name_fails():
         render.resolve_voice({"voice": "Nonexistent"})
 
 
+# --- resolve_font ---------------------------------------------------------
+
+
+def test_resolve_font_env_override_wins(tmp_path, monkeypatch):
+    # The env override is tried first, ahead of the macOS Futura path that exists
+    # on the dev machine — so it must win even when Futura is present.
+    fake = tmp_path / "myfont.ttf"
+    fake.write_bytes(b"\x00")  # resolve_font only checks existence
+    monkeypatch.setenv("DAILY_PODCAST_FONT", str(fake))
+
+    assert render.resolve_font() == str(fake)
+
+
+def test_resolve_font_dies_when_none_found(monkeypatch):
+    monkeypatch.delenv("DAILY_PODCAST_FONT", raising=False)
+    # Make every candidate path appear absent.
+    monkeypatch.setattr(render.Path, "exists", lambda self: False)
+
+    with pytest.raises(SystemExit):
+        render.resolve_font()
+
+
 # --- build_timeline_and_description --------------------------------------
 
 

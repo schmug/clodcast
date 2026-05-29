@@ -368,6 +368,31 @@ def concat_and_normalize(seg_paths: list[Path], silences_ms: list[int],
 
 # --- cover -----------------------------------------------------------------
 
+def resolve_font() -> str:
+    """
+    Resolve a TrueType font for the cover, in order:
+      1. DAILY_PODCAST_FONT env override (wins over everything)
+      2. macOS Futura — keeps the default macOS install byte-identical
+      3. common Linux fallbacks (DejaVu, Liberation)
+    die() with an actionable message if none exist — never let Pillow raise a bare
+    FileNotFoundError. Cover rendering is pure Pillow and must run off macOS (Linux
+    CI); only the TTS path is Apple-Silicon-locked.
+    """
+    candidates = [
+        os.environ.get("DAILY_PODCAST_FONT"),
+        "/System/Library/Fonts/Supplemental/Futura.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    ]
+    for path in candidates:
+        if path and Path(path).exists():
+            return path
+    die(
+        "no cover font found. Install Futura (macOS) or DejaVu/Liberation (Linux), "
+        "or set DAILY_PODCAST_FONT=/path/to/font.ttf"
+    )
+
+
 def build_cover(out_path: Path, show_name: str, date_str: str, title_hint: str) -> None:
     """Pillow cover: gradient + show name + date + short subtitle."""
     from PIL import Image, ImageDraw, ImageFont
@@ -395,11 +420,11 @@ def build_cover(out_path: Path, show_name: str, date_str: str, title_hint: str) 
     bg = Image.alpha_composite(bg.convert("RGBA"), overlay).convert("RGB")
 
     d = ImageDraw.Draw(bg)
-    futura = "/System/Library/Fonts/Supplemental/Futura.ttc"
-    title_font = ImageFont.truetype(futura, 130)
-    sub_font = ImageFont.truetype(futura, 54)
-    date_font = ImageFont.truetype(futura, 44)
-    small_font = ImageFont.truetype(futura, 36)
+    font_path = resolve_font()
+    title_font = ImageFont.truetype(font_path, 130)
+    sub_font = ImageFont.truetype(font_path, 54)
+    date_font = ImageFont.truetype(font_path, 44)
+    small_font = ImageFont.truetype(font_path, 36)
 
     def shadowed(xy, text, font, fill=(255, 255, 255)):
         x, y = xy
@@ -427,7 +452,7 @@ def build_cover(out_path: Path, show_name: str, date_str: str, title_hint: str) 
     title_lines = wrap_to_lines(show_name, title_font, MAX_TITLE_WIDTH)
     # If wrapping produced too many lines, downsize the title font
     while len(title_lines) > 2 and title_font.size > 70:
-        title_font = ImageFont.truetype(futura, title_font.size - 10)
+        title_font = ImageFont.truetype(font_path, title_font.size - 10)
         title_lines = wrap_to_lines(show_name, title_font, MAX_TITLE_WIDTH)
 
     # Top label (also truncate if needed)
