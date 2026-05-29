@@ -58,7 +58,7 @@ This prompt is self-contained: the script template, voice rules, and chapter-dur
      --manifest /tmp/daily-podcast-<date>/manifest.json \
      --workdir /tmp/daily-podcast-<date>
    ```
-   If `${CLAUDE_PLUGIN_ROOT}` is somehow unset, exit immediately with `FAILED CLAUDE_PLUGIN_ROOT unset` — do not search the filesystem for `render.py`. `render.py` will print a final JSON line on stdout with `status`, `episode_uri`, `voice`, `chapter_count`, `duration_s`. It also updates `covered.json` on success.
+   If `${CLAUDE_PLUGIN_ROOT}` is somehow unset, exit immediately with `FAILED CLAUDE_PLUGIN_ROOT unset` — do not search the filesystem for `render.py`. `render.py` will print a final JSON line on stdout with `status`, `episode_uri`, `voice`, `voice_mode` (`clone`/`design`/`preset` — the engine actually used), `chapter_count`, `duration_s`. It also updates `covered.json` on success.
 
 9. **Report once and exit.** Single-line stdout:
     ```

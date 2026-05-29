@@ -7,6 +7,7 @@ save-to-spotify CLI. The audio I/O seam (`mp3_duration_ms`) is monkeypatched.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -145,6 +146,80 @@ def test_resolve_voice_unknown_name_fails():
         render.resolve_voice({"voice": "Nonexistent"})
 
 
+# --- resolve_voice_mode ---------------------------------------------------
+
+
+def test_resolve_voice_mode_clone_when_ref_audio():
+    assert render.resolve_voice_mode(None, "/x/house.wav") == "clone"
+
+
+def test_resolve_voice_mode_design_when_instruct_only():
+    assert render.resolve_voice_mode("a calm narrator", None) == "design"
+
+
+def test_resolve_voice_mode_clone_wins_over_instruct():
+    # render_segments clones when ref_audio is set even if instruct is present.
+    assert render.resolve_voice_mode("a calm narrator", "/x/house.wav") == "clone"
+
+
+def test_resolve_voice_mode_preset_when_neither():
+    assert render.resolve_voice_mode(None, None) == "preset"
+
+
+# The four acceptance scenarios from issue #12: the `voice` label is unchanged
+# (backwards-compatible), but voice_mode now disambiguates what actually ran.
+
+
+def test_voice_label_and_mode_preset_plus_instruct(house_voice_files):
+    voice, voice_instruct, ref_audio, _ = render.resolve_voice(
+        {"voice": "Ryan", "voice_instruct": "a calm narrator"}
+    )
+    assert voice == "Ryan"  # label preserved
+    assert render.resolve_voice_mode(voice_instruct, ref_audio) == "design"
+
+
+def test_voice_label_and_mode_house_plus_instruct():
+    voice, voice_instruct, ref_audio, _ = render.resolve_voice(
+        {"voice": "house", "voice_instruct": "a calm narrator"}
+    )
+    assert voice == "custom"  # existing behaviour preserved
+    assert render.resolve_voice_mode(voice_instruct, ref_audio) == "design"
+
+
+def test_voice_label_and_mode_house_default(house_voice_files):
+    voice, voice_instruct, ref_audio, _ = render.resolve_voice({})
+    assert voice == "house"
+    assert render.resolve_voice_mode(voice_instruct, ref_audio) == "clone"
+
+
+def test_voice_label_and_mode_explicit_preset():
+    voice, voice_instruct, ref_audio, _ = render.resolve_voice({"voice": "Ryan"})
+    assert voice == "Ryan"
+    assert render.resolve_voice_mode(voice_instruct, ref_audio) == "preset"
+
+
+# --- resolve_font ---------------------------------------------------------
+
+
+def test_resolve_font_env_override_wins(tmp_path, monkeypatch):
+    # The env override is tried first, ahead of the macOS Futura path that exists
+    # on the dev machine — so it must win even when Futura is present.
+    fake = tmp_path / "myfont.ttf"
+    fake.write_bytes(b"\x00")  # resolve_font only checks existence
+    monkeypatch.setenv("DAILY_PODCAST_FONT", str(fake))
+
+    assert render.resolve_font() == str(fake)
+
+
+def test_resolve_font_dies_when_none_found(monkeypatch):
+    monkeypatch.delenv("DAILY_PODCAST_FONT", raising=False)
+    # Make every candidate path appear absent.
+    monkeypatch.setattr(render.Path, "exists", lambda self: False)
+
+    with pytest.raises(SystemExit):
+        render.resolve_font()
+
+
 # --- build_timeline_and_description --------------------------------------
 
 
@@ -194,6 +269,50 @@ def test_build_timeline_link_companion_bounds(tmp_path, monkeypatch):
     assert 2000 <= link["duration_ms"] <= 6000
 
 
+def test_description_escapes_title_special_chars(tmp_path, monkeypatch):
+    segments = [{"title": 'She said "hi" & left'}]
+    paths = _paths(tmp_path, 1)
+    episode = tmp_path / "episode.mp3"
+    _patch_durations(monkeypatch, {paths[0]: 40_000, episode: 40_000})
+
+    _, description = render.build_timeline_and_description(
+        segments, paths, silences_ms=[0], summary="s", episode_mp3=episode,
+    )
+
+    assert "She said &quot;hi&quot; &amp; left" in description
+    assert 'She said "hi"' not in description
+
+
+def test_description_escapes_url_ampersand_and_quote(tmp_path, monkeypatch):
+    segments = [{"title": "T", "source_url": "https://x.com/p?a=1&b=2'q"}]
+    paths = _paths(tmp_path, 1)
+    episode = tmp_path / "episode.mp3"
+    _patch_durations(monkeypatch, {paths[0]: 40_000, episode: 40_000})
+
+    timeline, description = render.build_timeline_and_description(
+        segments, paths, silences_ms=[0], summary="s", episode_mp3=episode,
+    )
+
+    assert "a=1&amp;b=2" in description       # query-string & is escaped
+    assert "&#x27;" in description            # single quote escaped — can't close the href
+    assert "a=1&b=2'q" not in description     # no raw, href-breaking form survives
+    # The timeline carries the RAW url; escaping is description-only.
+    assert timeline["items"][1]["link"]["url"] == "https://x.com/p?a=1&b=2'q"
+
+
+def test_description_summary_passes_through_unescaped(tmp_path, monkeypatch):
+    segments = [{"title": "T"}]
+    paths = _paths(tmp_path, 1)
+    episode = tmp_path / "episode.mp3"
+    _patch_durations(monkeypatch, {paths[0]: 40_000, episode: 40_000})
+
+    _, description = render.build_timeline_and_description(
+        segments, paths, silences_ms=[0], summary="<b>bold</b> & raw", episode_mp3=episode,
+    )
+
+    assert "<b>bold</b> & raw" in description  # summary is HTML-by-contract
+
+
 def test_build_timeline_fatal_when_last_chapter_starts_after_episode_ends(tmp_path, monkeypatch):
     # Second chapter starts at 10_000ms but episode is only 9_000ms long.
     segments = [{"title": "A"}, {"title": "B"}]
@@ -241,3 +360,38 @@ def test_load_covered_returns_dict_when_well_formed(tmp_path, monkeypatch):
     assert render.load_covered() == {
         "https://example.com/a": {"date": "2026-01-01"}
     }
+
+
+# --- save_covered (atomic write) -----------------------------------------
+
+
+def test_save_covered_round_trips(tmp_path, monkeypatch):
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(render, "COVERED_PATH", tmp_path / "covered.json")
+    data = {"https://example.com/a": {"date": "2026-01-01", "episode_uri": "spotify:episode:x"}}
+
+    render.save_covered(data)
+
+    assert render.load_covered() == data
+
+
+def test_save_covered_atomic_keeps_prior_on_crash(tmp_path, monkeypatch):
+    # A crash AFTER the temp write but BEFORE os.replace must leave the prior
+    # covered.json untouched and not promote the partial temp file.
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    covered = tmp_path / "covered.json"
+    monkeypatch.setattr(render, "COVERED_PATH", covered)
+    prior = {"https://example.com/old": {"date": "2026-01-01"}}
+    render.save_covered(prior)
+
+    def boom(_src, _dst):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(render.os, "replace", boom)
+    with pytest.raises(KeyboardInterrupt):
+        render.save_covered({"https://example.com/new": {"date": "2026-02-02"}})
+
+    # Prior file intact, new data not promoted, and no temp turds left behind.
+    assert json.loads(covered.read_text()) == prior
+    leftover = [p.name for p in tmp_path.iterdir() if p.name != "covered.json"]
+    assert leftover == [], f"temp files left behind: {leftover}"

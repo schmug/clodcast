@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import html
 import json
 import os
 import random
@@ -116,8 +117,25 @@ def load_covered() -> dict[str, Any]:
 
 
 def save_covered(data: dict[str, Any]) -> None:
+    # Atomic write: a crash mid-write must not truncate the dedup log, or the next
+    # run loses its dedup state and re-uploads every URL as a duplicate episode.
+    # Write a temp file in the SAME dir (cross-filesystem rename isn't atomic), then
+    # os.replace() — consistent on every platform, unlike os.rename which fails on
+    # Windows when the target exists. Formatting is preserved (indent=2, sort_keys).
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    COVERED_PATH.write_text(json.dumps(data, indent=2, sort_keys=True))
+    payload = json.dumps(data, indent=2, sort_keys=True)
+    fd, tmp = tempfile.mkstemp(dir=CONFIG_DIR, prefix=".covered.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(payload)
+        os.replace(tmp, COVERED_PATH)
+    except BaseException:
+        # On any failure/interrupt, drop the temp file so it can't masquerade as state.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def resolve_house_voice() -> tuple[Path, Path]:
@@ -177,6 +195,25 @@ def resolve_voice(manifest: dict[str, Any]) -> tuple[str, str | None, str | None
         die(f"unknown voice: {requested}. Expected 'house', 'random', "
             f"one of {VOICES}, or set voice_instruct directly.")
     return voice, voice_instruct, ref_audio, ref_text
+
+
+def resolve_voice_mode(voice_instruct: str | None, ref_audio: str | None) -> str:
+    """
+    The rendering engine actually used, independent of the `voice` label.
+
+    The label can read "Ryan" while voice_instruct routes to VoiceDesign, so the
+    label alone lies about what the listener hears. Operators read the SHIPPED line
+    to catch voice regressions, so the mode is reported truthfully alongside it:
+      - "clone"  : ref_audio cloning (the house voice)
+      - "design" : VoiceDesign instruct
+      - "preset" : a named Qwen3 preset voice
+    Mirrors the clone-wins-over-design precedence in render_segments().
+    """
+    if ref_audio:
+        return "clone"
+    if voice_instruct:
+        return "design"
+    return "preset"
 
 
 # --- audio rendering -------------------------------------------------------
@@ -351,6 +388,31 @@ def concat_and_normalize(seg_paths: list[Path], silences_ms: list[int],
 
 # --- cover -----------------------------------------------------------------
 
+def resolve_font() -> str:
+    """
+    Resolve a TrueType font for the cover, in order:
+      1. DAILY_PODCAST_FONT env override (wins over everything)
+      2. macOS Futura — keeps the default macOS install byte-identical
+      3. common Linux fallbacks (DejaVu, Liberation)
+    die() with an actionable message if none exist — never let Pillow raise a bare
+    FileNotFoundError. Cover rendering is pure Pillow and must run off macOS (Linux
+    CI); only the TTS path is Apple-Silicon-locked.
+    """
+    candidates = [
+        os.environ.get("DAILY_PODCAST_FONT"),
+        "/System/Library/Fonts/Supplemental/Futura.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    ]
+    for path in candidates:
+        if path and Path(path).exists():
+            return path
+    die(
+        "no cover font found. Install Futura (macOS) or DejaVu/Liberation (Linux), "
+        "or set DAILY_PODCAST_FONT=/path/to/font.ttf"
+    )
+
+
 def build_cover(out_path: Path, show_name: str, date_str: str, title_hint: str) -> None:
     """Pillow cover: gradient + show name + date + short subtitle."""
     from PIL import Image, ImageDraw, ImageFont
@@ -378,11 +440,11 @@ def build_cover(out_path: Path, show_name: str, date_str: str, title_hint: str) 
     bg = Image.alpha_composite(bg.convert("RGBA"), overlay).convert("RGB")
 
     d = ImageDraw.Draw(bg)
-    futura = "/System/Library/Fonts/Supplemental/Futura.ttc"
-    title_font = ImageFont.truetype(futura, 130)
-    sub_font = ImageFont.truetype(futura, 54)
-    date_font = ImageFont.truetype(futura, 44)
-    small_font = ImageFont.truetype(futura, 36)
+    font_path = resolve_font()
+    title_font = ImageFont.truetype(font_path, 130)
+    sub_font = ImageFont.truetype(font_path, 54)
+    date_font = ImageFont.truetype(font_path, 44)
+    small_font = ImageFont.truetype(font_path, 36)
 
     def shadowed(xy, text, font, fill=(255, 255, 255)):
         x, y = xy
@@ -410,7 +472,7 @@ def build_cover(out_path: Path, show_name: str, date_str: str, title_hint: str) 
     title_lines = wrap_to_lines(show_name, title_font, MAX_TITLE_WIDTH)
     # If wrapping produced too many lines, downsize the title font
     while len(title_lines) > 2 and title_font.size > 70:
-        title_font = ImageFont.truetype(futura, title_font.size - 10)
+        title_font = ImageFont.truetype(font_path, title_font.size - 10)
         title_lines = wrap_to_lines(show_name, title_font, MAX_TITLE_WIDTH)
 
     # Top label (also truncate if needed)
@@ -463,14 +525,19 @@ def build_timeline_and_description(segments: list[dict], seg_paths: list[Path],
     if last_ch >= final_ms:
         die(f"last chapter at {last_ch}ms >= episode duration {final_ms}ms")
 
-    # Description
+    # Description. title/url come from untrusted feed metadata, so escape them — a
+    # stray quote/&/< would otherwise corrupt the markup (a "'" closes the href).
+    # summary is HTML-by-contract (the user authored it), so it passes through raw.
+    # The timeline JSON above carries the raw strings; escaping is description-only.
     parts = [f"<p>{summary}</p>"]
     for ms, title, url in chapters:
         ts = f"({ms // 60000}:{(ms % 60000) // 1000:02d})"
+        safe_title = html.escape(title, quote=True)
         if url:
-            parts.append(f"<p>{ts} - {title} - <a href='{url}'>source</a></p>")
+            safe_url = html.escape(url, quote=True)
+            parts.append(f'<p>{ts} - {safe_title} - <a href="{safe_url}">source</a></p>')
         else:
-            parts.append(f"<p>{ts} - {title}</p>")
+            parts.append(f"<p>{ts} - {safe_title}</p>")
     description = "".join(parts)
 
     return {"items": items}, description
@@ -550,6 +617,7 @@ def main() -> int:
     show_name = config.get("show_name") or "Daily Digest"
 
     voice, voice_instruct, ref_audio, ref_text = resolve_voice(manifest)
+    voice_mode = resolve_voice_mode(voice_instruct, ref_audio)
 
     today = dt.date.today().strftime("%B %-d, %Y")
 
@@ -596,6 +664,7 @@ def main() -> int:
             "cover": str(cover),
             "timeline": str(timeline_path),
             "voice": voice,
+            "voice_mode": voice_mode,
             "chapter_count": sum(1 for it in timeline["items"] if "chapter" in it),
             "duration_s": mp3_duration_ms(episode_mp3) / 1000,
         }, indent=2))
@@ -623,6 +692,7 @@ def main() -> int:
         "episode_uri": episode_uri,
         "title": title,
         "voice": voice,
+        "voice_mode": voice_mode,
         "chapter_count": sum(1 for it in timeline["items"] if "chapter" in it),
         "duration_s": mp3_duration_ms(episode_mp3) / 1000,
     }, indent=2))
