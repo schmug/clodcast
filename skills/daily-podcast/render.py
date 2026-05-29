@@ -237,9 +237,9 @@ def render_segments(segments: list[dict], voice: str, workdir: Path,
     model_id = VOICE_DESIGN_MODEL_ID if use_design else MODEL_ID
     log(f"loading {model_id}...")
     t0 = time.time()
-    from mlx_audio.tts.utils import load_model
-    import soundfile as sf
     import numpy as np
+    import soundfile as sf
+    from mlx_audio.tts.utils import load_model
 
     model = load_model(model_id)
     log(f"  model loaded in {time.time() - t0:.1f}s")
@@ -346,7 +346,7 @@ def write_silence(workdir: Path, ms: int) -> Path:
     secs = ms / 1000
     run([
         "ffmpeg", "-y", "-f", "lavfi",
-        "-i", f"anullsrc=r=44100:cl=mono",
+        "-i", "anullsrc=r=44100:cl=mono",
         "-t", f"{secs:.3f}",
         "-q:a", "9", "-acodec", "libmp3lame",
         str(p),

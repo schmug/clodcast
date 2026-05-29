@@ -15,7 +15,7 @@ This prompt is self-contained: the script template, voice rules, and chapter-dur
    - For each feed URL, fetch entries newer than `lookback_hours` hours ago
    - Skip feeds that 404 / timeout after one retry — note them in the run log and move on
    - For each entry, capture: `title`, `link`, `published`, `summary` (or first 1000 chars of content), `feed_name`
-   - Use Python with `feedparser` for parsing; install with `pip install --user feedparser` if missing
+   - Use Python with `feedparser` for parsing (declared in `pyproject.toml`); if the install hasn't been run, fall back to `pip install --user feedparser`
    - Drop items whose `link` is already in `covered.json`
 
 3. **Curate down to `target_item_count` items** (default 10) using these priorities, in order:

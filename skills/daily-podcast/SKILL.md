@@ -167,11 +167,10 @@ For testing without uploading, use `--dry-run` — produces the MP3, cover, and 
 ## Dependencies
 
 - `save-to-spotify` CLI on `PATH`, authenticated (`save-to-spotify auth login`)
-- Python 3.10+ with `mlx-audio`, `soundfile`, `mutagen`, `Pillow` (`pip install --user mlx-audio soundfile mutagen Pillow`)
+- Python 3.10+ with the deps declared in [`pyproject.toml`](../../pyproject.toml) — `pip install -r requirements.txt` (canonical list; covers `mlx-audio`, `soundfile`, `mutagen`, `Pillow`, `numpy`, `feedparser`)
 - `ffmpeg` + `ffprobe`
 - Apple Silicon Mac (Qwen3-TTS via MLX needs Metal)
 - ~4 GB free disk for the VoiceDesign model on first run
-- For the headless prompt: `feedparser` (the prompt installs it if missing)
 
 ## Final report
 

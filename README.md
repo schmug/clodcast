@@ -1,5 +1,7 @@
 # clodcast
 
+[![CI](https://github.com/schmug/clodcast/actions/workflows/ci.yml/badge.svg)](https://github.com/schmug/clodcast/actions/workflows/ci.yml)
+
 A Claude Code skill that turns a list of saved articles (or RSS items) into a fully-produced Spotify episode in one pass:
 
 - Pulls full content for each item
@@ -25,8 +27,8 @@ Ships an executable `render.py` and a self-contained `claude -p` prompt so the w
   - `curl -fsSL https://saveto.spotify.com/install.sh | bash`
   - `save-to-spotify auth login`
 - **Apple Silicon Mac** (Qwen3-TTS via MLX uses Metal). Swap the renderer if you want a different TTS provider.
-- **Python 3.10+** with `mlx-audio`, `soundfile`, `mutagen`, `Pillow`, `feedparser`
-  - `pip install --user mlx-audio soundfile mutagen Pillow feedparser`
+- **Python 3.10+** — runtime deps are declared in [`pyproject.toml`](pyproject.toml) (`mlx-audio`, `soundfile`, `mutagen`, `Pillow`, `numpy`, `feedparser`)
+  - `pip install -r requirements.txt` (or `pip install -e .` for an editable checkout)
 - **`ffmpeg`** and **`ffprobe`**
 - ~4 GB free disk for the first model download (Qwen3-TTS Base 1.7B-8bit)
 
@@ -88,6 +90,37 @@ Other voice options (set in manifest):
 - `"voice_instruct": "..."` — VoiceDesign mode, full natural-language override
 
 **Want to design your own voice from scratch?** See [docs/durable-voices.md](docs/durable-voices.md) — covers why `ref_audio` cloning beats VoiceDesign for long-running shows, the iteration workflow that produced the bundled house voice, common failure modes to avoid (over-enunciation, theatrical drift, noir weight), and how to verify a new clip is stable.
+
+## Development
+
+Install the dev tools (lint + tests). The runtime deps are Apple-Silicon-only, so for tooling alone just install the two tools directly:
+
+```bash
+pip install ruff pytest      # tooling only (no MLX)
+# or, for a full editable env on Apple Silicon:
+pip install -e ".[dev]"
+```
+
+**Lint** — `ruff check` is enforced; `ruff format --check` is advisory (the renderer keeps a hand-tuned layout):
+
+```bash
+ruff check .
+ruff format --check .   # advisory
+```
+
+**Tests:**
+
+```bash
+pytest
+```
+
+**Pre-commit hooks** — run `ruff check --fix` plus whitespace/EOF/YAML/JSON hygiene on staged files (the reference clip in `refs/` is excluded):
+
+```bash
+pip install pre-commit && pre-commit install
+```
+
+After that, `git commit` runs the hooks automatically; `pre-commit run --all-files` checks the whole tree.
 
 ## License
 

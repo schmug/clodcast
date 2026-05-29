@@ -1,0 +1,58 @@
+[project]
+name = "clodcast"
+version = "0.1.0"
+description = "Claude Code plugin that turns saved URLs into a produced Spotify episode (the daily-podcast skill)."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+# Runtime deps for render.py and the headless prompt. MLX is Apple-Silicon-only
+# (see README) and will not install on Linux — which is why CI installs only the
+# dev tools below, never the full project. Bounds are left open; pin only at a
+# known compat boundary (none today).
+dependencies = [
+    "mlx-audio",
+    "soundfile",
+    "mutagen",
+    "Pillow",
+    "numpy",
+    "feedparser",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    # ruff is pinned exactly (not a floor) so lint results are reproducible across
+    # local dev, the pre-commit rev (v0.14.10), and CI — a linter's version decides
+    # pass/fail. Bump all three sites together.
+    "ruff==0.14.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/schmug/clodcast"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# The skill ships as a flat directory and render.py is invoked by path, never
+# imported as a package. `pip install -e .` therefore provides dependencies only
+# (a metadata-only wheel); there are no modules to package.
+py-modules = []
+
+[tool.ruff]
+line-length = 100            # matches the de-facto wrap in render.py
+target-version = "py310"
+# The reference clip's transcript must stay byte-exact (it has to match the audio);
+# never let a formatter or whitespace rule touch the refs.
+extend-exclude = ["skills/daily-podcast/refs"]
+
+[tool.ruff.lint]
+# Small ruleset: pycodestyle (E/W), pyflakes (F), import-sort (I), pyupgrade (UP),
+# bugbear (B). No D (docstrings) — the codebase uses module-level docstrings only.
+select = ["E", "W", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+# render.py is a local module loaded via sys.path (see tests/conftest.py), so keep
+# it in its own first-party import group rather than lumping it with third-party.
+known-first-party = ["render"]

@@ -1,0 +1,25 @@
+# Pre-commit hooks. Set up with:  pip install pre-commit && pre-commit install
+#
+# The reference clip and its transcript must stay byte-exact (the transcript has to
+# match the audio), so refs/ is excluded from every hook below.
+#
+# ruff format is intentionally omitted: the renderer keeps a hand-tuned layout, so
+# only lint (ruff check) is enforced — matching the CI / README "lint-only" stance.
+exclude: '^skills/daily-podcast/refs/'
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.10
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-added-large-files
+        args: [--maxkb=2048]
