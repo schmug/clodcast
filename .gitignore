@@ -1,3 +1,13 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# Python build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Tooling caches
+.ruff_cache/
+.pytest_cache/

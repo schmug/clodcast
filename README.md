@@ -25,8 +25,8 @@ Ships an executable `render.py` and a self-contained `claude -p` prompt so the w
   - `curl -fsSL https://saveto.spotify.com/install.sh | bash`
   - `save-to-spotify auth login`
 - **Apple Silicon Mac** (Qwen3-TTS via MLX uses Metal). Swap the renderer if you want a different TTS provider.
-- **Python 3.10+** with `mlx-audio`, `soundfile`, `mutagen`, `Pillow`, `feedparser`
-  - `pip install --user mlx-audio soundfile mutagen Pillow feedparser`
+- **Python 3.10+** — runtime deps are declared in [`pyproject.toml`](pyproject.toml) (`mlx-audio`, `soundfile`, `mutagen`, `Pillow`, `numpy`, `feedparser`)
+  - `pip install -r requirements.txt` (or `pip install -e .` for an editable checkout)
 - **`ffmpeg`** and **`ffprobe`**
 - ~4 GB free disk for the first model download (Qwen3-TTS Base 1.7B-8bit)
 

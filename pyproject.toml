@@ -1,0 +1,38 @@
+[project]
+name = "clodcast"
+version = "0.1.0"
+description = "Claude Code plugin that turns saved URLs into a produced Spotify episode (the daily-podcast skill)."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+# Runtime deps for render.py and the headless prompt. MLX is Apple-Silicon-only
+# (see README) and will not install on Linux — which is why CI installs only the
+# dev tools below, never the full project. Bounds are left open; pin only at a
+# known compat boundary (none today).
+dependencies = [
+    "mlx-audio",
+    "soundfile",
+    "mutagen",
+    "Pillow",
+    "numpy",
+    "feedparser",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.14",
+]
+
+[project.urls]
+Homepage = "https://github.com/schmug/clodcast"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# The skill ships as a flat directory and render.py is invoked by path, never
+# imported as a package. `pip install -e .` therefore provides dependencies only
+# (a metadata-only wheel); there are no modules to package.
+py-modules = []

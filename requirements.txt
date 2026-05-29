@@ -1,0 +1,9 @@
+# Runtime dependencies. Canonical source is pyproject.toml [project.dependencies];
+# this file is the `pip install -r` convenience path. Apple Silicon only (mlx-audio
+# needs Metal). Dev tools (ruff, pytest) live in the pyproject `dev` extra.
+mlx-audio
+soundfile
+mutagen
+Pillow
+numpy
+feedparser
