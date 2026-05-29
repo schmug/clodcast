@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import html
 import json
 import os
 import random
@@ -505,14 +506,19 @@ def build_timeline_and_description(segments: list[dict], seg_paths: list[Path],
     if last_ch >= final_ms:
         die(f"last chapter at {last_ch}ms >= episode duration {final_ms}ms")
 
-    # Description
+    # Description. title/url come from untrusted feed metadata, so escape them — a
+    # stray quote/&/< would otherwise corrupt the markup (a "'" closes the href).
+    # summary is HTML-by-contract (the user authored it), so it passes through raw.
+    # The timeline JSON above carries the raw strings; escaping is description-only.
     parts = [f"<p>{summary}</p>"]
     for ms, title, url in chapters:
         ts = f"({ms // 60000}:{(ms % 60000) // 1000:02d})"
+        safe_title = html.escape(title, quote=True)
         if url:
-            parts.append(f"<p>{ts} - {title} - <a href='{url}'>source</a></p>")
+            safe_url = html.escape(url, quote=True)
+            parts.append(f'<p>{ts} - {safe_title} - <a href="{safe_url}">source</a></p>')
         else:
-            parts.append(f"<p>{ts} - {title}</p>")
+            parts.append(f"<p>{ts} - {safe_title}</p>")
     description = "".join(parts)
 
     return {"items": items}, description

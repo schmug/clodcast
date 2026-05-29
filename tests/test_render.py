@@ -217,6 +217,50 @@ def test_build_timeline_link_companion_bounds(tmp_path, monkeypatch):
     assert 2000 <= link["duration_ms"] <= 6000
 
 
+def test_description_escapes_title_special_chars(tmp_path, monkeypatch):
+    segments = [{"title": 'She said "hi" & left'}]
+    paths = _paths(tmp_path, 1)
+    episode = tmp_path / "episode.mp3"
+    _patch_durations(monkeypatch, {paths[0]: 40_000, episode: 40_000})
+
+    _, description = render.build_timeline_and_description(
+        segments, paths, silences_ms=[0], summary="s", episode_mp3=episode,
+    )
+
+    assert "She said &quot;hi&quot; &amp; left" in description
+    assert 'She said "hi"' not in description
+
+
+def test_description_escapes_url_ampersand_and_quote(tmp_path, monkeypatch):
+    segments = [{"title": "T", "source_url": "https://x.com/p?a=1&b=2'q"}]
+    paths = _paths(tmp_path, 1)
+    episode = tmp_path / "episode.mp3"
+    _patch_durations(monkeypatch, {paths[0]: 40_000, episode: 40_000})
+
+    timeline, description = render.build_timeline_and_description(
+        segments, paths, silences_ms=[0], summary="s", episode_mp3=episode,
+    )
+
+    assert "a=1&amp;b=2" in description       # query-string & is escaped
+    assert "&#x27;" in description            # single quote escaped — can't close the href
+    assert "a=1&b=2'q" not in description     # no raw, href-breaking form survives
+    # The timeline carries the RAW url; escaping is description-only.
+    assert timeline["items"][1]["link"]["url"] == "https://x.com/p?a=1&b=2'q"
+
+
+def test_description_summary_passes_through_unescaped(tmp_path, monkeypatch):
+    segments = [{"title": "T"}]
+    paths = _paths(tmp_path, 1)
+    episode = tmp_path / "episode.mp3"
+    _patch_durations(monkeypatch, {paths[0]: 40_000, episode: 40_000})
+
+    _, description = render.build_timeline_and_description(
+        segments, paths, silences_ms=[0], summary="<b>bold</b> & raw", episode_mp3=episode,
+    )
+
+    assert "<b>bold</b> & raw" in description  # summary is HTML-by-contract
+
+
 def test_build_timeline_fatal_when_last_chapter_starts_after_episode_ends(tmp_path, monkeypatch):
     # Second chapter starts at 10_000ms but episode is only 9_000ms long.
     segments = [{"title": "A"}, {"title": "B"}]
