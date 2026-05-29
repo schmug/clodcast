@@ -114,6 +114,14 @@ ruff format --check .   # advisory
 pytest
 ```
 
+**Pre-commit hooks** — run `ruff check --fix` plus whitespace/EOF/YAML/JSON hygiene on staged files (the reference clip in `refs/` is excluded):
+
+```bash
+pip install pre-commit && pre-commit install
+```
+
+After that, `git commit` runs the hooks automatically; `pre-commit run --all-files` checks the whole tree.
+
 ## License
 
 MIT
