@@ -26,15 +26,18 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      # The runtime deps (mlx-audio) are Apple-Silicon-only and won't install on
-      # Linux, so CI installs only the dev tools. The pytest suite is invariant-only
-      # by design — heavy imports are function-local, so it needs neither MLX,
+      # The heavy runtime deps (mlx-audio) are Apple-Silicon-only and won't install
+      # on Linux, so CI installs only the dev tools. The pytest suite is invariant-only
+      # by design — those heavy imports are function-local, so it needs neither MLX,
       # ffmpeg, nor the save-to-spotify CLI.
+      # boto3 is the exception: it installs cleanly on Linux and the R2 tests
+      # (tests/test_r2.py) import botocore at module top to build/catch ClientError,
+      # so CI pulls it in to run the R2 invariant tests (slug/upsert/schema-conformance).
       # ruff is pinned exactly so CI matches the version validated locally and in
       # .pre-commit-config.yaml — a floating ruff can promote rules and redden CI.
       # Keep this in lockstep with the pre-commit rev and pyproject's `dev` extra.
       - name: Install dev tools
-        run: python -m pip install "ruff==0.14.10" "pytest>=8.0"
+        run: python -m pip install "ruff==0.14.10" "pytest>=8.0" boto3
 
       - name: Ruff lint
         run: ruff check .
