@@ -134,7 +134,9 @@ Spotify rejects timelines where >3 chapters are under 30 seconds. Qwen3 reads ~4
   "host_name": "Cory",
   "opml_files": ["/path/to/feeds.opml"], // optional; used by prompts/daily.md
   "lookback_hours": 24,                  // optional; default 24
-  "target_item_count": 10                // optional; default 10
+  "target_item_count": 10,               // optional; default 10
+  "r2_bucket": "clodcast",               // optional; enables the web feed (see below)
+  "r2_public_base_url": "https://audio.cortech.online"  // optional; public URL for <slug>.mp3
 }
 ```
 
@@ -147,6 +149,41 @@ Spotify rejects timelines where >3 chapters are under 30 seconds. Qwen3 reads ~4
 ```
 
 First run with no `config.json`: ask the user whether to use an existing show (list via `save-to-spotify --json shows`) or create a new one, then persist the choice.
+
+## Publishing to the web (Cloudflare R2)
+
+Optional, additive. When R2 is configured, `render.py` also publishes each finished
+episode to a Cloudflare R2 bucket *after* the Spotify upload reaches `READY`:
+
+- `<bucket>/<slug>.mp3` — the episode audio (publicly fetchable at `r2_public_base_url`)
+- `<bucket>/<slug>.jpg` — the cover (best-effort)
+- `<bucket>/manifest.json` — a newest-first array of episode entries, capped at 200,
+  conforming to cortech.online's `episodeSchema`. [cortech.online](https://github.com/schmug/cortech.online)
+  reads this at build time and renders `/podcast/` plus an iTunes RSS feed at
+  `/podcast/rss.xml`.
+
+This is strictly additive: **Spotify is the canonical artifact.** A missing config
+no-ops with one log line; any publish error warns, still writes `covered.json`, still
+exits 0, and reports `"r2_published": false` in the final JSON line. `--dry-run` skips
+the publish and prints where it *would* have gone (`r2_would_publish`).
+
+**Credentials never go in `config.json`.** Read from env (preferred for cron) or an
+optional `~/.config/daily-podcast/secrets.json` (mode 0600):
+
+```bash
+export R2_ACCESS_KEY_ID=...      # R2 API token access key
+export R2_SECRET_ACCESS_KEY=...  # R2 API token secret
+export R2_ACCOUNT_ID=...         # Cloudflare account ID (the R2 S3 endpoint host)
+# optional: export PAGES_DEPLOY_HOOK_URL=...  # POSTed after publish to rebuild the site
+```
+
+`r2_bucket` / `r2_public_base_url` live in `config.json` (or `R2_BUCKET` /
+`R2_PUBLIC_BASE_URL` env overrides). All five must resolve or the publish no-ops.
+
+> Resume note: the R2 publish runs on a normal fresh run only. The `--workdir`
+> resume path (`_resume`) recovers the Spotify tail without touching `config.json`,
+> so a resumed episode is **not** back-filled to R2 — re-run fresh if you need it on
+> the web feed.
 
 ## Running the pipeline
 

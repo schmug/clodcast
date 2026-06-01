@@ -12,9 +12,11 @@ Consumes a manifest.json that already contains the written segments, then:
   6. Builds timeline.json (chapter per segment + link companion when present)
   7. Builds HTML description (summary + timestamped chapters + source links)
   8. Uploads via save-to-spotify CLI, sets timeline, polls until READY
-  9. Updates ~/.config/daily-podcast/covered.json dedup log
+  9. Optionally publishes the mp3 + a manifest entry to Cloudflare R2 (for the
+     cortech.online web feed) — additive, never blocks the run
+ 10. Updates ~/.config/daily-podcast/covered.json dedup log
 
-Use --dry-run to skip upload/timeline calls (still writes mp3, cover, timeline.json).
+Use --dry-run to skip upload/timeline/R2 calls (still writes mp3, cover, timeline.json).
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -761,6 +764,264 @@ def _resume(workdir: Path, marker: Path, segments: list[dict], title: str) -> in
     return 0
 
 
+# --- r2 publish ------------------------------------------------------------
+#
+# After Spotify (the canonical artifact) confirms READY, also publish the mp3 + a
+# manifest entry to a Cloudflare R2 bucket. cortech.online reads that manifest at
+# build time and renders /podcast/ + an iTunes RSS feed (schmug/cortech.online#131).
+#
+# This is strictly additive: R2 is never allowed to block the dedup-log write or
+# fail the run. A missing config no-ops; any publish error warns and continues.
+# Runs on the fresh path only — the resume path (_resume) stays config-free by
+# design (see the resume test), so a resumed episode is not back-filled to R2.
+
+
+def slugify(title: str, date: str) -> str:
+    """Lowercase kebab slug matching the consumer schema's ^[a-z0-9-]+$. It keys both
+    the R2 object (<slug>.mp3) and the /podcast/<slug>/ permalink, so it must be
+    stable for a given title: re-rendering the same title upserts, never duplicates."""
+    s = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    if not s:
+        s = f"episode-{date}"
+    return s[:80].strip("-")
+
+
+def resolve_pubdate(manifest: dict[str, Any]) -> str:
+    """ISO 8601 publish timestamp. A manifest with an explicit `date` reproduces that
+    date (archive / back-fill re-renders stay stable, mirroring resolve_cover_date);
+    otherwise stamp the wall clock."""
+    raw = manifest.get("date")
+    if raw:
+        return f"{raw}T12:00:00+00:00"
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+def chapters_from_timeline(timeline: dict[str, Any]) -> list[dict[str, Any]]:
+    """Reconstruct the consumer-side chapters[] ({title, start_ms, source_url}) from a
+    rendered timeline. build_timeline_and_description emits each chapter immediately
+    followed by its optional `link` companion, so a link attaches to the most recent
+    chapter — the same strict 1:1 segment<->source invariant the renderer enforces.
+    Reading it back from the timeline means the fresh and resume shapes can never drift."""
+    chapters: list[dict[str, Any]] = []
+    for item in timeline.get("items", []):
+        if "chapter" in item:
+            ch = item["chapter"]
+            chapters.append({
+                "title": ch.get("title", ""),
+                "start_ms": ch.get("start_time_ms", 0),
+                "source_url": None,
+            })
+        elif "link" in item and chapters:
+            chapters[-1]["source_url"] = item["link"].get("url")
+    return chapters
+
+
+def build_manifest_entry(*, slug: str, title: str, description: str, pubdate: str,
+                         mp3_url: str, mp3_bytes: int, duration_s: float,
+                         chapters: list[dict[str, Any]], spotify_uri: str | None = None,
+                         cover_url: str | None = None,
+                         explicit: bool = False) -> dict[str, Any]:
+    """One entry conforming to cortech.online's episodeSchema. Pure — the caller
+    supplies byte size and duration so this stays trivially testable. Optional fields
+    are omitted (not null) when absent to keep the manifest tidy; the schema treats
+    both the same."""
+    entry: dict[str, Any] = {
+        "slug": slug,
+        "title": title,
+        "description": description,
+        "pubDate": pubdate,
+        "mp3_url": mp3_url,
+        "mp3_bytes": int(mp3_bytes),
+        "duration_s": round(duration_s, 3),
+        "chapters": chapters,
+        "explicit": explicit,
+    }
+    if spotify_uri:
+        entry["spotify_uri"] = spotify_uri
+    if cover_url:
+        entry["cover_url"] = cover_url
+    return entry
+
+
+def _parse_pubdate(s: Any) -> dt.datetime:
+    """Best-effort ISO 8601 -> aware datetime for sorting; unparseable sorts oldest."""
+    try:
+        d = dt.datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+    return d if d.tzinfo else d.replace(tzinfo=dt.timezone.utc)
+
+
+def upsert_manifest(entries: list[dict[str, Any]], entry: dict[str, Any],
+                    cap: int = 200) -> list[dict[str, Any]]:
+    """Insert `entry`, replacing any existing entry with the same slug, sort
+    newest-first by pubDate, and cap to the most recent `cap`. Pure; the atomic PUT
+    happens in the caller. Newest-first + cap keeps the consumer's build-time fetch
+    bounded (issue #33)."""
+    slug = entry.get("slug")
+    kept = [e for e in entries if isinstance(e, dict) and e.get("slug") != slug]
+    kept.append(entry)
+    kept.sort(key=lambda e: _parse_pubdate(e.get("pubDate", "")), reverse=True)
+    return kept[:cap]
+
+
+def _load_r2_secrets() -> dict[str, str]:
+    """R2 credentials: env first (simplest for cron), then an optional 0600
+    secrets.json fallback. Credentials never live in config.json (meant to be
+    shareable) or in git."""
+    keys = ("R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_ACCOUNT_ID")
+    out = {k: os.environ[k] for k in keys if os.environ.get(k)}
+    if all(k in out for k in keys):
+        return out
+    secrets_path = CONFIG_DIR / "secrets.json"
+    if secrets_path.exists():
+        try:
+            data = json.loads(secrets_path.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            log(f"[r2] {secrets_path} unreadable ({e}); ignoring")
+            data = {}
+        for k in keys:
+            if k not in out and isinstance(data.get(k), str):
+                out[k] = data[k]
+    return out
+
+
+def load_r2_config(config: dict[str, Any]) -> dict[str, Any] | None:
+    """Resolve the full R2 publish config, or None if anything required is missing
+    (the publish then no-ops). Bucket + public base URL come from config.json, with
+    env overrides; credentials come from env / secrets.json only. Pure-ish: reads
+    env + the secrets file, no network."""
+    secrets = _load_r2_secrets()
+    required = {
+        "account_id": secrets.get("R2_ACCOUNT_ID"),
+        "access_key": secrets.get("R2_ACCESS_KEY_ID"),
+        "secret_key": secrets.get("R2_SECRET_ACCESS_KEY"),
+        "bucket": os.environ.get("R2_BUCKET") or config.get("r2_bucket"),
+        "public_base_url": os.environ.get("R2_PUBLIC_BASE_URL") or config.get("r2_public_base_url"),
+    }
+    if any(not v for v in required.values()):
+        return None
+    return required
+
+
+def r2_client(cfg: dict[str, Any]):
+    """boto3 S3 client pointed at R2's S3-compatible endpoint. Imported lazily so the
+    renderer never hard-requires boto3 unless R2 is actually configured — mirrors the
+    mutagen import inside mp3_duration_ms."""
+    import boto3
+    return boto3.client(
+        "s3",
+        endpoint_url=f"https://{cfg['account_id']}.r2.cloudflarestorage.com",
+        aws_access_key_id=cfg["access_key"],
+        aws_secret_access_key=cfg["secret_key"],
+        region_name="auto",
+    )
+
+
+def _r2_put(client, bucket: str, key: str, body: bytes, content_type: str,
+            cache_control: str | None = None) -> None:
+    kwargs: dict[str, Any] = {
+        "Bucket": bucket, "Key": key, "Body": body, "ContentType": content_type,
+    }
+    if cache_control:
+        kwargs["CacheControl"] = cache_control
+    client.put_object(**kwargs)
+
+
+def _r2_get_manifest(client, bucket: str, key: str = "manifest.json") -> list[dict[str, Any]]:
+    """Current manifest array, or [] when the object doesn't exist yet (first run).
+    A genuinely missing key returns []; any *other* error (auth, network, 5xx)
+    propagates so the caller aborts instead of clobbering history with a one-entry
+    file. Malformed JSON is treated as empty, matching the consumer's tolerance."""
+    from botocore.exceptions import ClientError
+    try:
+        resp = client.get_object(Bucket=bucket, Key=key)
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code", "") in ("NoSuchKey", "404"):
+            return []
+        raise
+    try:
+        data = json.loads(resp["Body"].read())
+    except (json.JSONDecodeError, ValueError) as e:
+        log(f"[r2] existing manifest unparseable, starting fresh: {e}")
+        return []
+    return data if isinstance(data, list) else []
+
+
+def fire_pages_hook(url: str) -> None:
+    """POST the Cloudflare Pages deploy hook so cortech.online rebuilds. Best-effort:
+    a timeout or error is logged, never raised — the episode is already published."""
+    try:
+        req = urllib.request.Request(url, data=b"", method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310 (configured URL)
+            log(f"[r2] pages deploy hook fired: {resp.status}")
+    except Exception as e:
+        log(f"[r2] pages deploy hook failed (non-fatal): {e}")
+
+
+def maybe_publish_r2(config: dict[str, Any], *, episode_mp3: Path, cover: Path | None,
+                     timeline: dict[str, Any], manifest: dict[str, Any],
+                     description: str, episode_uri: str | None) -> bool:
+    """Publish the episode mp3, optional cover, and a manifest entry to R2. Returns
+    True on success, False on skip-or-failure. Never raises: Spotify is the canonical
+    artifact, so a broken R2 must not fail the run or roll back the dedup log."""
+    cfg = load_r2_config(config)
+    if cfg is None:
+        log("[r2] not configured, skipping")
+        return False
+    try:
+        client = r2_client(cfg)
+        date_iso = manifest.get("date") or dt.date.today().isoformat()
+        title = manifest["title"]
+        slug = slugify(title, date_iso)
+        base = cfg["public_base_url"].rstrip("/")
+        immutable = "public, max-age=31536000, immutable"
+
+        # mp3 first: the manifest must never reference an object that isn't up yet.
+        mp3_key = f"{slug}.mp3"
+        _r2_put(client, cfg["bucket"], mp3_key, episode_mp3.read_bytes(),
+                "audio/mpeg", cache_control=immutable)
+        mp3_url = f"{base}/{mp3_key}"
+
+        # Cover is best-effort: a flaky image upload must not sink the episode.
+        cover_url: str | None = None
+        if cover and Path(cover).exists():
+            try:
+                cover_key = f"{slug}.jpg"
+                _r2_put(client, cfg["bucket"], cover_key, Path(cover).read_bytes(),
+                        "image/jpeg", cache_control=immutable)
+                cover_url = f"{base}/{cover_key}"
+            except Exception as e:
+                log(f"[r2] cover upload failed (non-fatal): {e}")
+
+        entry = build_manifest_entry(
+            slug=slug, title=title, description=description,
+            pubdate=resolve_pubdate(manifest), mp3_url=mp3_url,
+            mp3_bytes=episode_mp3.stat().st_size,
+            duration_s=mp3_duration_ms(episode_mp3) / 1000,
+            chapters=chapters_from_timeline(timeline),
+            spotify_uri=episode_uri, cover_url=cover_url,
+        )
+
+        # manifest last + single atomic PUT. Object PUTs replace wholesale (no torn
+        # writes like a local file), so the read-modify-write is safe without a temp
+        # key. no-cache keeps the consumer's build-time fetch from reading a stale CDN
+        # copy right after a deploy-hook rebuild.
+        entries = upsert_manifest(_r2_get_manifest(client, cfg["bucket"]), entry)
+        _r2_put(client, cfg["bucket"], "manifest.json",
+                json.dumps(entries, indent=2).encode(), "application/json",
+                cache_control="no-cache")
+        log(f"[r2] published {mp3_url} (manifest now {len(entries)} entries)")
+
+        hook = os.environ.get("PAGES_DEPLOY_HOOK_URL")
+        if hook:
+            fire_pages_hook(hook)
+        return True
+    except Exception as e:
+        log(f"[r2] publish failed (non-fatal, Spotify episode is live): {e}")
+        return False
+
+
 # --- main ------------------------------------------------------------------
 
 def main() -> int:
@@ -840,6 +1101,16 @@ def main() -> int:
         log(f"  {f.name}: {f.stat().st_size} bytes")
 
     if args.dry_run:
+        # Preview where R2 publish *would* have gone, without uploading anything.
+        r2_cfg = load_r2_config(config)
+        if r2_cfg:
+            slug = slugify(title, manifest.get("date") or dt.date.today().isoformat())
+            r2_would_publish = f"{r2_cfg['public_base_url'].rstrip('/')}/{slug}.mp3"
+            log(f"[r2] dry-run: would publish {r2_would_publish} + manifest entry "
+                f"to bucket {r2_cfg['bucket']}")
+        else:
+            r2_would_publish = None
+            log("[r2] dry-run: not configured, would skip")
         print(json.dumps({
             "status": "dry-run",
             "workdir": str(workdir),
@@ -850,6 +1121,7 @@ def main() -> int:
             "voice_mode": voice_mode,
             "chapter_count": sum(1 for it in timeline["items"] if "chapter" in it),
             "duration_s": mp3_duration_ms(episode_mp3) / 1000,
+            "r2_would_publish": r2_would_publish,
         }, indent=2))
         return 0
 
@@ -869,7 +1141,14 @@ def main() -> int:
     log("timeline set; polling for READY...")
     poll_ready(episode_id)
 
-    # 7: dedup log update (only after READY)
+    # 7: R2 publish — additive, after READY. Never blocks the dedup write below or
+    # fails the run; a False result just surfaces in the final JSON line.
+    r2_published = maybe_publish_r2(
+        config, episode_mp3=episode_mp3, cover=cover, timeline=timeline,
+        manifest=manifest, description=description, episode_uri=episode_uri,
+    )
+
+    # 8: dedup log update (only after READY, regardless of R2 outcome)
     _save_dedup(segments, episode_uri)
 
     print(json.dumps({
@@ -880,6 +1159,7 @@ def main() -> int:
         "voice_mode": voice_mode,
         "chapter_count": sum(1 for it in timeline["items"] if "chapter" in it),
         "duration_s": mp3_duration_ms(episode_mp3) / 1000,
+        "r2_published": r2_published,
         "resumed": False,
     }, indent=2))
     return 0

@@ -16,6 +16,10 @@ dependencies = [
     "Pillow",
     "numpy",
     "feedparser",
+    # Optional at runtime: only imported when R2 publishing is configured (the
+    # cortech.online web feed). Lazy-imported in render.py, so a host that never
+    # sets R2 env vars doesn't need it installed.
+    "boto3",
 ]
 
 [project.optional-dependencies]
