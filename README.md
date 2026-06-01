@@ -52,6 +52,36 @@ EOF
 
 Get a `show_id` by running `save-to-spotify --json shows` (creates a default show if you don't have one) and copying the URI.
 
+### Optional: publish to a web feed (Cloudflare R2)
+
+Beyond Spotify, each finished episode can also be published to a Cloudflare R2 bucket,
+which [cortech.online](https://github.com/schmug/cortech.online) turns into a `/podcast/`
+page and an iTunes RSS feed at `/podcast/rss.xml`. This is additive — if it's not
+configured, runs behave exactly as before.
+
+Add the bucket + public URL to `config.json`:
+
+```jsonc
+  "r2_bucket": "clodcast",
+  "r2_public_base_url": "https://audio.cortech.online"   // your R2 public domain
+```
+
+Provide credentials via env (never in `config.json` or git) — or a `0600`
+`~/.config/daily-podcast/secrets.json` with the same keys:
+
+```bash
+export R2_ACCESS_KEY_ID=...      # R2 API token
+export R2_SECRET_ACCESS_KEY=...
+export R2_ACCOUNT_ID=...         # Cloudflare account ID
+# optional:
+export PAGES_DEPLOY_HOOK_URL=...  # POSTed after publish so the site rebuilds in ~30s
+```
+
+When all five resolve, a successful run publishes `<slug>.mp3` + a `manifest.json`
+entry and prints `"r2_published": true`. On any R2 error the run still succeeds (the
+Spotify episode is canonical) and prints `"r2_published": false`. See
+[SKILL.md](skills/daily-podcast/SKILL.md#publishing-to-the-web-cloudflare-r2) for details.
+
 ## Usage
 
 ### Interactive (one episode in a conversation)
