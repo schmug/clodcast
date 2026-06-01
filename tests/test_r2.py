@@ -162,7 +162,7 @@ def test_upsert_tolerates_bad_pubdate():
 
 def _clear_r2_env(monkeypatch):
     for k in ("R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_ACCOUNT_ID",
-              "R2_BUCKET", "R2_PUBLIC_BASE_URL"):
+              "R2_BUCKET", "R2_PUBLIC_BASE_URL", "PAGES_DEPLOY_HOOK_URL"):
         monkeypatch.delenv(k, raising=False)
 
 
@@ -345,6 +345,70 @@ def test_publish_fires_pages_hook(monkeypatch, tmp_path):
         **_publish_kwargs(tmp_path),
     )
     assert fired == ["https://hook.test/deploy"]
+
+
+def test_publish_fires_pages_hook_from_secrets_file(monkeypatch, tmp_path):
+    s3 = FakeS3()
+    _configured(monkeypatch, tmp_path, s3)
+    (tmp_path / "secrets.json").write_text(json.dumps({
+        "PAGES_DEPLOY_HOOK_URL": "https://hook.test/from-secrets",
+    }))
+    fired = []
+    monkeypatch.setattr(render, "fire_pages_hook", lambda url: fired.append(url))
+    render.maybe_publish_r2(
+        {"r2_bucket": "b", "r2_public_base_url": "https://a.test"},
+        **_publish_kwargs(tmp_path),
+    )
+    assert fired == ["https://hook.test/from-secrets"]
+
+
+def test_publish_fires_pages_hook_from_config(monkeypatch, tmp_path):
+    s3 = FakeS3()
+    _configured(monkeypatch, tmp_path, s3)
+    fired = []
+    monkeypatch.setattr(render, "fire_pages_hook", lambda url: fired.append(url))
+    render.maybe_publish_r2(
+        {
+            "r2_bucket": "b",
+            "r2_public_base_url": "https://a.test",
+            "pages_deploy_hook_url": "https://hook.test/from-config",
+        },
+        **_publish_kwargs(tmp_path),
+    )
+    assert fired == ["https://hook.test/from-config"]
+
+
+def test_pages_hook_env_wins_over_secrets_and_config(monkeypatch, tmp_path):
+    s3 = FakeS3()
+    _configured(monkeypatch, tmp_path, s3)
+    monkeypatch.setenv("PAGES_DEPLOY_HOOK_URL", "https://hook.test/from-env")
+    (tmp_path / "secrets.json").write_text(json.dumps({
+        "PAGES_DEPLOY_HOOK_URL": "https://hook.test/from-secrets",
+    }))
+    fired = []
+    monkeypatch.setattr(render, "fire_pages_hook", lambda url: fired.append(url))
+    render.maybe_publish_r2(
+        {
+            "r2_bucket": "b",
+            "r2_public_base_url": "https://a.test",
+            "pages_deploy_hook_url": "https://hook.test/from-config",
+        },
+        **_publish_kwargs(tmp_path),
+    )
+    assert fired == ["https://hook.test/from-env"]
+
+
+def test_publish_without_pages_hook_succeeds_without_firing(monkeypatch, tmp_path):
+    s3 = FakeS3()
+    _configured(monkeypatch, tmp_path, s3)
+    fired = []
+    monkeypatch.setattr(render, "fire_pages_hook", lambda url: fired.append(url))
+    ok = render.maybe_publish_r2(
+        {"r2_bucket": "b", "r2_public_base_url": "https://a.test"},
+        **_publish_kwargs(tmp_path),
+    )
+    assert ok is True
+    assert fired == []
 
 
 # --- consumer-schema conformance ------------------------------------------

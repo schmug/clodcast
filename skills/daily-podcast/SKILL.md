@@ -136,7 +136,8 @@ Spotify rejects timelines where >3 chapters are under 30 seconds. Qwen3 reads ~4
   "lookback_hours": 24,                  // optional; default 24
   "target_item_count": 10,               // optional; default 10
   "r2_bucket": "clodcast",               // optional; enables the web feed (see below)
-  "r2_public_base_url": "https://audio.cortech.online"  // optional; public URL for <slug>.mp3
+  "r2_public_base_url": "https://audio.cortech.online", // optional; public URL for <slug>.mp3
+  "pages_deploy_hook_url": "https://..." // optional; prefer secrets.json for this
 }
 ```
 
@@ -179,6 +180,11 @@ export R2_ACCOUNT_ID=...         # Cloudflare account ID (the R2 S3 endpoint hos
 
 `r2_bucket` / `r2_public_base_url` live in `config.json` (or `R2_BUCKET` /
 `R2_PUBLIC_BASE_URL` env overrides). All five must resolve or the publish no-ops.
+
+The optional Pages deploy hook resolves from `PAGES_DEPLOY_HOOK_URL` env, then
+`secrets.json["PAGES_DEPLOY_HOOK_URL"]`, then `config.json["pages_deploy_hook_url"]`.
+Prefer `secrets.json` as the durable home because the hook URL can trigger site
+rebuilds; `config.json` support is a convenience for shareable local setups.
 
 > Resume note: the R2 publish runs on a normal fresh run only. The `--workdir`
 > resume path (`_resume`) recovers the Spotify tail without touching `config.json`,

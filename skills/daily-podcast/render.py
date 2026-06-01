@@ -865,6 +865,24 @@ def upsert_manifest(entries: list[dict[str, Any]], entry: dict[str, Any],
     return kept[:cap]
 
 
+def _load_secrets_json() -> dict[str, Any]:
+    secrets_path = CONFIG_DIR / "secrets.json"
+    if secrets_path.exists():
+        try:
+            data = json.loads(secrets_path.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            log(f"[r2] {secrets_path} unreadable ({e}); ignoring")
+            return {}
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+def _non_empty_str(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
 def _load_r2_secrets() -> dict[str, str]:
     """R2 credentials: env first (simplest for cron), then an optional 0600
     secrets.json fallback. Credentials never live in config.json (meant to be
@@ -873,17 +891,21 @@ def _load_r2_secrets() -> dict[str, str]:
     out = {k: os.environ[k] for k in keys if os.environ.get(k)}
     if all(k in out for k in keys):
         return out
-    secrets_path = CONFIG_DIR / "secrets.json"
-    if secrets_path.exists():
-        try:
-            data = json.loads(secrets_path.read_text())
-        except (json.JSONDecodeError, OSError) as e:
-            log(f"[r2] {secrets_path} unreadable ({e}); ignoring")
-            data = {}
-        for k in keys:
-            if k not in out and isinstance(data.get(k), str):
-                out[k] = data[k]
+    data = _load_secrets_json()
+    for k in keys:
+        if k not in out and isinstance(data.get(k), str):
+            out[k] = data[k]
     return out
+
+
+def resolve_pages_deploy_hook(config: dict[str, Any]) -> str | None:
+    """Cron-friendly deploy hook resolution. The URL can trigger rebuilds, so the
+    durable non-env home is secrets.json; config.json is a shareable convenience."""
+    return (
+        _non_empty_str(os.environ.get("PAGES_DEPLOY_HOOK_URL"))
+        or _non_empty_str(_load_secrets_json().get("PAGES_DEPLOY_HOOK_URL"))
+        or _non_empty_str(config.get("pages_deploy_hook_url"))
+    )
 
 
 def load_r2_config(config: dict[str, Any]) -> dict[str, Any] | None:
@@ -1013,7 +1035,7 @@ def maybe_publish_r2(config: dict[str, Any], *, episode_mp3: Path, cover: Path |
                 cache_control="no-cache")
         log(f"[r2] published {mp3_url} (manifest now {len(entries)} entries)")
 
-        hook = os.environ.get("PAGES_DEPLOY_HOOK_URL")
+        hook = resolve_pages_deploy_hook(config)
         if hook:
             fire_pages_hook(hook)
         return True

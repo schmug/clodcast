@@ -63,11 +63,14 @@ Add the bucket + public URL to `config.json`:
 
 ```jsonc
   "r2_bucket": "clodcast",
-  "r2_public_base_url": "https://audio.cortech.online"   // your R2 public domain
+  "r2_public_base_url": "https://audio.cortech.online",  // your R2 public domain
+  "pages_deploy_hook_url": "https://..."                 // optional; prefer secrets.json
 ```
 
 Provide credentials via env (never in `config.json` or git) — or a `0600`
-`~/.config/daily-podcast/secrets.json` with the same keys:
+`~/.config/daily-podcast/secrets.json` with the same keys. The optional Pages
+deploy hook URL resolves env first, then `secrets.json`, then `config.json`;
+prefer `secrets.json` because the URL can trigger rebuilds.
 
 ```bash
 export R2_ACCESS_KEY_ID=...      # R2 API token
@@ -76,6 +79,9 @@ export R2_ACCOUNT_ID=...         # Cloudflare account ID
 # optional:
 export PAGES_DEPLOY_HOOK_URL=...  # POSTed after publish so the site rebuilds in ~30s
 ```
+
+Equivalent `secrets.json` keys are uppercase (`PAGES_DEPLOY_HOOK_URL`), while the
+shareable `config.json` key is lowercase (`pages_deploy_hook_url`).
 
 When all five resolve, a successful run publishes `<slug>.mp3` + a `manifest.json`
 entry and prints `"r2_published": true`. On any R2 error the run still succeeds (the
