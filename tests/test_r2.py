@@ -206,6 +206,84 @@ def test_load_r2_config_secrets_file_fallback(monkeypatch, tmp_path):
     assert cfg["access_key"] == "ak" and cfg["account_id"] == "acct"
 
 
+# --- resolve_pages_hook_url (issue #42) ------------------------------------
+#
+# The deploy-hook URL must resolve the same cron-friendly way the R2 credentials
+# do — env first, then secrets.json, then config.json — so the scheduled
+# (launchd/cron) run, which never inherits the interactive shell env, can still
+# rebuild cortech.online after publishing to R2.
+
+
+def test_resolve_hook_none_when_all_unset(monkeypatch, tmp_path):
+    monkeypatch.delenv("PAGES_DEPLOY_HOOK_URL", raising=False)
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)  # no secrets.json here
+    assert render.resolve_pages_hook_url({}) is None
+
+
+def test_resolve_hook_from_env(monkeypatch, tmp_path):
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setenv("PAGES_DEPLOY_HOOK_URL", "https://hook.test/env")
+    assert render.resolve_pages_hook_url({}) == "https://hook.test/env"
+
+
+def test_resolve_hook_from_secrets(monkeypatch, tmp_path):
+    monkeypatch.delenv("PAGES_DEPLOY_HOOK_URL", raising=False)
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    (tmp_path / "secrets.json").write_text(json.dumps(
+        {"PAGES_DEPLOY_HOOK_URL": "https://hook.test/secrets"}))
+    assert render.resolve_pages_hook_url({}) == "https://hook.test/secrets"
+
+
+def test_resolve_hook_from_config(monkeypatch, tmp_path):
+    monkeypatch.delenv("PAGES_DEPLOY_HOOK_URL", raising=False)
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)  # no secrets.json here
+    assert render.resolve_pages_hook_url(
+        {"pages_deploy_hook_url": "https://hook.test/config"}
+    ) == "https://hook.test/config"
+
+
+def test_resolve_hook_env_wins_over_secrets_and_config(monkeypatch, tmp_path):
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    (tmp_path / "secrets.json").write_text(json.dumps(
+        {"PAGES_DEPLOY_HOOK_URL": "https://hook.test/secrets"}))
+    monkeypatch.setenv("PAGES_DEPLOY_HOOK_URL", "https://hook.test/env")
+    assert render.resolve_pages_hook_url(
+        {"pages_deploy_hook_url": "https://hook.test/config"}
+    ) == "https://hook.test/env"
+
+
+def test_resolve_hook_secrets_wins_over_config(monkeypatch, tmp_path):
+    """The discriminating tier 'env wins' doesn't exercise: env unset, BOTH files
+    present -> the 0600 secrets.json shadows the shareable config.json."""
+    monkeypatch.delenv("PAGES_DEPLOY_HOOK_URL", raising=False)
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    (tmp_path / "secrets.json").write_text(json.dumps(
+        {"PAGES_DEPLOY_HOOK_URL": "https://hook.test/secrets"}))
+    assert render.resolve_pages_hook_url(
+        {"pages_deploy_hook_url": "https://hook.test/config"}
+    ) == "https://hook.test/secrets"
+
+
+def test_resolve_hook_empty_string_falls_through(monkeypatch, tmp_path):
+    """Empty string is 'unset' at every tier — first *non-empty* wins."""
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setenv("PAGES_DEPLOY_HOOK_URL", "")
+    (tmp_path / "secrets.json").write_text(json.dumps({"PAGES_DEPLOY_HOOK_URL": ""}))
+    assert render.resolve_pages_hook_url({"pages_deploy_hook_url": ""}) is None
+
+
+def test_resolve_hook_unreadable_secrets_warns_and_falls_through(monkeypatch, tmp_path, capsys):
+    """A malformed secrets.json must not raise — warn-and-continue, then fall
+    through to config.json (best-effort contract preserved)."""
+    monkeypatch.delenv("PAGES_DEPLOY_HOOK_URL", raising=False)
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    (tmp_path / "secrets.json").write_text("{not json")
+    assert render.resolve_pages_hook_url(
+        {"pages_deploy_hook_url": "https://hook.test/config"}
+    ) == "https://hook.test/config"
+    assert "unreadable" in capsys.readouterr().err
+
+
 # --- _r2_get_manifest ------------------------------------------------------
 
 
@@ -345,6 +423,53 @@ def test_publish_fires_pages_hook(monkeypatch, tmp_path):
         **_publish_kwargs(tmp_path),
     )
     assert fired == ["https://hook.test/deploy"]
+
+
+def test_publish_fires_pages_hook_from_secrets(monkeypatch, tmp_path):
+    """The cron-friendly home: a scheduled run has no env var, but the hook in
+    secrets.json still fires after a successful publish (issue #42)."""
+    s3 = FakeS3()
+    _configured(monkeypatch, tmp_path, s3)  # clears the env var; CONFIG_DIR -> tmp_path
+    (tmp_path / "secrets.json").write_text(json.dumps({
+        "PAGES_DEPLOY_HOOK_URL": "https://hook.test/from-secrets",
+    }))
+    fired = []
+    monkeypatch.setattr(render, "fire_pages_hook", lambda url: fired.append(url))
+    render.maybe_publish_r2(
+        {"r2_bucket": "b", "r2_public_base_url": "https://a.test"},
+        **_publish_kwargs(tmp_path),
+    )
+    assert fired == ["https://hook.test/from-secrets"]
+
+
+def test_publish_fires_pages_hook_from_config(monkeypatch, tmp_path):
+    """The convenience home: config.json's pages_deploy_hook_url fires when env
+    and secrets.json are both absent."""
+    s3 = FakeS3()
+    _configured(monkeypatch, tmp_path, s3)  # no secrets.json written
+    fired = []
+    monkeypatch.setattr(render, "fire_pages_hook", lambda url: fired.append(url))
+    render.maybe_publish_r2(
+        {"r2_bucket": "b", "r2_public_base_url": "https://a.test",
+         "pages_deploy_hook_url": "https://hook.test/from-config"},
+        **_publish_kwargs(tmp_path),
+    )
+    assert fired == ["https://hook.test/from-config"]
+
+
+def test_publish_no_hook_when_unset(monkeypatch, tmp_path):
+    """All three sources unset -> no hook fired, publish still succeeds (the
+    original env-only behaviour preserved)."""
+    s3 = FakeS3()
+    _configured(monkeypatch, tmp_path, s3)  # no secrets.json, no env var
+    fired = []
+    monkeypatch.setattr(render, "fire_pages_hook", lambda url: fired.append(url))
+    ok = render.maybe_publish_r2(
+        {"r2_bucket": "b", "r2_public_base_url": "https://a.test"},
+        **_publish_kwargs(tmp_path),
+    )
+    assert ok is True
+    assert fired == []
 
 
 # --- consumer-schema conformance ------------------------------------------

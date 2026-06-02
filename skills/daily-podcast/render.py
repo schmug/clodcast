@@ -959,6 +959,35 @@ def fire_pages_hook(url: str) -> None:
         log(f"[r2] pages deploy hook failed (non-fatal): {e}")
 
 
+def resolve_pages_hook_url(config: dict[str, Any]) -> str | None:
+    """Cloudflare Pages deploy-hook URL, first non-empty wins: env →
+    secrets.json → config.json. The scheduled launchd/cron run never inherits the
+    interactive shell env, so the hook's durable home is the 0600 secrets.json
+    (where the R2 credentials already fall back); config.json's
+    `pages_deploy_hook_url` is a shareable-file convenience — looser, since the
+    hook can trigger site rebuilds. None when unset everywhere — the hook then
+    no-ops, the original env-only behaviour. Never raises: the publish tail is
+    best-effort (see fire_pages_hook), so resolution must warn-and-continue too."""
+    env = os.environ.get("PAGES_DEPLOY_HOOK_URL")
+    if env:
+        return env
+    secrets_path = CONFIG_DIR / "secrets.json"
+    if secrets_path.exists():
+        try:
+            data = json.loads(secrets_path.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            log(f"[r2] {secrets_path} unreadable ({e}); ignoring")
+            data = {}
+        if isinstance(data, dict):
+            from_secrets = data.get("PAGES_DEPLOY_HOOK_URL")
+            if isinstance(from_secrets, str) and from_secrets:
+                return from_secrets
+    from_config = config.get("pages_deploy_hook_url")
+    if isinstance(from_config, str) and from_config:
+        return from_config
+    return None
+
+
 def maybe_publish_r2(config: dict[str, Any], *, episode_mp3: Path, cover: Path | None,
                      timeline: dict[str, Any], manifest: dict[str, Any],
                      description: str, episode_uri: str | None) -> bool:
@@ -1013,7 +1042,7 @@ def maybe_publish_r2(config: dict[str, Any], *, episode_mp3: Path, cover: Path |
                 cache_control="no-cache")
         log(f"[r2] published {mp3_url} (manifest now {len(entries)} entries)")
 
-        hook = os.environ.get("PAGES_DEPLOY_HOOK_URL")
+        hook = resolve_pages_hook_url(config)
         if hook:
             fire_pages_hook(hook)
         return True
