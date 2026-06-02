@@ -77,6 +77,15 @@ export R2_ACCOUNT_ID=...         # Cloudflare account ID
 export PAGES_DEPLOY_HOOK_URL=...  # POSTed after publish so the site rebuilds in ~30s
 ```
 
+The optional **Pages deploy hook** is POSTed after a successful publish so the site
+rebuilds. It resolves the same cron-friendly way as the credentials — env first,
+then `secrets.json` (`"PAGES_DEPLOY_HOOK_URL"`), then `config.json`
+(`"pages_deploy_hook_url"`). A **scheduled** run (launchd/cron) never inherits your
+interactive shell env, so put the hook in `secrets.json` (0600) for unattended runs —
+that's also its preferred home because the URL can trigger builds. `config.json`
+support is a convenience for the shareable file; if all three are unset, no hook fires
+(unchanged).
+
 When all five resolve, a successful run publishes `<slug>.mp3` + a `manifest.json`
 entry and prints `"r2_published": true`. On any R2 error the run still succeeds (the
 Spotify episode is canonical) and prints `"r2_published": false`. See

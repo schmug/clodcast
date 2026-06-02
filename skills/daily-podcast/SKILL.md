@@ -180,6 +180,15 @@ export R2_ACCOUNT_ID=...         # Cloudflare account ID (the R2 S3 endpoint hos
 `r2_bucket` / `r2_public_base_url` live in `config.json` (or `R2_BUCKET` /
 `R2_PUBLIC_BASE_URL` env overrides). All five must resolve or the publish no-ops.
 
+**Pages deploy hook (optional, independent of the five above).** After a successful
+publish, `render.py` POSTs `PAGES_DEPLOY_HOOK_URL` to rebuild the site. It resolves
+first-non-empty-wins across three homes: env → `secrets.json`
+(`"PAGES_DEPLOY_HOOK_URL"`) → `config.json` (`"pages_deploy_hook_url"`). A scheduled
+(launchd/cron) run never inherits the interactive shell env, so the durable home is
+`secrets.json` (0600) — also preferred because the URL can trigger builds;
+`config.json` is the shareable-file convenience. Unset everywhere → no hook fired
+(the pre-existing behaviour). `--dry-run` never fires it.
+
 > Resume note: the R2 publish runs on a normal fresh run only. The `--workdir`
 > resume path (`_resume`) recovers the Spotify tail without touching `config.json`,
 > so a resumed episode is **not** back-filled to R2 — re-run fresh if you need it on
