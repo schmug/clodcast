@@ -256,6 +256,7 @@ RUN_LOG_FIELDS: tuple[str, ...] = (
     "git_sha",  # of render.py (mtime fallback when not a git checkout)
     "loudnorm",  # {input_i, output_i, output_tp, output_lra} or null (#21)
     "pruned_workdirs",  # {count, freed_bytes} when --prune-workdirs ran, else null (#21)
+    "r2_status",  # "published" | "skipped" | "failed" or null pre-publish (#48)
     "resumed",
 )
 
@@ -1255,14 +1256,23 @@ def _resume(
     marker: Path,
     segments: list[dict],
     title: str,
+    manifest: dict[str, Any],
     record: dict[str, Any] | None = None,
 ) -> int:
     """
     Resume a run whose upload already succeeded (uploaded.json present). Skip TTS,
     cover, and upload; reuse the workdir artifacts and re-run only the idempotent
-    tail: set_timeline -> poll_ready -> dedup. This recovers the common failure —
-    a poll_ready timeout where the episode is actually live and Spotify was just
-    slow — without re-uploading a duplicate.
+    tail: set_timeline -> poll_ready -> R2 publish -> dedup. This recovers the common
+    failure — a poll_ready timeout where the episode is actually live and Spotify was
+    just slow — without re-uploading a duplicate.
+
+    R2 back-fill (#40): the resume tail now also publishes to R2, mirroring the fresh
+    path, so an episode that first failed at poll_ready and was later recovered still
+    lands on the web feed. It MUST preserve the resume invariant that `_resume` never
+    calls `load_config` (pinned by test_resume_skips_upload_and_runs_idempotent_tail):
+    R2 config is resolved env-only via `maybe_publish_r2({}, ...)`. The publish is
+    additive + non-fatal exactly as on the fresh path — it cannot block the dedup
+    write below or change the exit code.
 
     `record`, when given, is the shared run-log record (#18) populated as the resume
     succeeds so the JSONL log captures resumed runs identically to fresh ones.
@@ -1290,11 +1300,35 @@ def _resume(
     set_timeline(episode_id, timeline_path)
     log("timeline set; polling for READY...")
     poll_ready(episode_id)
+
+    timeline = json.loads(timeline_path.read_text())
+
+    # R2 back-fill (#40), after READY and before dedup — mirrors the fresh path's
+    # ordering. Env-only config ({}) keeps the resume path's no-load_config invariant.
+    # description.html was written to the workdir on the original fresh run (before the
+    # upload that produced uploaded.json), so it is present whenever a current resume
+    # is valid; an older workdir predating it degrades to a skipped publish rather than
+    # aborting the already-live episode's idempotent tail. additive + non-fatal: this
+    # never blocks the dedup write below or changes the exit code.
+    desc_path = workdir / "description.html"
+    if desc_path.exists():
+        r2_status = maybe_publish_r2(
+            {},
+            episode_mp3=episode_mp3,
+            cover=cover,
+            timeline=timeline,
+            manifest=manifest,
+            description=desc_path.read_text(),
+            episode_uri=episode_uri,
+        )
+    else:
+        log("[r2] resume: description.html absent in workdir, skipping R2 back-fill")
+        r2_status = R2_SKIPPED
+
     _save_dedup(segments, episode_uri)
     # This episode reached READY+dedup, so any in-flight record for it is now stale.
     _clear_inflight()
 
-    timeline = json.loads(timeline_path.read_text())
     chapter_count = sum(1 for it in timeline.get("items", []) if "chapter" in it)
     duration_s = mp3_duration_ms(episode_mp3) / 1000
     if record is not None:
@@ -1308,6 +1342,7 @@ def _resume(
             duration_s=duration_s,
             segment_count=len(segments),
             workdir=str(workdir),
+            r2_status=r2_status,
             resumed=True,
         )
     print(
@@ -1320,6 +1355,7 @@ def _resume(
                 "voice_mode": data.get("voice_mode"),
                 "chapter_count": chapter_count,
                 "duration_s": duration_s,
+                "r2_status": r2_status,
                 "resumed": True,
             },
             indent=2,
@@ -1336,8 +1372,10 @@ def _resume(
 #
 # This is strictly additive: R2 is never allowed to block the dedup-log write or
 # fail the run. A missing config no-ops; any publish error warns and continues.
-# Runs on the fresh path only — the resume path (_resume) stays config-free by
-# design (see the resume test), so a resumed episode is not back-filled to R2.
+# Runs on BOTH the fresh path and the resume path (#40): each publishes after
+# READY and before the dedup-log write. The resume path stays config-free — it
+# passes an empty config so R2 settings resolve from env / secrets.json only and
+# never call load_config (pinned by test_resume_skips_upload_and_runs_idempotent_tail).
 
 
 def slugify(title: str, date: str) -> str:
@@ -1387,6 +1425,7 @@ def build_manifest_entry(
     slug: str,
     title: str,
     description: str,
+    summary: str,
     pubdate: str,
     mp3_url: str,
     mp3_bytes: int,
@@ -1399,11 +1438,21 @@ def build_manifest_entry(
     """One entry conforming to cortech.online's episodeSchema. Pure — the caller
     supplies byte size and duration so this stays trivially testable. Optional fields
     are omitted (not null) when absent to keep the manifest tidy; the schema treats
-    both the same."""
+    both the same.
+
+    `description` is Spotify-flavored HTML (`<p>summary</p>` + one `<p>(mm:ss) - title
+    - <a>source</a></p>` per chapter); `summary` is the clean lead blurb the user
+    authored, surfaced separately (issue #45) so web/RSS consumers render prose
+    without HTML-stripping the description. `summary` is **HTML-by-contract**, same as
+    build_timeline_and_description treats it (render.py: "summary is HTML-by-contract
+    (the user authored it)") — the consumer should still escape it as untrusted text,
+    not trust it as guaranteed-plain. `description` and `chapters[]` are unchanged by
+    this addition; it is purely additive."""
     entry: dict[str, Any] = {
         "slug": slug,
         "title": title,
         "description": description,
+        "summary": summary,
         "pubDate": pubdate,
         "mp3_url": mp3_url,
         "mp3_bytes": int(mp3_bytes),
@@ -1570,6 +1619,17 @@ def resolve_pages_hook_url(config: dict[str, Any]) -> str | None:
     return None
 
 
+# 3-state R2 publish outcome (#48). The not-configured no-op and a configured-but-
+# failed publish used to both return a bare False, so the caller couldn't tell an
+# intentional skip from a silent web-feed miss. These strings travel through the
+# final JSON line and the unattended SHIPPED stdout (prompts/daily.md) as
+# r2=ok / r2=skipped / r2=FAILED. None of them ever fail the run — Spotify stays
+# canonical — but FAILED is now visible to an operator scanning run output.
+R2_PUBLISHED = "published"
+R2_SKIPPED = "skipped"
+R2_FAILED = "failed"
+
+
 def maybe_publish_r2(
     config: dict[str, Any],
     *,
@@ -1579,14 +1639,17 @@ def maybe_publish_r2(
     manifest: dict[str, Any],
     description: str,
     episode_uri: str | None,
-) -> bool:
-    """Publish the episode mp3, optional cover, and a manifest entry to R2. Returns
-    True on success, False on skip-or-failure. Never raises: Spotify is the canonical
-    artifact, so a broken R2 must not fail the run or roll back the dedup log."""
+) -> str:
+    """Publish the episode mp3, optional cover, and a manifest entry to R2. Returns a
+    3-state result (#48): R2_PUBLISHED on success, R2_SKIPPED when R2 isn't configured
+    (a benign no-op), R2_FAILED when configured-but-the-upload-errored. Never raises:
+    Spotify is the canonical artifact, so a broken R2 must not fail the run or roll
+    back the dedup log — the distinction only surfaces in the run's output so an
+    operator can spot a silent web-feed miss (the failure R2_SKIPPED used to hide)."""
     cfg = load_r2_config(config)
     if cfg is None:
         log("[r2] not configured, skipping")
-        return False
+        return R2_SKIPPED
     try:
         client = r2_client(cfg)
         date_iso = manifest.get("date") or dt.date.today().isoformat()
@@ -1628,6 +1691,9 @@ def maybe_publish_r2(
             slug=slug,
             title=title,
             description=description,
+            # validate_manifest guarantees a non-empty summary on the input manifest,
+            # so this is always present (#45). HTML-by-contract; see build_manifest_entry.
+            summary=manifest["summary"],
             pubdate=resolve_pubdate(manifest),
             mp3_url=mp3_url,
             mp3_bytes=episode_mp3.stat().st_size,
@@ -1655,10 +1721,10 @@ def maybe_publish_r2(
         hook = resolve_pages_hook_url(config)
         if hook:
             fire_pages_hook(hook)
-        return True
+        return R2_PUBLISHED
     except Exception as e:
         log(f"[r2] publish failed (non-fatal, Spotify episode is live): {e}")
-        return False
+        return R2_FAILED
 
 
 # --- workdir retention (#21) -----------------------------------------------
@@ -1921,7 +1987,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
     # (an auto tmpdir can't be resumed) and never for --dry-run (which never uploads).
     if args.workdir is not None and marker.exists() and not args.dry_run:
         log(f"workdir: {workdir}")
-        rc = _resume(workdir, marker, segments, title, record)
+        rc = _resume(workdir, marker, segments, title, manifest, record)
         if rc == 0:
             write_run_log(record)
         return rc
@@ -2061,8 +2127,9 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
     poll_ready(episode_id)
 
     # 7: R2 publish — additive, after READY. Never blocks the dedup write below or
-    # fails the run; a False result just surfaces in the final JSON line.
-    r2_published = maybe_publish_r2(
+    # fails the run; the 3-state result (published/skipped/failed, #48) surfaces in
+    # the final JSON line so a configured-but-failed publish is no longer silent.
+    r2_status = maybe_publish_r2(
         config,
         episode_mp3=episode_mp3,
         cover=cover,
@@ -2085,6 +2152,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
         episode_uri=episode_uri,
         chapter_count=chapter_count,
         duration_s=duration_s,
+        r2_status=r2_status,
         resumed=False,
     )
     write_run_log(record)
@@ -2100,7 +2168,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
                 "chapter_count": chapter_count,
                 "duration_s": duration_s,
                 "loudnorm": loudnorm,
-                "r2_published": r2_published,
+                "r2_status": r2_status,
                 "resumed": False,
             },
             indent=2,

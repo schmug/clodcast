@@ -1218,7 +1218,7 @@ def test_main_recovers_inflight_before_fresh_render(tmp_path, monkeypatch):
     monkeypatch.setattr(render, "upload", lambda *a, **k: "spotify:episode:tue")
     monkeypatch.setattr(render, "set_timeline", lambda *a, **k: None)
     monkeypatch.setattr(render, "poll_ready", lambda *a, **k: None)
-    monkeypatch.setattr(render, "maybe_publish_r2", lambda *a, **k: False)
+    monkeypatch.setattr(render, "maybe_publish_r2", lambda *a, **k: render.R2_SKIPPED)
     monkeypatch.setattr(render, "mp3_duration_ms", lambda p: 60_000)
     monkeypatch.setattr(
         sys,
@@ -1558,7 +1558,7 @@ def _stub_full_render(monkeypatch, tmp_path, *, loudnorm=None):
     monkeypatch.setattr(render, "upload", lambda *a, **k: "spotify:episode:xyz")
     monkeypatch.setattr(render, "set_timeline", lambda *a, **k: None)
     monkeypatch.setattr(render, "poll_ready", lambda *a, **k: None)
-    monkeypatch.setattr(render, "maybe_publish_r2", lambda *a, **k: False)
+    monkeypatch.setattr(render, "maybe_publish_r2", lambda *a, **k: render.R2_SKIPPED)
     monkeypatch.setattr(render, "mp3_duration_ms", lambda p: 60_000)
 
 

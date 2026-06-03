@@ -98,6 +98,7 @@ def test_build_manifest_entry_shape():
         slug="daily-x",
         title="Daily X",
         description="<p>hi</p>",
+        summary="the clean hook",
         pubdate="2026-06-01T12:00:00+00:00",
         mp3_url="https://audio.test/daily-x.mp3",
         mp3_bytes=12345,
@@ -115,11 +116,32 @@ def test_build_manifest_entry_shape():
     assert entry["chapters"][0]["start_ms"] == 0
 
 
+def test_build_manifest_entry_includes_summary():
+    """#45: the entry carries the clean plain-text summary, distinct from the HTML
+    description, and the addition does not perturb description or chapters[]."""
+    entry = render.build_manifest_entry(
+        slug="daily-x",
+        title="Daily X",
+        description="<p>the clean hook</p><p>(0:00) - Intro</p>",
+        summary="the clean hook",
+        pubdate="2026-06-01T12:00:00+00:00",
+        mp3_url="https://audio.test/daily-x.mp3",
+        mp3_bytes=12345,
+        duration_s=123.0,
+        chapters=[{"title": "Intro", "start_ms": 0, "source_url": None}],
+    )
+    assert entry["summary"] == "the clean hook"  # reflects manifest["summary"]
+    # description (HTML) and chapters[] are byte-for-byte the caller's input.
+    assert entry["description"] == "<p>the clean hook</p><p>(0:00) - Intro</p>"
+    assert entry["chapters"] == [{"title": "Intro", "start_ms": 0, "source_url": None}]
+
+
 def test_build_manifest_entry_omits_empty_optionals():
     entry = render.build_manifest_entry(
         slug="s",
         title="t",
         description="d",
+        summary="sum",
         pubdate="2026-06-01T12:00:00+00:00",
         mp3_url="https://a.test/s.mp3",
         mp3_bytes=1,
@@ -366,7 +388,7 @@ def _publish_kwargs(tmp_path):
         "episode_mp3": mp3,
         "cover": cover,
         "timeline": {"items": [{"chapter": {"title": "Intro", "start_time_ms": 0}}]},
-        "manifest": {"title": "Daily X", "date": "2026-06-01"},
+        "manifest": {"title": "Daily X", "date": "2026-06-01", "summary": "the clean hook"},
         "description": "<p>hi</p>",
         "episode_uri": "spotify:episode:abc",
     }
@@ -375,7 +397,8 @@ def _publish_kwargs(tmp_path):
 def test_publish_not_configured(monkeypatch, tmp_path, capsys):
     _clear_r2_env(monkeypatch)
     monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
-    assert render.maybe_publish_r2({}, **_publish_kwargs(tmp_path)) is False
+    # Not configured is a benign no-op, distinct from a real failure (#48).
+    assert render.maybe_publish_r2({}, **_publish_kwargs(tmp_path)) == render.R2_SKIPPED
     assert "not configured" in capsys.readouterr().err
 
 
@@ -384,9 +407,9 @@ def test_publish_happy_path(monkeypatch, tmp_path):
     _configured(monkeypatch, tmp_path, s3)
     cfg_config = {"r2_bucket": "clodcast", "r2_public_base_url": "https://audio.cortech.online/"}
 
-    ok = render.maybe_publish_r2(cfg_config, **_publish_kwargs(tmp_path))
+    status = render.maybe_publish_r2(cfg_config, **_publish_kwargs(tmp_path))
 
-    assert ok is True
+    assert status == render.R2_PUBLISHED
     # mp3 + cover + manifest all uploaded; mp3 before manifest.
     assert "daily-x.mp3" in s3.objects
     assert "daily-x.jpg" in s3.objects
@@ -403,6 +426,11 @@ def test_publish_happy_path(monkeypatch, tmp_path):
     assert e["duration_s"] == 123.0
     assert e["spotify_uri"] == "spotify:episode:abc"
     assert e["pubDate"].startswith("2026-06-01")
+    # #45: the clean plain-text summary travels alongside the HTML description.
+    assert e["summary"] == "the clean hook"
+    # #45: description (HTML) and chapters[] are unchanged by the summary addition.
+    assert e["description"] == "<p>hi</p>"
+    assert e["chapters"] == [{"title": "Intro", "start_ms": 0, "source_url": None}]
 
 
 def test_publish_appends_to_existing_manifest(monkeypatch, tmp_path):
@@ -410,24 +438,28 @@ def test_publish_appends_to_existing_manifest(monkeypatch, tmp_path):
         manifest=[{"slug": "older", "pubDate": "2026-05-01T12:00:00+00:00", "title": "Older"}]
     )
     _configured(monkeypatch, tmp_path, s3)
-    ok = render.maybe_publish_r2(
+    status = render.maybe_publish_r2(
         {"r2_bucket": "b", "r2_public_base_url": "https://a.test"},
         **_publish_kwargs(tmp_path),
     )
-    assert ok is True
+    assert status == render.R2_PUBLISHED
     manifest = json.loads(s3.objects["manifest.json"])
     assert [e["slug"] for e in manifest] == ["daily-x", "older"]
 
 
-def test_publish_mp3_failure_warns_and_returns_false(monkeypatch, tmp_path, capsys):
+def test_publish_mp3_failure_reports_failed_distinct_from_skipped(monkeypatch, tmp_path, capsys):
+    """A configured-but-errored publish surfaces R2_FAILED — distinct from the benign
+    R2_SKIPPED no-op (#48) — so an operator can spot a silent web-feed miss. The run
+    must still not raise (Spotify stays canonical)."""
     s3 = FakeS3()
     s3.fail_suffix = ".mp3"
     _configured(monkeypatch, tmp_path, s3)
-    ok = render.maybe_publish_r2(
+    status = render.maybe_publish_r2(
         {"r2_bucket": "b", "r2_public_base_url": "https://a.test"},
         **_publish_kwargs(tmp_path),
     )
-    assert ok is False
+    assert status == render.R2_FAILED
+    assert status != render.R2_SKIPPED  # the distinction that #48 adds
     assert "manifest.json" not in s3.objects  # never wrote a manifest on failure
     assert "publish failed" in capsys.readouterr().err
 
@@ -436,11 +468,11 @@ def test_publish_cover_failure_is_nonfatal(monkeypatch, tmp_path):
     s3 = FakeS3()
     s3.fail_suffix = ".jpg"
     _configured(monkeypatch, tmp_path, s3)
-    ok = render.maybe_publish_r2(
+    status = render.maybe_publish_r2(
         {"r2_bucket": "b", "r2_public_base_url": "https://a.test"},
         **_publish_kwargs(tmp_path),
     )
-    assert ok is True
+    assert status == render.R2_PUBLISHED
     manifest = json.loads(s3.objects["manifest.json"])
     assert "cover_url" not in manifest[0]  # cover failed -> omitted, episode still published
 
@@ -504,12 +536,147 @@ def test_publish_no_hook_when_unset(monkeypatch, tmp_path):
     _configured(monkeypatch, tmp_path, s3)  # no secrets.json, no env var
     fired = []
     monkeypatch.setattr(render, "fire_pages_hook", lambda url: fired.append(url))
-    ok = render.maybe_publish_r2(
+    status = render.maybe_publish_r2(
         {"r2_bucket": "b", "r2_public_base_url": "https://a.test"},
         **_publish_kwargs(tmp_path),
     )
-    assert ok is True
+    assert status == render.R2_PUBLISHED
     assert fired == []
+
+
+# --- resume-path R2 back-fill (#40) ----------------------------------------
+#
+# The --workdir resume tail (_resume) must also publish to R2, mirroring the fresh
+# path, WITHOUT calling load_config (the resume-config-free invariant pinned by
+# test_resume_skips_upload_and_runs_idempotent_tail). R2 config is resolved env-only
+# (maybe_publish_r2({}, ...)). These tests seed an "uploaded" workdir and drive
+# _resume directly against the FakeS3, with set_timeline/poll_ready stubbed.
+
+
+def _seed_resume_workdir(wd, *, with_description=True):
+    """An uploaded.json workdir as the fresh path leaves it before its failure-prone
+    tail: episode.mp3, cover.jpg, timeline.json, and (current renderer) description.html."""
+    wd.mkdir(parents=True, exist_ok=True)
+    (wd / "uploaded.json").write_text(
+        json.dumps({"episode_uri": "spotify:episode:abc123", "title": "Daily X"})
+    )
+    (wd / "episode.mp3").write_bytes(b"AUDIODATA")
+    (wd / "cover.jpg").write_bytes(b"IMG")
+    (wd / "timeline.json").write_text(
+        json.dumps({"items": [{"chapter": {"title": "Intro", "start_time_ms": 0}}]})
+    )
+    if with_description:
+        (wd / "description.html").write_text("<p>resumed hook</p>")
+
+
+def _stub_resume_tail(monkeypatch):
+    """Stub the Spotify tail + dedup so _resume exercises only the R2 back-fill."""
+    monkeypatch.setattr(render, "set_timeline", lambda *a, **k: None)
+    monkeypatch.setattr(render, "poll_ready", lambda *a, **k: None)
+    monkeypatch.setattr(render, "_save_dedup", lambda *a, **k: None)
+    monkeypatch.setattr(render, "_clear_inflight", lambda *a, **k: None)
+    monkeypatch.setattr(render, "mp3_duration_ms", lambda p: 123_000)
+    # load_config must NEVER run on the resume path (resume-config-free invariant).
+    monkeypatch.setattr(
+        render, "load_config", lambda: pytest.fail("load_config must not run on resume")
+    )
+
+
+def test_resume_publishes_to_r2_when_env_configured(monkeypatch, tmp_path, capsys):
+    """A resumed run with R2 env vars set back-fills the mp3 + manifest entry to R2
+    and reports r2_status=published in the resume JSON — closing the #40 gap where a
+    poll_ready-recovered episode never reached the web feed."""
+    wd = tmp_path / "wd"
+    _seed_resume_workdir(wd)
+    s3 = FakeS3()
+    _configured(monkeypatch, tmp_path, s3)  # sets R2 env, patches r2_client -> s3
+    monkeypatch.setenv("R2_BUCKET", "clodcast")
+    monkeypatch.setenv("R2_PUBLIC_BASE_URL", "https://audio.cortech.online")
+    _stub_resume_tail(monkeypatch)
+
+    manifest = {"title": "Daily X", "date": "2026-06-01", "summary": "the clean hook"}
+    rc = render._resume(
+        wd, wd / "uploaded.json", [{"source_url": "https://x.test/a"}], "Daily X", manifest
+    )
+
+    assert rc == 0
+    assert "daily-x.mp3" in s3.objects
+    assert "manifest.json" in s3.objects
+    e = json.loads(s3.objects["manifest.json"])[0]
+    assert e["spotify_uri"] == "spotify:episode:abc123"
+    assert e["summary"] == "the clean hook"  # #45 field rides the resume path too
+    assert e["description"] == "<p>resumed hook</p>"  # read from workdir description.html
+    out = json.loads(capsys.readouterr().out)
+    assert out["resumed"] is True
+    assert out["r2_status"] == render.R2_PUBLISHED
+
+
+def test_resume_skips_r2_when_unconfigured(monkeypatch, tmp_path, capsys):
+    """Resume with R2 unset behaves exactly as before: no publish, r2_status=skipped,
+    the run still succeeds. (Mirrors the fresh-path benign no-op.)"""
+    wd = tmp_path / "wd"
+    _seed_resume_workdir(wd)
+    _clear_r2_env(monkeypatch)
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)  # no secrets.json here
+    _stub_resume_tail(monkeypatch)
+
+    manifest = {"title": "Daily X", "date": "2026-06-01", "summary": "hook"}
+    rc = render._resume(
+        wd, wd / "uploaded.json", [{"source_url": "https://x.test/a"}], "Daily X", manifest
+    )
+
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["r2_status"] == render.R2_SKIPPED
+
+
+def test_resume_r2_failure_is_nonfatal_and_reports_failed(monkeypatch, tmp_path, capsys):
+    """A configured-but-failed R2 publish on resume must NOT fail the run: the resume
+    still returns 0 and reports r2_status=failed (#48 surfaced through the resume
+    path, #40's non-fatal invariant preserved)."""
+    wd = tmp_path / "wd"
+    _seed_resume_workdir(wd)
+    s3 = FakeS3()
+    s3.fail_suffix = ".mp3"
+    _configured(monkeypatch, tmp_path, s3)
+    monkeypatch.setenv("R2_BUCKET", "clodcast")
+    monkeypatch.setenv("R2_PUBLIC_BASE_URL", "https://audio.cortech.online")
+    dedup_called = []
+    _stub_resume_tail(monkeypatch)
+    monkeypatch.setattr(render, "_save_dedup", lambda *a, **k: dedup_called.append(True))
+
+    manifest = {"title": "Daily X", "date": "2026-06-01", "summary": "hook"}
+    rc = render._resume(
+        wd, wd / "uploaded.json", [{"source_url": "https://x.test/a"}], "Daily X", manifest
+    )
+
+    assert rc == 0  # non-fatal: the run still succeeds
+    assert dedup_called == [True]  # dedup still ran despite the R2 failure
+    assert "manifest.json" not in s3.objects  # no manifest written on failure
+    out = json.loads(capsys.readouterr().out)
+    assert out["r2_status"] == render.R2_FAILED
+
+
+def test_resume_without_description_html_skips_r2(monkeypatch, tmp_path, capsys):
+    """An older workdir predating description.html degrades to a skipped back-fill
+    rather than aborting the already-live episode's idempotent tail."""
+    wd = tmp_path / "wd"
+    _seed_resume_workdir(wd, with_description=False)
+    s3 = FakeS3()
+    _configured(monkeypatch, tmp_path, s3)
+    monkeypatch.setenv("R2_BUCKET", "clodcast")
+    monkeypatch.setenv("R2_PUBLIC_BASE_URL", "https://audio.cortech.online")
+    _stub_resume_tail(monkeypatch)
+
+    manifest = {"title": "Daily X", "date": "2026-06-01", "summary": "hook"}
+    rc = render._resume(
+        wd, wd / "uploaded.json", [{"source_url": "https://x.test/a"}], "Daily X", manifest
+    )
+
+    assert rc == 0
+    assert "manifest.json" not in s3.objects  # nothing published without a description
+    out = json.loads(capsys.readouterr().out)
+    assert out["r2_status"] == render.R2_SKIPPED
 
 
 # --- consumer-schema conformance ------------------------------------------
@@ -526,6 +693,7 @@ def test_manifest_entry_conforms_to_consumer_episode_schema():
         slug=render.slugify("Daily Digest - June 1, 2026", "2026-06-01"),
         title="Daily Digest - June 1, 2026",
         description="<p>hook</p><p>(0:00) - Intro</p>",
+        summary="hook",
         pubdate=render.resolve_pubdate({"date": "2026-06-01"}),
         mp3_url="https://audio.cortech.online/daily-digest-june-1-2026.mp3",
         mp3_bytes=272134,
@@ -553,6 +721,8 @@ def test_manifest_entry_conforms_to_consumer_episode_schema():
     assert re.fullmatch(r"[a-z0-9-]+", entry["slug"])  # slug: z.string().regex(^[a-z0-9-]+$)
     assert isinstance(entry["title"], str)  # title: z.string()
     assert isinstance(entry["description"], str)  # description: z.string()
+    # summary: z.string().optional() on the consumer (#45) — additive, HTML-by-contract.
+    assert isinstance(entry["summary"], str)
     dt.datetime.fromisoformat(entry["pubDate"])  # pubDate: z.coerce.date()
     assert re.match(r"https?://", entry["mp3_url"])  # mp3_url: z.url()
     # mp3_bytes: z.number().int().positive()

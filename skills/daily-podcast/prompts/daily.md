@@ -58,12 +58,13 @@ This prompt is self-contained: the script template, voice rules, and chapter-dur
      --manifest /tmp/daily-podcast-<date>/manifest.json \
      --workdir /tmp/daily-podcast-<date>
    ```
-   If `${CLAUDE_PLUGIN_ROOT}` is somehow unset, exit immediately with `FAILED CLAUDE_PLUGIN_ROOT unset` — do not search the filesystem for `render.py`. `render.py` will print a final JSON line on stdout with `status`, `episode_uri`, `voice`, `voice_mode` (`clone`/`design`/`preset` — the engine actually used), `chapter_count`, `duration_s`, and `resumed` (`true` if it picked up a prior partial run from the workdir). It also updates `covered.json` on success.
+   If `${CLAUDE_PLUGIN_ROOT}` is somehow unset, exit immediately with `FAILED CLAUDE_PLUGIN_ROOT unset` — do not search the filesystem for `render.py`. `render.py` will print a final JSON line on stdout with `status`, `episode_uri`, `voice`, `voice_mode` (`clone`/`design`/`preset` — the engine actually used), `chapter_count`, `duration_s`, `r2_status` (`published`/`skipped`/`failed` — the Cloudflare R2 web-feed outcome; **never** fails the run, even on `failed`), and `resumed` (`true` if it picked up a prior partial run from the workdir). It also updates `covered.json` on success.
 
-9. **Report once and exit.** Single-line stdout:
+9. **Report once and exit.** Single-line stdout, with the R2 web-feed outcome appended as a trailing `r2=` field (map `render.py`'s `r2_status`: `published`→`ok`, `skipped`→`skipped`, `failed`→`FAILED`):
     ```
-    SHIPPED <episode_uri> - <title> - <chapter_count> chapters - <duration_s>s
+    SHIPPED <episode_uri> - <title> - <chapter_count> chapters - <duration_s>s - r2=ok
     ```
+    `r2=ok` means the episode also reached the cortech.online web feed; `r2=skipped` means R2 isn't configured (benign); `r2=FAILED` means the episode is **live on Spotify** but the web-feed publish errored — still a successful run (exit 0, `covered.json` written), but a signal an operator should notice and back-fill. Never turn `r2=FAILED` into a `FAILED <reason>` line — the run did not fail.
     Or on failure:
     ```
     FAILED <reason>
