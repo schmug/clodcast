@@ -1,0 +1,216 @@
+name: Release
+
+# Manually triggered ("cut a release"). The maintainer decides when — there is
+# no auto-release on merge to main (see issue #16's constraints). Given a target
+# version X.Y.Z, this workflow:
+#   1. validates the version is well-formed and strictly greater than the latest
+#      existing tag (and handles the FIRST release — there are no tags yet);
+#   2. bumps `.claude-plugin/plugin.json` and `pyproject.toml` to X.Y.Z;
+#   3. regenerates CHANGELOG.md from conventional commits via git-cliff;
+#   4. creates and pushes the annotated tag vX.Y.Z;
+#   5. cuts a GitHub Release whose notes are the git-cliff section for this tag;
+#   6. opens a PR that lands the CHANGELOG + version bump on main (this repo never
+#      pushes to main directly — the tag/release are immutable, the file changes
+#      land via review).
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, semver X.Y.Z (no leading 'v')"
+        required: true
+        type: string
+      dry_run:
+        description: "Dry run: build changelog + notes, skip tag/release/PR"
+        required: false
+        type: boolean
+        default: false
+
+# Least privilege: the job needs to push a tag and create a Release (contents)
+# and open the CHANGELOG PR (pull-requests). Nothing else.
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history + tags for git-cliff)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate version and ensure it is newer than the latest tag
+        id: validate
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          version="$INPUT_VERSION"
+          # Strip an accidental leading 'v' so "v0.2.0" and "0.2.0" both work.
+          version="${version#v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Version '$version' is not semver X.Y.Z (no pre-release tags supported)."
+            exit 1
+          fi
+          tag="v$version"
+
+          # First-release case: there are zero tags today, so `git describe`
+          # would fail. Treat "no prior tag" as "any valid semver is newer".
+          latest_tag="$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1 || true)"
+          if [ -z "$latest_tag" ]; then
+            echo "No existing tags — this is the first release ($tag)."
+          else
+            latest_version="${latest_tag#v}"
+            # Sort the two versions; the new one must sort strictly after the latest.
+            greatest="$(printf '%s\n%s\n' "$latest_version" "$version" | sort -V | tail -n1)"
+            if [ "$version" = "$latest_version" ]; then
+              echo "::error::Version $version already released (tag $latest_tag exists)."
+              exit 1
+            fi
+            if [ "$greatest" != "$version" ]; then
+              echo "::error::Version $version is not greater than the latest tag $latest_tag."
+              exit 1
+            fi
+            echo "Latest tag is $latest_tag; $tag is newer — OK."
+          fi
+
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::Tag $tag already exists."
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Bump version in plugin.json and pyproject.toml
+        env:
+          NEW_VERSION: ${{ steps.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 - "$NEW_VERSION" <<'PY'
+          import json, pathlib, re, sys
+
+          version = sys.argv[1]
+
+          plugin_path = pathlib.Path(".claude-plugin/plugin.json")
+          data = json.loads(plugin_path.read_text())
+          data["version"] = version
+          # Re-serialize with the file's existing 2-space style + trailing newline.
+          plugin_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+          pyproject = pathlib.Path("pyproject.toml")
+          text = pyproject.read_text()
+          # Replace only the first top-level `version = "..."` (the project's).
+          new_text, n = re.subn(
+              r'(?m)^version\s*=\s*"[^"]*"',
+              f'version = "{version}"',
+              text,
+              count=1,
+          )
+          if n != 1:
+              sys.exit("pyproject.toml: could not find a version line to bump")
+          pyproject.write_text(new_text)
+          print(f"Bumped plugin.json and pyproject.toml to {version}")
+          PY
+
+      # Regenerate the whole changelog through the next tag. We pass the target
+      # tag so the about-to-be-created release is rendered with its real version
+      # and date even though the tag is not pushed yet.
+      - name: Generate CHANGELOG.md
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --tag ${{ steps.validate.outputs.tag }} --output CHANGELOG.md
+
+      # git-cliff emits trailing blank lines; pre-commit's end-of-file-fixer
+      # collapses them to a single newline. Normalize here so the committed
+      # CHANGELOG is byte-identical to what the hooks expect and the release PR
+      # does not fail the EOF check.
+      - name: Normalize CHANGELOG trailing newline
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$(cat CHANGELOG.md)" > CHANGELOG.md
+
+      # The body of the GitHub Release: just this version's section, written to a
+      # file so the create step reads it verbatim (no quoting hazards).
+      - name: Generate release notes for this version
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --tag ${{ steps.validate.outputs.tag }} --unreleased --strip all --output RELEASE_NOTES.md
+
+      - name: Dry run summary
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Dry run for ${{ steps.validate.outputs.tag }}"
+            echo
+            echo "No tag, release, or PR was created. Generated release notes:"
+            echo
+            echo '```markdown'
+            cat RELEASE_NOTES.md
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Configure git identity
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      # The tag points at the current main commit. CHANGELOG/version-bump files
+      # land separately via the PR below — the release is immutable, the file
+      # changes go through review (this repo never pushes to main directly).
+      - name: Create and push tag
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        env:
+          TAG: ${{ steps.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub Release
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file RELEASE_NOTES.md \
+            --verify-tag
+
+      # Land the regenerated CHANGELOG + version bump on main via PR (never a
+      # direct push). RELEASE_NOTES.md is a transient artifact — drop it.
+      - name: Open CHANGELOG + version-bump PR
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.validate.outputs.version }}
+          TAG: ${{ steps.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          rm -f RELEASE_NOTES.md
+          branch="release/$TAG"
+          git checkout -b "$branch"
+          git add CHANGELOG.md .claude-plugin/plugin.json pyproject.toml
+          git commit -m "chore(release): $TAG — changelog + version bump"
+          git push origin "$branch"
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "chore(release): $TAG" \
+            --body "Automated release follow-up for **$TAG**.
+
+          - Regenerated \`CHANGELOG.md\` via git-cliff
+          - Bumped \`.claude-plugin/plugin.json\` and \`pyproject.toml\` to \`$VERSION\`
+
+          The tag \`$TAG\` and its GitHub Release are already published; this PR lands the file changes on main."

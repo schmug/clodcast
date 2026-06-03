@@ -21,6 +21,14 @@ Ships an executable `render.py` and a self-contained `claude -p` prompt so the w
 /plugin install daily-podcast@clodcast
 ```
 
+### Releases
+
+Versions follow [semver](https://semver.org/) and are tagged `vX.Y.Z`. See the
+[**Releases**](https://github.com/schmug/clodcast/releases) page for tagged
+versions and the [**CHANGELOG**](CHANGELOG.md) for what changed in each. Both are
+generated from conventional commits by [git-cliff](https://git-cliff.org); a
+release is cut manually via the [release workflow](.github/workflows/release.yml).
+
 ## Dependencies
 
 - **`save-to-spotify` CLI** on `PATH`, authenticated
