@@ -150,6 +150,8 @@ Spotify rejects timelines where >3 chapters are under 30 seconds. Qwen3 reads ~4
 }
 ```
 
+`~/.config/daily-podcast/inflight.json` is a transient crash-recovery record (an episode that uploaded but hasn't reached `READY`+dedup yet) — written after `upload()` succeeds and cleared after dedup. It is **not** a second dedup source; `covered.json` stays authoritative. See [Automatic cron recovery](#automatic-cron-recovery-cross-day-workdir-independent) below.
+
 First run with no `config.json`: ask the user whether to use an existing show (list via `save-to-spotify --json shows`) or create a new one, then persist the choice.
 
 ## Publishing to the web (Cloudflare R2)
@@ -230,8 +232,30 @@ When `--workdir` is passed and it contains `uploaded.json`, `render.py` skips TT
 - Resume only triggers with an **explicit** `--workdir`; an auto tmpdir cannot be resumed. Keep the workdir around if you want this safety net.
 - If the workdir has `uploaded.json` but is missing an artifact, `render.py` fails fast (`workdir has uploaded.json but missing …`) rather than re-uploading.
 - `--dry-run` never resumes (it never uploads).
-- This is a **manual** recovery path keyed on the workdir. The unattended cron uses a per-date workdir, so a timeout on one day is **not** auto-recovered on the next day's run — that's the separate "in-flight episode log" work, out of scope here.
 - After a *fully successful* run, `uploaded.json` stays in the workdir, so re-running the same `--workdir` resumes the existing episode (an idempotent no-op) instead of rendering fresh. To force a fresh render (e.g. you fixed the script and want to re-ship), delete the workdir or its `uploaded.json`.
+
+#### Per-segment TTS cache (resume cheaply mid-render)
+
+TTS dominates a run's cost, so a crash on segment 9 of 12 shouldn't re-render segments 1–8. Each rendered `seg_NN.mp3` carries a `seg_NN.json` sidecar with a content-hash **cache key** over the segment's spoken text **and** the resolved voice settings (mode + voice/instruct + a hash of the `ref_audio` bytes + `ref_text`).
+
+- Re-running with the **same `--workdir`** and same manifest reuses every segment whose key still matches and re-renders only the rest. If *every* segment is cached, the ~15 s model load is skipped entirely.
+- Editing one segment's `text` invalidates only that segment; the others are reused.
+- Changing the `voice` (e.g. `house` → `Ryan`), the `voice_instruct`, or the bytes of `refs/house_voice.wav` invalidates the affected entries (the key changes).
+- The cache is **workdir-scoped** — a fresh `--workdir` always renders fresh, so the cache can't leak across unrelated episodes. A stderr line (`cache: N/M segment(s) reusable …` / `cache hit …`) reports what was reused.
+
+#### Automatic cron recovery (cross-day, workdir-independent)
+
+The workdir `uploaded.json` resume above is **manual** — it only helps if you re-run with that exact `--workdir`. The unattended cron uses a **per-date** workdir (`/tmp/daily-podcast-<date>`), so a `poll_ready` timeout on Monday that dies before dedup would otherwise let Tuesday's run (different workdir, no marker) re-curate Monday's still-undeduped URLs and ship a **duplicate**.
+
+To close that gap, the moment `upload()` succeeds `render.py` also writes a long-lived **in-flight log** at `~/.config/daily-podcast/inflight.json` (episode URI, title, workdir, the segment `source_url`s). It records the upload independently of the workdir and is cleared only after dedup completes.
+
+On startup — before curating/rendering a new episode, on any non-`--dry-run` run — `render.py` reconciles a leftover in-flight log:
+
+1. If the prior workdir + `timeline.json` still exist, it re-runs `timeline set` + poll-until-`READY` for that episode.
+2. It then marks the recorded `source_url`s in `covered.json` (so curation here can't re-select them).
+3. Only then does it clear `inflight.json`.
+
+A crash *during* recovery leaves `inflight.json` intact for the next attempt, and `covered.json` stays the single source of truth — the in-flight log never gates dedup, it only ever *drives* a write into `covered.json`. `--dry-run` skips recovery entirely (it never uploads, calls Spotify, or mutates `covered.json`).
 
 ## Dependencies
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import html
 import json
 import os
@@ -86,6 +87,13 @@ COVERED_RETENTION_DAYS = 180
 CONFIG_DIR = Path.home() / ".config" / "daily-podcast"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 COVERED_PATH = CONFIG_DIR / "covered.json"
+# Long-lived, workdir-independent record of an episode that uploaded but hasn't
+# reached READY+dedup yet. Unlike the per-workdir uploaded.json marker, this lives
+# in the config dir so a *different* next-day cron run (per-date workdir) can still
+# recover it — closing the cross-day duplicate gap (#37). Written right after
+# upload() succeeds, cleared only after dedup. covered.json stays the sole dedup
+# source of truth: the in-flight log only ever *drives* a write into it.
+INFLIGHT_PATH = CONFIG_DIR / "inflight.json"
 VOICES_DIR = CONFIG_DIR / "voices"
 USER_HOUSE_AUDIO = VOICES_DIR / "house.wav"
 USER_HOUSE_TEXT = VOICES_DIR / "house.txt"
@@ -384,6 +392,69 @@ def _prep_segment_text(text: str, raw_text: bool) -> str:
     return text if raw_text else normalize_for_tts(text)
 
 
+# --- per-segment TTS cache (#9) --------------------------------------------
+#
+# TTS is the dominant cost of a run (minutes), so a crash on segment 9 of 12
+# shouldn't re-pay segments 1-8. Each rendered seg_NN.mp3 gets a seg_NN.json
+# sidecar recording the cache key; a re-run with the SAME --workdir reuses any
+# segment whose key still matches and re-renders only the rest. The cache is
+# workdir-scoped on purpose (a fresh --workdir = a fresh render), so it can't
+# leak across unrelated episodes.
+
+
+def _ref_audio_fingerprint(ref_audio: str | None) -> str | None:
+    """SHA256 of the ref-audio file's bytes, or None when not cloning. Folding the
+    bytes (not just the path) into the cache key means re-recording the house clip
+    invalidates every clone-mode segment even though the path is unchanged."""
+    if not ref_audio:
+        return None
+    return hashlib.sha256(Path(ref_audio).read_bytes()).hexdigest()
+
+
+def _segment_cache_key(
+    text: str,
+    voice_mode: str,
+    voice: str,
+    ref_fingerprint: str | None,
+    ref_text: str | None,
+) -> str:
+    """Content hash identifying one rendered segment. Any input that changes the
+    audio the model would produce changes the key:
+      - `text`        : the (already prepped/normalized) spoken text
+      - `voice_mode`  : clone / design / preset — the engine actually used
+      - `voice`       : preset name, or the VoiceDesign instruct in design mode
+      - `ref_fingerprint` : hash of the ref-audio bytes (clone mode only)
+      - `ref_text`    : the clone transcript (clone mode only)
+    Serialized through json so field boundaries can't collide (e.g. "a"+"bc" vs
+    "ab"+"c"). Pure; no I/O."""
+    payload = json.dumps(
+        {
+            "text": text,
+            "mode": voice_mode,
+            "voice": voice,
+            "ref_fingerprint": ref_fingerprint,
+            "ref_text": ref_text,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _cache_hit(workdir: Path, i: int, key: str) -> bool:
+    """A segment is reusable iff its mp3 exists AND its sidecar records this exact
+    key. A bare mp3 with no/mismatched sidecar (older run, partial write, changed
+    script) is NOT trusted — content identity is then unknown, so we re-render."""
+    mp3 = workdir / f"seg_{i:02d}.mp3"
+    sidecar = workdir / f"seg_{i:02d}.json"
+    if not mp3.exists() or not sidecar.exists():
+        return False
+    try:
+        meta = json.loads(sidecar.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False
+    return isinstance(meta, dict) and meta.get("key") == key
+
+
 # --- audio rendering -------------------------------------------------------
 
 
@@ -405,30 +476,64 @@ def render_segments(
     - Otherwise: Base model with `voice` as a preset name (Ryan/Aiden/Ethan/Chelsie)
 
     `ref_audio` takes precedence if both are set.
+
+    Per-segment cache (#9): each seg_NN.mp3 carries a seg_NN.json sidecar with a
+    content-hash key (text + voice settings). On a re-run with the same --workdir,
+    any segment whose key matches is reused as-is and only the rest are rendered;
+    if *every* segment is cached the model load is skipped entirely. The mono-44.1k
+    invariant and strict 1:1 segment<->source mapping are unchanged — a cache hit
+    returns the byte-identical mp3 a fresh render would have produced.
     """
     use_clone = bool(ref_audio)
     use_design = bool(voice_instruct) and not use_clone
-    model_id = VOICE_DESIGN_MODEL_ID if use_design else MODEL_ID
-    log(f"loading {model_id}...")
-    t0 = time.time()
-    import numpy as np
-    import soundfile as sf
-    from mlx_audio.tts.utils import load_model
+    mode = "clone" if use_clone else ("design" if use_design else "preset")
+    # In design mode the instruct is what shapes the voice, so it must be part of
+    # the key; otherwise the voice label is. Resolve the ref-audio fingerprint once.
+    key_voice = voice_instruct if use_design else voice
+    ref_fingerprint = _ref_audio_fingerprint(ref_audio)
 
-    model = load_model(model_id)
-    log(f"  model loaded in {time.time() - t0:.1f}s")
-
-    paths: list[Path] = []
+    # Pass 1 (no model needed): prep text + compute keys + classify hit/miss.
+    prepped: list[str] = []
+    keys: list[str] = []
+    cached: list[bool] = []
     for i, seg in enumerate(segments, start=1):
         text = _prep_segment_text(seg["text"], raw_text)
         if not text:
             die(f"segment {i} has empty text")
-        if use_clone:
-            mode = "clone"
-        elif use_design:
-            mode = "design"
-        else:
-            mode = "preset"
+        key = _segment_cache_key(text, mode, key_voice or "", ref_fingerprint, ref_text)
+        prepped.append(text)
+        keys.append(key)
+        cached.append(_cache_hit(workdir, i, key))
+
+    n_hits = sum(cached)
+    if n_hits:
+        log(f"cache: {n_hits}/{len(segments)} segment(s) reusable from {workdir}")
+
+    # Load the model only if at least one segment is a miss. A fully-cached re-run
+    # pays nothing for the ~15s model load (acceptance criterion in #9).
+    model = None
+    if n_hits < len(segments):
+        model_id = VOICE_DESIGN_MODEL_ID if use_design else MODEL_ID
+        log(f"loading {model_id}...")
+        t0 = time.time()
+        import numpy as np
+        import soundfile as sf
+        from mlx_audio.tts.utils import load_model
+
+        model = load_model(model_id)
+        log(f"  model loaded in {time.time() - t0:.1f}s")
+    else:
+        log("cache: all segments cached, skipping model load")
+
+    paths: list[Path] = []
+    for idx in range(len(segments)):
+        i = idx + 1
+        text = prepped[idx]
+        mp3 = workdir / f"seg_{i:02d}.mp3"
+        if cached[idx]:
+            log(f"[{i}/{len(segments)}] cache hit (voice={voice}, mode={mode}), reusing {mp3.name}")
+            paths.append(mp3)
+            continue
         log(f"[{i}/{len(segments)}] rendering ({len(text)} chars, voice={voice}, mode={mode})...")
         t0 = time.time()
         if use_clone:
@@ -458,7 +563,6 @@ def render_segments(
             )
         audio = np.concatenate([np.array(r.audio) for r in results])
         wav = workdir / f"seg_{i:02d}.wav"
-        mp3 = workdir / f"seg_{i:02d}.mp3"
         sf.write(wav, audio, SAMPLE_RATE)
         # convert to mp3 at 44.1k mono so concat is clean
         run(
@@ -478,6 +582,10 @@ def render_segments(
                 str(mp3),
             ]
         )
+        # Write the sidecar only AFTER the mp3 is on disk, so a crash between the
+        # two never records a cache hit for a half-written segment. _atomic_write_text
+        # ensures the sidecar itself can't be torn either.
+        _atomic_write_text(workdir / f"seg_{i:02d}.json", json.dumps({"key": keys[idx]}))
         dur_s = len(audio) / SAMPLE_RATE
         elapsed = time.time() - t0
         log(f"  -> {dur_s:.2f}s in {elapsed:.1f}s ({dur_s / elapsed:.1f}x rt)")
@@ -883,6 +991,101 @@ def _save_dedup(segments: list[dict], episode_uri: str) -> None:
     save_covered(covered)
 
 
+def _segment_urls(segments: list[dict]) -> list[str]:
+    """Every non-null source_url, in segment order. These are exactly the keys
+    _save_dedup writes, so the in-flight log records the same set it must cover."""
+    return [seg["source_url"] for seg in segments if seg.get("source_url")]
+
+
+def _write_inflight(*, episode_uri: str, title: str, workdir: Path, source_urls: list[str]) -> None:
+    """Record an uploaded-but-not-yet-deduped episode in the workdir-independent
+    in-flight log. Written right after upload() succeeds (the same moment as the
+    workdir uploaded.json marker) and read on the NEXT run — even from a different
+    per-date workdir — so the cron's cross-day duplicate gap is closed (#37). The
+    stored workdir lets recovery re-run the server tail if its artifacts survive;
+    source_urls let recovery mark the URLs covered even if they don't."""
+    _atomic_write_text(
+        INFLIGHT_PATH,
+        json.dumps(
+            {
+                "episode_uri": episode_uri,
+                "title": title,
+                "workdir": str(workdir),
+                "source_urls": source_urls,
+            },
+            indent=2,
+        ),
+    )
+
+
+def _load_inflight() -> dict[str, Any] | None:
+    """The in-flight record, or None when absent/unreadable. A malformed log is
+    treated as None (not fatal) — mirroring load_covered's best-effort contract —
+    rather than wedging every future run on a corrupt file."""
+    if not INFLIGHT_PATH.exists():
+        return None
+    try:
+        data = json.loads(INFLIGHT_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        log(f"warn: {INFLIGHT_PATH} unreadable/malformed, treating as no in-flight episode")
+        return None
+    return data if isinstance(data, dict) and data.get("episode_uri") else None
+
+
+def _clear_inflight() -> None:
+    """Remove the in-flight log once its episode has been deduped. Idempotent: a
+    missing file is a no-op (a crash may have already cleared it)."""
+    try:
+        INFLIGHT_PATH.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _recover_inflight() -> None:
+    """Reconcile a leftover in-flight episode BEFORE the current run renders anything.
+
+    The failure this closes: a prior run's upload() succeeded but the process died
+    before dedup, so its URLs never reached covered.json. With per-date workdirs the
+    next cron run can't see the workdir uploaded.json marker, so it would re-curate
+    and re-ship those same URLs as a duplicate. The in-flight log is workdir-
+    independent, so this run can finish the job.
+
+    Order is load-bearing for the "crash during recovery leaves the log intact"
+    guarantee: re-run the server tail (only if the prior workdir + timeline survive)
+    -> mark URLs covered -> THEN clear the log. dedup is the source of truth; the log
+    is only ever cleared once those URLs are durably in covered.json. covered.json is
+    still only written here AFTER the episode is (or already was) READY."""
+    rec = _load_inflight()
+    if rec is None:
+        return
+    episode_uri = rec["episode_uri"]
+    urls = [u for u in rec.get("source_urls", []) if isinstance(u, str)]
+    log(f"in-flight recovery: found leftover episode {episode_uri} ({len(urls)} url(s))")
+
+    # If the prior workdir + timeline still exist, finish the server tail so a
+    # genuinely pending episode reaches READY. If they're gone (tmp cleared), skip
+    # the tail and just mark covered — the episode is already uploaded, and the only
+    # job left that matters for dedup is keeping curation from re-selecting its URLs.
+    wd = Path(rec["workdir"]) if rec.get("workdir") else None
+    timeline_path = wd / "timeline.json" if wd else None
+    if timeline_path and timeline_path.exists():
+        episode_id = episode_uri.removeprefix("spotify:episode:")
+        log(f"in-flight recovery: re-running timeline set + poll for {episode_uri}")
+        set_timeline(episode_id, timeline_path)
+        poll_ready(episode_id)
+    else:
+        log("in-flight recovery: prior workdir/timeline gone; marking URLs covered only")
+
+    if urls:
+        covered = load_covered()
+        today_iso = dt.date.today().isoformat()
+        for url in urls:
+            covered[url] = {"date": today_iso, "episode_uri": episode_uri}
+        save_covered(covered)
+    _clear_inflight()
+    log("in-flight recovery: complete")
+
+
 def _resume(workdir: Path, marker: Path, segments: list[dict], title: str) -> int:
     """
     Resume a run whose upload already succeeded (uploaded.json present). Skip TTS,
@@ -915,6 +1118,8 @@ def _resume(workdir: Path, marker: Path, segments: list[dict], title: str) -> in
     log("timeline set; polling for READY...")
     poll_ready(episode_id)
     _save_dedup(segments, episode_uri)
+    # This episode reached READY+dedup, so any in-flight record for it is now stale.
+    _clear_inflight()
 
     timeline = json.loads(timeline_path.read_text())
     print(
@@ -1308,6 +1513,14 @@ def main() -> int:
         log(f"workdir: {workdir}")
         return _resume(workdir, marker, segments, title)
 
+    # Cross-day cron recovery (#37): before rendering a NEW episode, reconcile any
+    # leftover in-flight episode (uploaded last run but never deduped). This marks
+    # its URLs covered so curation here can't re-select them — closing the duplicate
+    # gap the per-workdir uploaded.json marker can't reach. Skipped for --dry-run,
+    # which by contract never uploads, calls Spotify, or mutates covered.json.
+    if not args.dry_run:
+        _recover_inflight()
+
     config = load_config()
     show_id = manifest.get("show_id") or config.get("show_id")
     if not show_id:
@@ -1406,6 +1619,16 @@ def main() -> int:
             indent=2,
         ),
     )
+    # Also record the upload in the workdir-INDEPENDENT in-flight log, so if this
+    # process dies before dedup the NEXT run (even a different per-date workdir)
+    # recovers it instead of re-shipping these URLs as a duplicate (#37). Written
+    # after upload() succeeds and the workdir marker, cleared only after dedup.
+    _write_inflight(
+        episode_uri=episode_uri,
+        title=title,
+        workdir=workdir,
+        source_urls=_segment_urls(segments),
+    )
     log(f"uploaded: {episode_uri}")
     set_timeline(episode_id, timeline_path)
     log("timeline set; polling for READY...")
@@ -1425,6 +1648,9 @@ def main() -> int:
 
     # 8: dedup log update (only after READY, regardless of R2 outcome)
     _save_dedup(segments, episode_uri)
+    # URLs are durably covered now, so the in-flight log has done its job — clear it
+    # LAST, after dedup, so a crash anywhere above leaves it for the next run.
+    _clear_inflight()
 
     print(
         json.dumps(
