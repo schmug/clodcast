@@ -11,3 +11,6 @@ dist/
 # Tooling caches
 .ruff_cache/
 .pytest_cache/
+
+# Security scan reports (security-diff-scan / security-scan skills)
+.security-scans/
