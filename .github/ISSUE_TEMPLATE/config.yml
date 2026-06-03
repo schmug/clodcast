@@ -1,0 +1,7 @@
+# Discussions are not enabled on this repo, so point questions at the README
+# instead of a Discussions board. Flip this to a discussions URL if/when they're on.
+blank_issues_enabled: true
+contact_links:
+  - name: Setup & usage questions
+    url: https://github.com/schmug/clodcast#readme
+    about: Read the README for install, config, and usage before filing an issue.
