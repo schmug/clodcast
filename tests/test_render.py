@@ -342,6 +342,92 @@ def test_description_summary_passes_through_unescaped(tmp_path, monkeypatch):
     assert "<b>bold</b> & raw" in description  # summary is HTML-by-contract
 
 
+def test_description_under_cap_is_untruncated(tmp_path, monkeypatch):
+    # A small description stays byte-identical to the pre-cap output: every
+    # chapter block is present and no truncation log fires.
+    segments = [
+        {"title": "First", "source_url": "https://example.com/a"},
+        {"title": "Second", "source_url": "https://example.com/b"},
+    ]
+    paths = _paths(tmp_path, 2)
+    episode = tmp_path / "episode.mp3"
+    durations = {p: 40_000 for p in paths}
+    durations[episode] = 95_000
+    _patch_durations(monkeypatch, durations)
+
+    _, description = render.build_timeline_and_description(
+        segments,
+        paths,
+        silences_ms=[800, 0],
+        summary="hook",
+        episode_mp3=episode,
+    )
+
+    assert len(description) <= render.SPOTIFY_SUMMARY_MAX_CHARS
+    assert description.count("<p>") == 3  # summary + 2 chapters, nothing dropped
+    assert "https://example.com/a" in description
+    assert "https://example.com/b" in description
+
+
+def test_description_over_cap_drops_trailing_blocks(tmp_path, monkeypatch, capsys):
+    # Many fat chapter titles push the HTML over the cap; the tail blocks are
+    # dropped (longest-suffix-first), the summary survives, and the result fits.
+    n = 80
+    fat = "X" * 200  # each chapter <p> is comfortably > the per-entry overhead
+    segments = [{"title": f"{fat}-{i}", "source_url": f"https://example.com/{i}"} for i in range(n)]
+    paths = _paths(tmp_path, n)
+    episode = tmp_path / "episode.mp3"
+    durations = {p: 40_000 for p in paths}
+    durations[episode] = n * 41_000  # last chapter starts well before the end
+    _patch_durations(monkeypatch, durations)
+
+    _, description = render.build_timeline_and_description(
+        segments,
+        paths,
+        silences_ms=[800] * (n - 1) + [0],
+        summary="hook",
+        episode_mp3=episode,
+    )
+
+    assert len(description) <= render.SPOTIFY_SUMMARY_MAX_CHARS
+    # Summary <p> is always preserved; it leads the description.
+    assert description.startswith("<p>hook</p>")
+    # Truncation dropped from the END: the first chapter survives, the last does not.
+    assert "https://example.com/0" in description
+    assert f"https://example.com/{n - 1}" not in description
+    # No mid-tag cut: the markup ends on a closed </p>.
+    assert description.endswith("</p>")
+    err = capsys.readouterr().err
+    assert "dropped" in err and "trailing chapter block" in err
+
+
+def test_description_timeline_unaffected_by_truncation(tmp_path, monkeypatch):
+    # Even when the show-notes summary is trimmed, the timeline keeps EVERY chapter
+    # and link — only the HTML listing shrinks.
+    n = 80
+    fat = "X" * 200
+    segments = [{"title": f"{fat}-{i}", "source_url": f"https://example.com/{i}"} for i in range(n)]
+    paths = _paths(tmp_path, n)
+    episode = tmp_path / "episode.mp3"
+    durations = {p: 40_000 for p in paths}
+    durations[episode] = n * 41_000
+    _patch_durations(monkeypatch, durations)
+
+    timeline, description = render.build_timeline_and_description(
+        segments,
+        paths,
+        silences_ms=[800] * (n - 1) + [0],
+        summary="hook",
+        episode_mp3=episode,
+    )
+
+    chapters = [it["chapter"] for it in timeline["items"] if "chapter" in it]
+    links = [it["link"] for it in timeline["items"] if "link" in it]
+    assert len(chapters) == n  # all audio chapters present despite trimmed notes
+    assert len(links) == n
+    assert len(description) <= render.SPOTIFY_SUMMARY_MAX_CHARS
+
+
 def test_build_timeline_fatal_when_last_chapter_starts_after_episode_ends(tmp_path, monkeypatch):
     # Second chapter starts at 10_000ms but episode is only 9_000ms long.
     segments = [{"title": "A"}, {"title": "B"}]
@@ -426,6 +512,68 @@ def test_save_covered_atomic_keeps_prior_on_crash(tmp_path, monkeypatch):
     assert json.loads(covered.read_text()) == prior
     leftover = [p.name for p in tmp_path.iterdir() if p.name != "covered.json"]
     assert leftover == [], f"temp files left behind: {leftover}"
+
+
+def _iso_days_ago(n: int) -> str:
+    return (render.dt.date.today() - render.dt.timedelta(days=n)).isoformat()
+
+
+def test_save_covered_prunes_only_beyond_retention_window(tmp_path, monkeypatch, capsys):
+    # 1 day and 179 days ago are inside the 180-day window -> kept.
+    # 181 days ago is strictly older than the cutoff -> dropped.
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(render, "COVERED_PATH", tmp_path / "covered.json")
+    data = {
+        "https://example.com/recent": {"date": _iso_days_ago(1)},
+        "https://example.com/edge": {"date": _iso_days_ago(179)},
+        "https://example.com/old": {"date": _iso_days_ago(181)},
+    }
+
+    render.save_covered(data)
+
+    written = render.load_covered()
+    assert "https://example.com/recent" in written
+    assert "https://example.com/edge" in written
+    assert "https://example.com/old" not in written
+    assert "pruned 1 covered.json" in capsys.readouterr().err
+
+
+def test_save_covered_keeps_boundary_entry_at_exactly_retention_days(tmp_path, monkeypatch):
+    # Cutoff is today - 180d; pruning is STRICTLY older, so exactly 180 days is kept.
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(render, "COVERED_PATH", tmp_path / "covered.json")
+    data = {"https://example.com/boundary": {"date": _iso_days_ago(render.COVERED_RETENTION_DAYS)}}
+
+    render.save_covered(data)
+
+    assert "https://example.com/boundary" in render.load_covered()
+
+
+def test_save_covered_keeps_malformed_and_missing_dates(tmp_path, monkeypatch):
+    # Schema drift must never lose dedup state: a non-ISO date string and a
+    # missing date field are both kept rather than dropped.
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(render, "COVERED_PATH", tmp_path / "covered.json")
+    data = {
+        "https://example.com/word": {"date": "yesterday"},
+        "https://example.com/none": {"episode_uri": "spotify:episode:x"},
+        "https://example.com/stale": {"date": _iso_days_ago(400)},
+    }
+
+    render.save_covered(data)
+
+    written = render.load_covered()
+    assert "https://example.com/word" in written  # malformed date kept
+    assert "https://example.com/none" in written  # missing date kept
+    assert "https://example.com/stale" not in written  # well-formed + old dropped
+
+
+def test_save_covered_no_prune_log_when_nothing_dropped(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(render, "COVERED_PATH", tmp_path / "covered.json")
+    render.save_covered({"https://example.com/a": {"date": _iso_days_ago(10)}})
+
+    assert "pruned" not in capsys.readouterr().err
 
 
 # --- resolve_cover_date ---------------------------------------------------
