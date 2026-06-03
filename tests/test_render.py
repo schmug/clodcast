@@ -9,7 +9,9 @@ save-to-spotify CLI. The audio I/O seam (`mp3_duration_ms`) is monkeypatched.
 from __future__ import annotations
 
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -643,6 +645,7 @@ def test_resume_skips_upload_and_runs_idempotent_tail(tmp_path, monkeypatch, cap
     monkeypatch.setattr(render, "mp3_duration_ms", lambda p: 60_000)
     covered_path = tmp_path / "covered.json"
     monkeypatch.setattr(render, "COVERED_PATH", covered_path)
+    monkeypatch.setattr(render, "RUN_LOG_PATH", tmp_path / "runs.jsonl")
     monkeypatch.setattr(
         sys, "argv", ["render.py", "--manifest", str(manifest), "--workdir", str(wd)]
     )
@@ -664,6 +667,7 @@ def test_resume_dies_when_artifact_missing(tmp_path, monkeypatch):
     manifest = tmp_path / "m.json"
     manifest.write_text(json.dumps({"title": "T", "summary": "s", "segments": [{"text": "hi"}]}))
     monkeypatch.setattr(render, "upload", lambda *a, **k: pytest.fail("upload must not run"))
+    monkeypatch.setattr(render, "RUN_LOG_PATH", tmp_path / "runs.jsonl")
     monkeypatch.setattr(
         sys, "argv", ["render.py", "--manifest", str(manifest), "--workdir", str(wd)]
     )
@@ -1174,6 +1178,7 @@ def test_main_recovers_inflight_before_fresh_render(tmp_path, monkeypatch):
     monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(render, "INFLIGHT_PATH", inflight)
     monkeypatch.setattr(render, "COVERED_PATH", covered)
+    monkeypatch.setattr(render, "RUN_LOG_PATH", tmp_path / "runs.jsonl")
     inflight.write_text(
         json.dumps(
             {
@@ -1201,7 +1206,9 @@ def test_main_recovers_inflight_before_fresh_render(tmp_path, monkeypatch):
     monkeypatch.setattr(render, "load_config", lambda: {"show_id": "spotify:show:1"})
     monkeypatch.setattr(render, "render_segments", lambda *a, **k: [tmp_path / "seg_01.mp3"])
     monkeypatch.setattr(render, "plan_silences", lambda paths: [0])
-    monkeypatch.setattr(render, "concat_and_normalize", lambda *a, **k: tmp_path / "episode.mp3")
+    monkeypatch.setattr(
+        render, "concat_and_normalize", lambda *a, **k: (tmp_path / "episode.mp3", None)
+    )
     monkeypatch.setattr(render, "build_cover", lambda *a, **k: None)
     monkeypatch.setattr(
         render,
@@ -1227,3 +1234,505 @@ def test_main_recovers_inflight_before_fresh_render(tmp_path, monkeypatch):
     assert cov["https://example.com/tuesday"]["episode_uri"] == "spotify:episode:tue"
     # In-flight log cleared after Tuesday's own dedup completed.
     assert not inflight.exists()
+
+
+# --- parse_loudnorm (#21) -------------------------------------------------
+
+# A realistic ffmpeg loudnorm=print_format=json stderr block (real audio, not silent).
+_LOUDNORM_STDERR = """\
+Input #0, mp3, from 'episode_raw.mp3':
+  Duration: 00:05:00.00, start: 0.025057, bitrate: 192 kb/s
+[Parsed_loudnorm_0 @ 0x600003abc000]
+{
+\t"input_i" : "-19.43",
+\t"input_tp" : "-3.21",
+\t"input_lra" : "7.10",
+\t"input_thresh" : "-29.51",
+\t"output_i" : "-16.02",
+\t"output_tp" : "-1.49",
+\t"output_lra" : "6.90",
+\t"output_thresh" : "-26.10",
+\t"normalization_type" : "dynamic",
+\t"target_offset" : "0.02"
+}
+size=N/A time=00:05:00.00 bitrate=N/A speed= 50x
+"""
+
+
+def test_parse_loudnorm_extracts_measured_lufs():
+    out = render.parse_loudnorm(_LOUDNORM_STDERR)
+    assert out is not None
+    # output_i is the Spotify-target signal (-16 LUFS mono).
+    assert out["output_i"] == -16.02
+    assert out["input_i"] == -19.43
+    assert out["output_tp"] == -1.49
+    assert out["output_lra"] == 6.90
+
+
+def test_parse_loudnorm_returns_none_when_block_absent():
+    assert render.parse_loudnorm("ffmpeg ran but printed no loudnorm json") is None
+
+
+def test_parse_loudnorm_returns_none_on_empty_stderr():
+    assert render.parse_loudnorm("") is None
+
+
+def test_parse_loudnorm_inf_values_become_null_not_failure():
+    # Silent input makes ffmpeg report "-inf"/"inf"; we must not crash, and those
+    # fields land null while the dict itself is still returned.
+    silent = """[Parsed_loudnorm_0 @ 0x0]
+{
+\t"input_i" : "-inf",
+\t"input_tp" : "-inf",
+\t"input_lra" : "0.00",
+\t"output_i" : "-inf",
+\t"output_tp" : "-inf",
+\t"output_lra" : "0.00",
+\t"target_offset" : "inf"
+}
+"""
+    out = render.parse_loudnorm(silent)
+    assert out is not None
+    assert out["output_i"] is None  # "-inf" → null, not a crash
+    assert out["output_lra"] == 0.0
+
+
+def test_parse_loudnorm_picks_last_block_when_multiple_json():
+    # A preceding bracketed JSON-ish line must not shadow the real measurement block.
+    noisy = '{"unrelated": 1}\n' + _LOUDNORM_STDERR
+    out = render.parse_loudnorm(noisy)
+    assert out is not None and out["output_i"] == -16.02
+
+
+# --- prune_workdirs (#21, DESTRUCTIVE) ------------------------------------
+
+
+def _make_workdir(base: Path, name: str, *, age_days: float, files: int = 1) -> Path:
+    wd = base / name
+    wd.mkdir(parents=True)
+    for i in range(files):
+        (wd / f"f{i}.bin").write_bytes(b"x" * 100)
+    when = time.time() - age_days * 86400
+    os.utime(wd, (when, when))
+    return wd
+
+
+def test_prune_workdirs_deletes_only_old_matching_dirs(tmp_path, monkeypatch):
+    monkeypatch.setattr(render, "TMP_BASE", tmp_path)
+    old = _make_workdir(tmp_path, "daily-podcast-old", age_days=10)
+    young = _make_workdir(tmp_path, "daily-podcast-young", age_days=1)
+    unrelated = _make_workdir(tmp_path, "some-other-tool-xyz", age_days=30)
+
+    result = render.prune_workdirs(7)
+
+    assert not old.exists()  # older than 7d, matching prefix → deleted
+    assert young.exists()  # within window → kept
+    assert unrelated.exists()  # wrong prefix → never touched
+    assert result["count"] == 1
+    assert result["freed_bytes"] == 100
+
+
+def test_prune_workdirs_excludes_active_workdir(tmp_path, monkeypatch):
+    # The active per-date workdir can itself be old and match the glob; it must
+    # NEVER be deleted while the run is using it. This is the core safety invariant.
+    monkeypatch.setattr(render, "TMP_BASE", tmp_path)
+    active = _make_workdir(tmp_path, "daily-podcast-today", age_days=30)
+    stale = _make_workdir(tmp_path, "daily-podcast-stale", age_days=30)
+
+    result = render.prune_workdirs(7, exclude=active)
+
+    assert active.exists()  # excluded by resolved path
+    assert not stale.exists()
+    assert result["count"] == 1
+
+
+def test_prune_workdirs_refuses_nonpositive_n(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(render, "TMP_BASE", tmp_path)
+    old = _make_workdir(tmp_path, "daily-podcast-old", age_days=999)
+
+    assert render.prune_workdirs(0) is None
+    assert render.prune_workdirs(-5) is None
+    # Nothing deleted — a 0/negative age must never select everything.
+    assert old.exists()
+    assert "must be a positive day count" in capsys.readouterr().err
+
+
+def test_prune_workdirs_skips_symlinks(tmp_path, monkeypatch):
+    monkeypatch.setattr(render, "TMP_BASE", tmp_path)
+    real = _make_workdir(tmp_path, "real-target", age_days=30)
+    link = tmp_path / "daily-podcast-link"
+    link.symlink_to(real)
+    old_when = time.time() - 30 * 86400
+    os.utime(link, (old_when, old_when), follow_symlinks=False)
+
+    result = render.prune_workdirs(7)
+
+    # The symlink (even matching prefix + old) is skipped, so its target survives —
+    # we never follow a link out of TMP_BASE to delete something.
+    assert real.exists()
+    assert link.is_symlink()
+    assert result["count"] == 0
+
+
+def test_prune_workdirs_noop_when_base_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(render, "TMP_BASE", tmp_path / "does-not-exist")
+    result = render.prune_workdirs(7)
+    assert result == {"count": 0, "freed_bytes": 0}
+
+
+# --- run_selftest (#21) ---------------------------------------------------
+
+
+def _selftest_env(monkeypatch, tmp_path, *, shows_rc=0, shows_out='{"shows":[]}', config=True):
+    """Wire selftest's external seams to a healthy default; callers flip one to fail."""
+    monkeypatch.setattr(render.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+
+    def fake_subprocess_run(cmd, **kwargs):
+        import subprocess as _sp
+
+        return _sp.CompletedProcess(cmd, shows_rc, stdout=shows_out, stderr="")
+
+    monkeypatch.setattr(render.subprocess, "run", fake_subprocess_run)
+
+    cfg = tmp_path / "config.json"
+    if config:
+        cfg.write_text(json.dumps({"show_id": "spotify:show:1"}))
+    monkeypatch.setattr(render, "CONFIG_PATH", cfg)
+    # House voice: point the bundled paths at real files so the check passes.
+    audio = tmp_path / "house.wav"
+    text = tmp_path / "house.txt"
+    audio.write_bytes(b"RIFF")
+    text.write_text("hi")
+    monkeypatch.setattr(render, "BUNDLED_HOUSE_AUDIO", audio)
+    monkeypatch.setattr(render, "BUNDLED_HOUSE_TEXT", text)
+    monkeypatch.setattr(render, "USER_HOUSE_AUDIO", tmp_path / "nouser.wav")
+    monkeypatch.setattr(render, "USER_HOUSE_TEXT", tmp_path / "nouser.txt")
+
+
+def test_selftest_all_pass_exits_zero(tmp_path, monkeypatch, capsys):
+    _selftest_env(monkeypatch, tmp_path)
+    rc = render.run_selftest()
+    assert rc == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["status"] == "ok"
+    assert all(c["ok"] for c in summary["checks"])
+    # Ordered checks: ffmpeg, ffprobe, auth, config, house-voice.
+    names = [c["name"] for c in summary["checks"]]
+    assert names == ["ffmpeg", "ffprobe", "save-to-spotify-auth", "config", "house-voice"]
+
+
+def test_selftest_fails_when_auth_expired(tmp_path, monkeypatch, capsys):
+    # save-to-spotify shows exits non-zero (auth expired) → overall failure, exit 1.
+    _selftest_env(monkeypatch, tmp_path, shows_rc=1, shows_out="")
+    rc = render.run_selftest()
+    assert rc == 1
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["status"] == "failed"
+    auth = next(c for c in summary["checks"] if c["name"] == "save-to-spotify-auth")
+    assert auth["ok"] is False
+    assert "exited 1" in auth["detail"]
+
+
+def test_selftest_fails_when_config_missing_show_id(tmp_path, monkeypatch, capsys):
+    _selftest_env(monkeypatch, tmp_path)
+    (tmp_path / "config.json").write_text(json.dumps({}))  # no show_id
+    rc = render.run_selftest()
+    assert rc == 1
+    summary = json.loads(capsys.readouterr().out)
+    cfg = next(c for c in summary["checks"] if c["name"] == "config")
+    assert cfg["ok"] is False and "show_id" in cfg["detail"]
+
+
+def test_selftest_fails_when_ffmpeg_missing(tmp_path, monkeypatch, capsys):
+    _selftest_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(render.shutil, "which", lambda tool: None)  # nothing on PATH
+    rc = render.run_selftest()
+    assert rc == 1
+    summary = json.loads(capsys.readouterr().out)
+    ffmpeg = next(c for c in summary["checks"] if c["name"] == "ffmpeg")
+    assert ffmpeg["ok"] is False
+
+
+def test_selftest_does_not_load_model_by_default(tmp_path, monkeypatch, capsys):
+    _selftest_env(monkeypatch, tmp_path)
+    render.run_selftest()  # load_model defaults False
+    summary = json.loads(capsys.readouterr().out)
+    # No model-load check unless --load-model is passed (keeps it <5s).
+    assert "model-load" not in [c["name"] for c in summary["checks"]]
+
+
+def test_main_selftest_branch_does_not_require_manifest(tmp_path, monkeypatch):
+    # --selftest is mutually exclusive with --manifest and must short-circuit before
+    # any manifest/config load. main() returns selftest's exit code directly.
+    _selftest_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(render, "load_config", lambda: pytest.fail("selftest must not load config"))
+    monkeypatch.setattr(sys, "argv", ["render.py", "--selftest"])
+    assert render.main() == 0
+
+
+def test_main_rejects_manifest_and_selftest_together(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["render.py", "--manifest", "m.json", "--selftest"])
+    with pytest.raises(SystemExit):
+        render.main()  # argparse mutually-exclusive group rejects both
+
+
+def test_main_requires_one_of_manifest_or_selftest(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["render.py"])
+    with pytest.raises(SystemExit):
+        render.main()  # the group is required
+
+
+# --- run log (#18) --------------------------------------------------------
+
+
+def test_write_run_log_appends_one_parseable_line(tmp_path, monkeypatch):
+    log_path = tmp_path / "runs.jsonl"
+    monkeypatch.setattr(render, "RUN_LOG_PATH", log_path)
+
+    render.write_run_log({"status": "ready", "title": "A"})
+    render.write_run_log({"status": "failed", "title": "B"})
+
+    lines = log_path.read_text().splitlines()
+    assert len(lines) == 2  # append-only — never clobbered to a single line
+    rec0 = json.loads(lines[0])
+    rec1 = json.loads(lines[1])
+    assert rec0["status"] == "ready" and rec1["status"] == "failed"
+    # timestamp is stamped automatically.
+    assert rec0["timestamp"] is not None
+
+
+def test_write_run_log_swallows_errors(tmp_path, monkeypatch):
+    # An unwritable path must not raise — observability can't sink a shipped episode.
+    monkeypatch.setattr(render, "RUN_LOG_PATH", tmp_path / "nope" / "x" / "runs.jsonl")
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(render.Path, "mkdir", boom)
+    render.write_run_log({"status": "ready"})  # no raise
+
+
+def test_new_run_record_has_full_stable_key_set():
+    rec = render._new_run_record()
+    assert set(rec) == set(render.RUN_LOG_FIELDS)
+    # Every field is null until a caller fills it (null, not absent).
+    assert all(v is None for v in rec.values())
+
+
+def test_resolve_render_sha_returns_string():
+    # In this git checkout it should be a short SHA; the contract is just a non-empty str.
+    sha = render.resolve_render_sha()
+    assert isinstance(sha, str) and sha
+
+
+def _full_render_manifest(tmp_path) -> Path:
+    m = tmp_path / "m.json"
+    m.write_text(
+        json.dumps(
+            {
+                "title": "Run Log Episode",
+                "summary": "s",
+                "show_id": "spotify:show:1",
+                "segments": [{"text": "hi", "source_url": "https://example.com/a"}],
+            }
+        )
+    )
+    return m
+
+
+def _stub_full_render(monkeypatch, tmp_path, *, loudnorm=None):
+    """Stub the heavy render+upload seams so a main() run exercises only the
+    orchestration + run-log plumbing."""
+    monkeypatch.setattr(render, "load_config", lambda: {"show_id": "spotify:show:1"})
+    monkeypatch.setattr(render, "render_segments", lambda *a, **k: [tmp_path / "seg_01.mp3"])
+    monkeypatch.setattr(render, "plan_silences", lambda paths: [0])
+    monkeypatch.setattr(
+        render, "concat_and_normalize", lambda *a, **k: (tmp_path / "episode.mp3", loudnorm)
+    )
+    monkeypatch.setattr(render, "build_cover", lambda *a, **k: None)
+    monkeypatch.setattr(
+        render,
+        "build_timeline_and_description",
+        lambda *a, **k: ({"items": [{"chapter": {"title": "A", "start_time_ms": 0}}]}, "<p>d</p>"),
+    )
+    monkeypatch.setattr(render, "upload", lambda *a, **k: "spotify:episode:xyz")
+    monkeypatch.setattr(render, "set_timeline", lambda *a, **k: None)
+    monkeypatch.setattr(render, "poll_ready", lambda *a, **k: None)
+    monkeypatch.setattr(render, "maybe_publish_r2", lambda *a, **k: False)
+    monkeypatch.setattr(render, "mp3_duration_ms", lambda p: 60_000)
+
+
+def test_successful_run_appends_ready_record_with_loudnorm(tmp_path, monkeypatch):
+    log_path = tmp_path / "runs.jsonl"
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(render, "RUN_LOG_PATH", log_path)
+    monkeypatch.setattr(render, "COVERED_PATH", tmp_path / "covered.json")
+    monkeypatch.setattr(render, "INFLIGHT_PATH", tmp_path / "inflight.json")
+    lufs = {"input_i": -19.4, "output_i": -16.0, "output_tp": -1.5, "output_lra": 6.9}
+    _stub_full_render(monkeypatch, tmp_path, loudnorm=lufs)
+    manifest = _full_render_manifest(tmp_path)
+    wd = tmp_path / "wd"  # explicit workdir so it isn't auto-deleted mid-test
+    monkeypatch.setattr(
+        sys, "argv", ["render.py", "--manifest", str(manifest), "--workdir", str(wd)]
+    )
+
+    assert render.main() == 0
+
+    line = log_path.read_text().splitlines()[-1]
+    rec = json.loads(line)
+    assert rec["status"] == "ready"
+    assert rec["episode_uri"] == "spotify:episode:xyz"
+    assert rec["title"] == "Run Log Episode"
+    assert rec["loudnorm"]["output_i"] == -16.0  # LUFS landed in the run log (#21)
+    assert rec["segment_count"] == 1
+    assert rec["resumed"] is False
+    assert set(rec) == set(render.RUN_LOG_FIELDS)  # full stable schema
+
+
+def test_dry_run_appends_dry_run_record(tmp_path, monkeypatch):
+    log_path = tmp_path / "runs.jsonl"
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(render, "RUN_LOG_PATH", log_path)
+    _stub_full_render(monkeypatch, tmp_path, loudnorm=None)
+    # dry-run must NOT upload; prove it by making upload fail loudly.
+    monkeypatch.setattr(render, "upload", lambda *a, **k: pytest.fail("dry-run must not upload"))
+    manifest = _full_render_manifest(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["render.py", "--manifest", str(manifest), "--dry-run"])
+
+    assert render.main() == 0
+
+    rec = json.loads(log_path.read_text().splitlines()[-1])
+    assert rec["status"] == "dry-run"
+    assert rec["episode_uri"] is None
+    assert rec["title"] == "Run Log Episode"
+
+
+def test_failed_run_appends_failed_record_with_error(tmp_path, monkeypatch):
+    log_path = tmp_path / "runs.jsonl"
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(render, "RUN_LOG_PATH", log_path)
+    monkeypatch.setattr(render, "load_config", lambda: {"show_id": "spotify:show:1"})
+    monkeypatch.setattr(render, "render_segments", lambda *a, **k: [tmp_path / "seg_01.mp3"])
+    monkeypatch.setattr(render, "plan_silences", lambda paths: [0])
+    # Blow up inside the render with a die() so the failure path captures the message.
+    monkeypatch.setattr(
+        render, "concat_and_normalize", lambda *a, **k: render.die("ffmpeg exploded")
+    )
+    monkeypatch.setattr(render, "mp3_duration_ms", lambda p: 60_000)
+    manifest = _full_render_manifest(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["render.py", "--manifest", str(manifest)])
+
+    with pytest.raises(SystemExit):
+        render.main()
+
+    rec = json.loads(log_path.read_text().splitlines()[-1])
+    assert rec["status"] == "failed"
+    assert rec["error_message"] == "ffmpeg exploded"  # die()'s message, not just exit code
+    assert rec["title"] == "Run Log Episode"  # fields learned before the crash persist
+
+
+def test_run_context_cleared_after_run(tmp_path, monkeypatch):
+    # _RUN_CTX must not leak between runs — a later direct die() in a test (no active
+    # run) must not write to runs.jsonl.
+    log_path = tmp_path / "runs.jsonl"
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(render, "RUN_LOG_PATH", log_path)
+    _stub_full_render(monkeypatch, tmp_path)
+    manifest = _full_render_manifest(tmp_path)
+    wd = tmp_path / "wd"
+    monkeypatch.setattr(
+        sys, "argv", ["render.py", "--manifest", str(manifest), "--workdir", str(wd)]
+    )
+    render.main()
+    assert render._RUN_CTX is None
+
+
+def test_successful_auto_workdir_is_deleted(tmp_path, monkeypatch):
+    # Default (no --keep-workdir, auto workdir): the workdir is removed on success.
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(render, "RUN_LOG_PATH", tmp_path / "runs.jsonl")
+    monkeypatch.setattr(render, "COVERED_PATH", tmp_path / "covered.json")
+    monkeypatch.setattr(render, "INFLIGHT_PATH", tmp_path / "inflight.json")
+
+    created: list[Path] = []
+    real_mkdtemp = render.tempfile.mkdtemp
+
+    def tracking_mkdtemp(*a, **k):
+        k.setdefault("dir", str(tmp_path))
+        d = real_mkdtemp(*a, **k)
+        created.append(Path(d))
+        return d
+
+    monkeypatch.setattr(render.tempfile, "mkdtemp", tracking_mkdtemp)
+    _stub_full_render(monkeypatch, tmp_path)
+    manifest = _full_render_manifest(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["render.py", "--manifest", str(manifest)])
+
+    assert render.main() == 0
+    assert created and not created[0].exists()  # auto workdir deleted on success
+
+
+def test_keep_workdir_preserves_auto_workdir(tmp_path, monkeypatch):
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(render, "RUN_LOG_PATH", tmp_path / "runs.jsonl")
+    monkeypatch.setattr(render, "COVERED_PATH", tmp_path / "covered.json")
+    monkeypatch.setattr(render, "INFLIGHT_PATH", tmp_path / "inflight.json")
+
+    created: list[Path] = []
+    real_mkdtemp = render.tempfile.mkdtemp
+
+    def tracking_mkdtemp(*a, **k):
+        k.setdefault("dir", str(tmp_path))
+        d = real_mkdtemp(*a, **k)
+        created.append(Path(d))
+        return d
+
+    monkeypatch.setattr(render.tempfile, "mkdtemp", tracking_mkdtemp)
+    _stub_full_render(monkeypatch, tmp_path)
+    manifest = _full_render_manifest(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["render.py", "--manifest", str(manifest), "--keep-workdir"])
+
+    assert render.main() == 0
+    assert created and created[0].exists()  # --keep-workdir retains it
+
+
+def test_explicit_workdir_never_auto_deleted(tmp_path, monkeypatch):
+    # An explicit --workdir backs the documented resume/no-op path, so it is kept
+    # even without --keep-workdir.
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(render, "RUN_LOG_PATH", tmp_path / "runs.jsonl")
+    monkeypatch.setattr(render, "COVERED_PATH", tmp_path / "covered.json")
+    monkeypatch.setattr(render, "INFLIGHT_PATH", tmp_path / "inflight.json")
+    _stub_full_render(monkeypatch, tmp_path)
+    manifest = _full_render_manifest(tmp_path)
+    wd = tmp_path / "explicit-wd"
+    monkeypatch.setattr(
+        sys, "argv", ["render.py", "--manifest", str(manifest), "--workdir", str(wd)]
+    )
+
+    assert render.main() == 0
+    assert wd.exists()  # explicit workdir preserved
+
+
+def test_prune_workdirs_flag_runs_before_render(tmp_path, monkeypatch):
+    # --prune-workdirs N runs before the render and records its result in the run log.
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(render, "RUN_LOG_PATH", tmp_path / "runs.jsonl")
+    monkeypatch.setattr(render, "COVERED_PATH", tmp_path / "covered.json")
+    monkeypatch.setattr(render, "INFLIGHT_PATH", tmp_path / "inflight.json")
+    base = tmp_path / "tmpbase"
+    base.mkdir()
+    monkeypatch.setattr(render, "TMP_BASE", base)
+    _make_workdir(base, "daily-podcast-stale", age_days=30)
+    _stub_full_render(monkeypatch, tmp_path)
+    manifest = _full_render_manifest(tmp_path)
+    wd = tmp_path / "wd"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["render.py", "--manifest", str(manifest), "--workdir", str(wd), "--prune-workdirs", "7"],
+    )
+
+    assert render.main() == 0
+    rec = json.loads((tmp_path / "runs.jsonl").read_text().splitlines()[-1])
+    assert rec["pruned_workdirs"]["count"] == 1
