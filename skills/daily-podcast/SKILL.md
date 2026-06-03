@@ -152,6 +152,40 @@ Spotify rejects timelines where >3 chapters are under 30 seconds. Qwen3 reads ~4
 
 `~/.config/daily-podcast/inflight.json` is a transient crash-recovery record (an episode that uploaded but hasn't reached `READY`+dedup yet) — written after `upload()` succeeds and cleared after dedup. It is **not** a second dedup source; `covered.json` stays authoritative. See [Automatic cron recovery](#automatic-cron-recovery-cross-day-workdir-independent) below.
 
+### Run log (across-runs observability)
+
+Every `render.py` run appends one JSON record to `~/.config/daily-podcast/runs.jsonl` — on success, on `--dry-run`, and on failure. Append-only (never rewritten); one line per day, so retention is the operator's job. Each record carries a **stable** key set (missing values are `null`, never absent) so the file parses cleanly line-by-line in `jq`/pandas:
+
+```jsonc
+// ~/.config/daily-podcast/runs.jsonl — one line per run
+{
+  "timestamp": "2026-06-03T06:00:12+00:00",  // ISO 8601 UTC
+  "status": "ready",                         // "ready" | "dry-run" | "failed"
+  "episode_uri": "spotify:episode:...",      // null unless ready
+  "title": "Daily Digest - ...",
+  "voice": "house", "voice_mode": "clone",
+  "chapter_count": 6, "duration_s": 412.3, "segment_count": 6,
+  "workdir": "/var/folders/.../T/daily-podcast-xxxx",
+  "manifest_path": "/tmp/manifest.json",
+  "error_message": null,                     // the die() message on failure
+  "git_sha": "ea5e845",                      // of render.py (mtime fallback off-git)
+  "loudnorm": {"input_i": -19.4, "output_i": -16.0, "output_tp": -1.5, "output_lra": 6.9},
+  "pruned_workdirs": null,                    // {count, freed_bytes} when --prune-workdirs ran
+  "resumed": false
+}
+```
+
+Sample queries:
+
+```bash
+# Every failure and its error
+jq -r 'select(.status == "failed") | "\(.timestamp)  \(.error_message)"' ~/.config/daily-podcast/runs.jsonl
+# Loudness drift over time (Spotify targets -16 LUFS)
+jq -r 'select(.loudnorm) | "\(.timestamp)  \(.loudnorm.output_i)"' ~/.config/daily-podcast/runs.jsonl
+# Which voice ran each day
+jq -r '"\(.timestamp)  \(.voice) (\(.voice_mode))"' ~/.config/daily-podcast/runs.jsonl
+```
+
 First run with no `config.json`: ask the user whether to use an existing show (list via `save-to-spotify --json shows`) or create a new one, then persist the choice.
 
 ## Publishing to the web (Cloudflare R2)
@@ -216,6 +250,41 @@ The prompt reads OPML feeds from config, filters against the dedup log, writes t
 `render.py` exits non-zero with a diagnostic on any failure. Always check the exit code; do not assume success.
 
 For testing without uploading, use `--dry-run` — produces the MP3, cover, and timeline.json locally and reports paths, but skips the `save-to-spotify upload` and `timeline set` calls.
+
+### Unattended-run flags
+
+| Flag | Purpose |
+| --- | --- |
+| `--selftest` | Pre-flight health check (no real run). Mutually exclusive with `--manifest`. |
+| `--load-model` | With `--selftest`: also load the TTS model (slow; the most thorough check). |
+| `--keep-workdir` | Keep the auto-created workdir after a successful run (default: delete it). |
+| `--prune-workdirs N` | Before rendering, delete auto-created workdirs older than `N` days. |
+
+**`--selftest`** runs an ordered set of checks (ffmpeg + ffprobe on PATH → `save-to-spotify --json shows` returns valid JSON → `config.json` parses with `show_id` → house-voice ref clip + transcript present), prints a pass/fail line each, then a JSON summary `{"status": "ok"/"failed", "checks": [...]}`. It exits `0` only if every check passes, non-zero otherwise — so a scheduler can gate on it:
+
+```bash
+python3 <skill-dir>/render.py --selftest || { echo "pre-flight failed" | mail -s "podcast down" you@example.com; exit 1; }
+```
+
+It finishes in under 5 seconds (no model load unless `--load-model`).
+
+**Workdir hygiene.** Each run creates `<tmpdir>/daily-podcast-<random>` (the system temp dir — `$TMPDIR` on macOS, often `/tmp` on Linux). On a successful run with default flags the **auto-created** workdir is deleted (a failed run always keeps it for debugging; an explicit `--workdir` is never auto-deleted, since it backs the resume path). `--prune-workdirs N` separately sweeps any `daily-podcast-*` directory older than `N` days — it never deletes the active workdir, never follows symlinks, and refuses a non-positive `N`.
+
+### Scheduled runs (cron / launchd)
+
+Recommended unattended recipe: pre-flight with `--selftest`, then run with `--prune-workdirs 7` for automatic disk hygiene.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$HOME/clodcast"
+# Pre-flight: bail loudly if deps/auth are broken BEFORE doing real work.
+python3 skills/daily-podcast/render.py --selftest || { echo "selftest failed"; exit 1; }
+# Real run via the headless prompt; --prune-workdirs keeps /tmp tidy.
+claude -p "$(cat skills/daily-podcast/prompts/daily.md)"
+```
+
+(When invoking `render.py` directly rather than through the headless prompt, add `--prune-workdirs 7` to its argument list.)
 
 ### Recovering from a partial failure
 

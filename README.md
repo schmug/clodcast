@@ -119,6 +119,45 @@ Final stdout is a single line: `SHIPPED <episode_uri> ...` or `FAILED <reason>`.
 
 Hook it up to launchd, cron, or any scheduler.
 
+### Scheduled runs (pre-flight + disk hygiene)
+
+For unattended runs, pre-flight with `render.py --selftest` so a broken dependency or an
+expired `save-to-spotify auth` fails loudly *before* the scheduled hour, and pass
+`--prune-workdirs 7` to keep the temp dir tidy:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$HOME/clodcast"
+python3 skills/daily-podcast/render.py --selftest || { echo "selftest failed"; exit 1; }
+claude -p "$(cat skills/daily-podcast/prompts/daily.md)"   # or: render.py --manifest m.json --prune-workdirs 7
+```
+
+`--selftest` (mutually exclusive with `--manifest`) checks ffmpeg/ffprobe, `save-to-spotify`
+auth, `config.json`, and the house-voice clip — printing a pass/fail line per check and a
+JSON summary — and exits non-zero on any failure. It runs in under 5 seconds. On a successful
+real run the auto-created workdir is deleted (pass `--keep-workdir` to retain it; a failed run
+always keeps it for debugging).
+
+### Run log
+
+Every run appends one JSON record to `~/.config/daily-podcast/runs.jsonl` — on success,
+`--dry-run`, and failure alike. It's append-only (one line per day), so grepping a single file
+answers across-runs questions — which voice ran yesterday, which run failed and why, whether
+loudness is drifting from Spotify's -16 LUFS target — without spelunking ephemeral workdirs.
+Each record has a stable key set (`timestamp`, `status`, `episode_uri`, `voice`, `voice_mode`,
+`chapter_count`, `duration_s`, `error_message`, `git_sha`, `loudnorm`, …; missing values are
+`null`, never absent), so it parses cleanly line-by-line:
+
+```bash
+# Every failure and its error message
+jq -r 'select(.status == "failed") | .error_message' ~/.config/daily-podcast/runs.jsonl
+# Loudness (output_i, LUFS) per run — watch for drift
+jq -r 'select(.loudnorm) | "\(.timestamp)  \(.loudnorm.output_i)"' ~/.config/daily-podcast/runs.jsonl
+```
+
+Retention is the operator's job (the file grows ~one line/day); rotate it manually if you like.
+
 ## Voice
 
 The default "house" voice is `ref_audio` cloning from a ~22 second reference clip. The Base 1.7B Qwen3-TTS model regenerates that voice's timbre and prosody for any new text, so the voice stays consistent across episodes.

@@ -15,8 +15,13 @@ Consumes a manifest.json that already contains the written segments, then:
   9. Optionally publishes the mp3 + a manifest entry to Cloudflare R2 (for the
      cortech.online web feed) — additive, never blocks the run
  10. Updates ~/.config/daily-podcast/covered.json dedup log
+ 11. Appends one record to ~/.config/daily-podcast/runs.jsonl (across-runs observability)
 
-Use --dry-run to skip upload/timeline/R2 calls (still writes mp3, cover, timeline.json).
+Use --dry-run to skip upload/timeline/R2 calls (still writes mp3, cover, timeline.json,
+and a "dry-run" run-log record).
+Use --selftest (mutually exclusive with --manifest) for a pre-flight health check of
+deps + credentials without a real run — recommended in an unattended scheduler's
+pre-flight (`render.py --selftest || alert`).
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ import datetime as dt
 import hashlib
 import html
 import json
+import math
 import os
 import random
 import re
@@ -94,9 +100,25 @@ COVERED_PATH = CONFIG_DIR / "covered.json"
 # upload() succeeds, cleared only after dedup. covered.json stays the sole dedup
 # source of truth: the in-flight log only ever *drives* a write into it.
 INFLIGHT_PATH = CONFIG_DIR / "inflight.json"
+# Append-only JSONL operational log: one record per render.py run (success,
+# dry-run, or failure). Lives next to covered.json so a single `jq` over one file
+# answers across-runs questions (which voice yesterday? which run failed? did LUFS
+# drift?) without spelunking ephemeral workdirs. Append-only by contract — NEVER
+# rewritten atomically (that would clobber history to a single line); see
+# write_run_log. One line/day ≈ trivial size, so retention is the operator's job.
+RUN_LOG_PATH = CONFIG_DIR / "runs.jsonl"
 VOICES_DIR = CONFIG_DIR / "voices"
 USER_HOUSE_AUDIO = VOICES_DIR / "house.wav"
 USER_HOUSE_TEXT = VOICES_DIR / "house.txt"
+
+# Base directory under which auto-created per-run workdirs live. On macOS
+# tempfile.mkdtemp() places dirs under $TMPDIR (/var/folders/.../T/), NOT /tmp, so
+# --prune-workdirs derives the scan root from gettempdir() rather than hardcoding
+# /tmp (the issue's literal path would silently match nothing for auto workdirs).
+# Module-level + patchable so the destructive prune logic can be tested against a
+# throwaway tree instead of the real temp dir.
+WORKDIR_PREFIX = "daily-podcast-"
+TMP_BASE = Path(tempfile.gettempdir())
 
 # --- helpers ---------------------------------------------------------------
 
@@ -105,8 +127,19 @@ def log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
+# Mutable per-run record, set by main() for the duration of a render (None at
+# import time and during unit tests that call die()/run() directly). die() stashes
+# its message here so the failure path in main() can write a complete run-log record
+# — sys.exit carries only the exit code, not the diagnostic string. Gating every
+# run-log write on this being non-None keeps direct die()/selftest calls from
+# touching the real ~/.config/daily-podcast/runs.jsonl.
+_RUN_CTX: dict[str, Any] | None = None
+
+
 def die(msg: str, code: int = 1) -> None:
     log(f"error: {msg}")
+    if _RUN_CTX is not None:
+        _RUN_CTX["error_message"] = msg
     sys.exit(code)
 
 
@@ -196,6 +229,83 @@ def save_covered(data: dict[str, Any]) -> None:
     if dropped:
         log(f"pruned {dropped} covered.json entr(ies) older than {COVERED_RETENTION_DAYS}d")
     _atomic_write_text(COVERED_PATH, json.dumps(pruned, indent=2, sort_keys=True))
+
+
+# --- run log (#18) ---------------------------------------------------------
+#
+# One JSONL record per run for across-runs observability. The schema is stable:
+# every record carries the SAME key set (missing values are null, never absent) so
+# the file parses cleanly line-by-line in jq/pandas across schema evolution.
+
+# Stable record shape. main() copies this, fills it, and hands it to write_run_log
+# on every terminal path (ready / dry-run / failed) so #21's loudnorm/prune slots
+# never reshape #18's schema. Keep additions here null-by-default.
+RUN_LOG_FIELDS: tuple[str, ...] = (
+    "timestamp",  # ISO 8601 UTC
+    "status",  # "ready" | "dry-run" | "failed"
+    "episode_uri",
+    "title",
+    "voice",
+    "voice_mode",
+    "chapter_count",
+    "duration_s",
+    "segment_count",
+    "workdir",
+    "manifest_path",
+    "error_message",  # only on failure
+    "git_sha",  # of render.py (mtime fallback when not a git checkout)
+    "loudnorm",  # {input_i, output_i, output_tp, output_lra} or null (#21)
+    "pruned_workdirs",  # {count, freed_bytes} when --prune-workdirs ran, else null (#21)
+    "resumed",
+)
+
+
+def _new_run_record() -> dict[str, Any]:
+    """An all-null run-log record with the full, stable key set. Callers overwrite
+    only the fields they know; everything else stays explicitly null so a parser
+    never has to handle a missing key."""
+    return dict.fromkeys(RUN_LOG_FIELDS, None)
+
+
+def resolve_render_sha() -> str:
+    """Best-effort identity of the running render.py: the repo's short git SHA when
+    this is a git checkout, else `mtime:<epoch>` of the file. Never raises — it's
+    observability metadata, not a gate. Lets the operator correlate a behavior change
+    in runs.jsonl with a specific version of the renderer."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(SCRIPT_DIR), "rev-parse", "--short", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        sha = result.stdout.strip()
+        if sha:
+            return sha
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        pass
+    try:
+        return f"mtime:{int(Path(__file__).stat().st_mtime)}"
+    except OSError:
+        return "unknown"
+
+
+def write_run_log(record: dict[str, Any]) -> None:
+    """Append one JSON record as a line to runs.jsonl (#18). Append-only by contract
+    — NEVER atomic-replace (that would truncate the log to a single line). Best-effort:
+    a log-write failure is logged and swallowed, because by the time we write a "ready"
+    record the episode has already shipped — observability must never sink a live run.
+    Always stamps `timestamp` here so every record is consistently dated."""
+    record = dict(record)
+    record.setdefault("timestamp", None)
+    if record.get("timestamp") is None:
+        record["timestamp"] = dt.datetime.now(dt.timezone.utc).isoformat()
+    try:
+        RUN_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(RUN_LOG_PATH, "a") as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError as e:
+        log(f"warn: could not append run log {RUN_LOG_PATH}: {e}")
 
 
 def resolve_house_voice() -> tuple[Path, Path]:
@@ -666,8 +776,57 @@ def write_silence(workdir: Path, ms: int) -> Path:
     return p
 
 
-def concat_and_normalize(seg_paths: list[Path], silences_ms: list[int], workdir: Path) -> Path:
-    """Build concat list, encode raw, loudnorm. Return final mp3 path."""
+# ffmpeg's loudnorm filter, with print_format=json, emits a measurement block to
+# stderr: a `[Parsed_loudnorm_0 @ ...]` line followed by a JSON object with
+# input_i/output_i/output_tp/output_lra etc. We grab the LAST {...} block (robust to
+# other bracketed log lines preceding it).
+_LOUDNORM_JSON_RE = re.compile(r"\{[^{}]*\}", flags=re.DOTALL)
+# The subset surfaced in the final JSON + run log: measured integrated loudness and
+# true-peak / loudness-range, in vs out. -16 LUFS mono is Spotify's target, so
+# output_i drifting is the audio-QA signal #21 wants in the run log.
+_LOUDNORM_KEYS = ("input_i", "output_i", "output_tp", "output_lra")
+
+
+def parse_loudnorm(stderr: str) -> dict[str, Any] | None:
+    """Parse ffmpeg loudnorm's print_format=json measurement block from stderr.
+
+    Returns {input_i, output_i, output_tp, output_lra} as floats, or None when the
+    block is absent/unparseable (e.g. ffmpeg changed its output format, or a value is
+    the literal "-inf"/"inf" on silent audio). Pure; never raises — a parse miss must
+    NOT fail a run, it just means loudnorm is recorded as null."""
+    if not stderr:
+        return None
+    blocks = _LOUDNORM_JSON_RE.findall(stderr)
+    for raw in reversed(blocks):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict) or "output_i" not in data:
+            continue
+        out: dict[str, Any] = {}
+        for k in _LOUDNORM_KEYS:
+            try:
+                val = float(data[k])
+            except (KeyError, ValueError, TypeError):
+                val = None
+            # A missing key, or a non-finite value ("-inf"/"inf"/"nan" on silent input)
+            # → null. float("-inf") parses fine but json.dumps emits a bare `Infinity`,
+            # which is NOT valid JSON and would make the runs.jsonl line unparseable by
+            # jq/pandas. Null keeps the run-log schema strictly JSON-clean.
+            out[k] = val if (val is not None and math.isfinite(val)) else None
+        return out
+    return None
+
+
+def concat_and_normalize(
+    seg_paths: list[Path], silences_ms: list[int], workdir: Path
+) -> tuple[Path, dict[str, Any] | None]:
+    """Build concat list, encode raw, loudnorm. Return (final mp3 path, loudnorm dict).
+
+    The loudnorm dict is the parsed LUFS measurement (#21) or None on a parse miss.
+    `print_format=json` only makes the (already single-pass) loudnorm filter REPORT
+    its measurements on stderr — it does not change the produced audio."""
     parts: list[Path] = []
     for i, seg in enumerate(seg_paths):
         parts.append(seg)
@@ -700,14 +859,14 @@ def concat_and_normalize(seg_paths: list[Path], silences_ms: list[int], workdir:
             str(raw),
         ]
     )
-    run(
+    loudnorm_proc = run(
         [
             "ffmpeg",
             "-y",
             "-i",
             str(raw),
             "-af",
-            "loudnorm",
+            "loudnorm=print_format=json",
             "-ar",
             "44100",
             "-ac",
@@ -719,8 +878,13 @@ def concat_and_normalize(seg_paths: list[Path], silences_ms: list[int], workdir:
             str(final),
         ]
     )
+    loudnorm = parse_loudnorm(loudnorm_proc.stderr if loudnorm_proc else "")
+    if loudnorm is None:
+        log("warn: could not parse loudnorm measurement from ffmpeg stderr")
+    else:
+        log(f"loudnorm: input_i={loudnorm.get('input_i')} output_i={loudnorm.get('output_i')}")
     log(f"final episode: {mp3_duration_ms(final) / 1000:.1f}s")
-    return final
+    return final, loudnorm
 
 
 # --- cover -----------------------------------------------------------------
@@ -1086,13 +1250,22 @@ def _recover_inflight() -> None:
     log("in-flight recovery: complete")
 
 
-def _resume(workdir: Path, marker: Path, segments: list[dict], title: str) -> int:
+def _resume(
+    workdir: Path,
+    marker: Path,
+    segments: list[dict],
+    title: str,
+    record: dict[str, Any] | None = None,
+) -> int:
     """
     Resume a run whose upload already succeeded (uploaded.json present). Skip TTS,
     cover, and upload; reuse the workdir artifacts and re-run only the idempotent
     tail: set_timeline -> poll_ready -> dedup. This recovers the common failure —
     a poll_ready timeout where the episode is actually live and Spotify was just
     slow — without re-uploading a duplicate.
+
+    `record`, when given, is the shared run-log record (#18) populated as the resume
+    succeeds so the JSONL log captures resumed runs identically to fresh ones.
     """
     try:
         data = json.loads(marker.read_text())
@@ -1122,6 +1295,21 @@ def _resume(workdir: Path, marker: Path, segments: list[dict], title: str) -> in
     _clear_inflight()
 
     timeline = json.loads(timeline_path.read_text())
+    chapter_count = sum(1 for it in timeline.get("items", []) if "chapter" in it)
+    duration_s = mp3_duration_ms(episode_mp3) / 1000
+    if record is not None:
+        record.update(
+            status="ready",
+            episode_uri=episode_uri,
+            title=data.get("title", title),
+            voice=data.get("voice"),
+            voice_mode=data.get("voice_mode"),
+            chapter_count=chapter_count,
+            duration_s=duration_s,
+            segment_count=len(segments),
+            workdir=str(workdir),
+            resumed=True,
+        )
     print(
         json.dumps(
             {
@@ -1130,8 +1318,8 @@ def _resume(workdir: Path, marker: Path, segments: list[dict], title: str) -> in
                 "title": data.get("title", title),
                 "voice": data.get("voice"),
                 "voice_mode": data.get("voice_mode"),
-                "chapter_count": sum(1 for it in timeline.get("items", []) if "chapter" in it),
-                "duration_s": mp3_duration_ms(episode_mp3) / 1000,
+                "chapter_count": chapter_count,
+                "duration_s": duration_s,
                 "resumed": True,
             },
             indent=2,
@@ -1473,12 +1661,177 @@ def maybe_publish_r2(
         return False
 
 
+# --- workdir retention (#21) -----------------------------------------------
+#
+# ⚠️ DESTRUCTIVE. prune_workdirs() deletes directories. Every guard below exists to
+# make a wrong deletion impossible:
+#   - only directories whose name starts with WORKDIR_PREFIX, sitting DIRECTLY under
+#     TMP_BASE (no recursion, no globbing into unrelated trees);
+#   - symlinks are skipped (never follow a link out of TMP_BASE);
+#   - older-than is by mtime against a positive age in days; N<=0 is refused so the
+#     flag can never mean "delete everything";
+#   - the ACTIVE workdir is excluded by resolved path, so a same-day/per-date resume
+#     can't delete the dir it is currently rendering into;
+#   - best-effort: any error deleting one dir is logged and skipped, never fatal.
+
+
+def prune_workdirs(older_than_days: int, *, exclude: Path | None = None) -> dict[str, Any] | None:
+    """Delete stale auto-created workdirs (TMP_BASE/daily-podcast-*) older than
+    `older_than_days`, never touching `exclude` (the active run's workdir). Returns
+    {count, freed_bytes} describing what was removed, or None when the flag is a no-op
+    (older_than_days <= 0). Best-effort: a failure on one dir is logged and skipped."""
+    if older_than_days <= 0:
+        # Refuse a 0/negative age — that would select every workdir and delete all
+        # of them, including ones from concurrent or just-finished runs.
+        log(f"--prune-workdirs {older_than_days} ignored (must be a positive day count)")
+        return None
+    if not TMP_BASE.exists():
+        return {"count": 0, "freed_bytes": 0}
+
+    cutoff = time.time() - older_than_days * 86400
+    exclude_resolved = exclude.resolve() if exclude else None
+    count = 0
+    freed = 0
+    for entry in TMP_BASE.iterdir():
+        # Name + shape gate: only our own auto-workdirs, real dirs, never symlinks.
+        if not entry.name.startswith(WORKDIR_PREFIX):
+            continue
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        try:
+            if exclude_resolved is not None and entry.resolve() == exclude_resolved:
+                continue  # never delete the directory this run is using
+            if entry.stat().st_mtime >= cutoff:
+                continue  # younger than the retention window — keep
+            size = sum(f.stat().st_size for f in entry.rglob("*") if f.is_file())
+            shutil.rmtree(entry)
+        except OSError as e:
+            log(f"warn: could not prune {entry}: {e}")
+            continue
+        count += 1
+        freed += size
+    if count:
+        log(f"pruned {count} stale workdir(s) (~{freed} bytes) older than {older_than_days}d")
+    return {"count": count, "freed_bytes": freed}
+
+
+# --- selftest (#21) --------------------------------------------------------
+
+
+def _check(name: str, ok: bool, detail: str) -> dict[str, Any]:
+    status = "PASS" if ok else "FAIL"
+    log(f"  [{status}] {name}: {detail}")
+    return {"name": name, "ok": ok, "detail": detail}
+
+
+def run_selftest(load_model: bool = False) -> int:
+    """Pre-flight health check for unattended runs (#21). Runs ordered dependency +
+    credential checks WITHOUT a real render — each prints a pass/fail line. Prints a
+    JSON summary to stdout and returns 0 iff every check passed, non-zero otherwise.
+
+    Deliberately does NOT use run() (which die()s on any non-zero subprocess) — a
+    failing check must be recorded and the remaining checks still run. Designed to
+    finish in <5s unless --load-model forces the slow MLX model load."""
+    checks: list[dict[str, Any]] = []
+    log("selftest: checking dependencies and credentials...")
+
+    # 1. ffmpeg + ffprobe on PATH.
+    for tool in ("ffmpeg", "ffprobe"):
+        path = shutil.which(tool)
+        checks.append(_check(tool, path is not None, path or "not found on PATH"))
+
+    # 2. save-to-spotify auth is live (lists shows as valid JSON).
+    try:
+        proc = subprocess.run(
+            ["save-to-spotify", "--json", "shows"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if proc.returncode != 0:
+            checks.append(
+                _check(
+                    "save-to-spotify-auth",
+                    False,
+                    f"`shows` exited {proc.returncode}: {(proc.stderr or '').strip()[:200]}",
+                )
+            )
+        else:
+            try:
+                json.loads(proc.stdout)
+                checks.append(_check("save-to-spotify-auth", True, "shows returned valid JSON"))
+            except json.JSONDecodeError:
+                checks.append(
+                    _check("save-to-spotify-auth", False, "shows did not return valid JSON")
+                )
+    except FileNotFoundError:
+        checks.append(_check("save-to-spotify-auth", False, "save-to-spotify not on PATH"))
+    except subprocess.TimeoutExpired:
+        checks.append(_check("save-to-spotify-auth", False, "shows timed out (auth/network?)"))
+
+    # 3. config.json exists, parses, and has show_id.
+    if not CONFIG_PATH.exists():
+        checks.append(_check("config", False, f"{CONFIG_PATH} missing"))
+    else:
+        try:
+            cfg = json.loads(CONFIG_PATH.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            checks.append(_check("config", False, f"{CONFIG_PATH} unparseable: {e}"))
+        else:
+            has_show = isinstance(cfg, dict) and bool(cfg.get("show_id"))
+            checks.append(
+                _check("config", has_show, "show_id set" if has_show else "show_id missing")
+            )
+
+    # 4. House voice ref clip + transcript exist (bundled or user copy).
+    audio_ok = USER_HOUSE_AUDIO.exists() or BUNDLED_HOUSE_AUDIO.exists()
+    text_ok = USER_HOUSE_TEXT.exists() or BUNDLED_HOUSE_TEXT.exists()
+    house_ok = audio_ok and text_ok
+    checks.append(
+        _check(
+            "house-voice",
+            house_ok,
+            "ref wav + transcript present" if house_ok else "ref wav/transcript missing",
+        )
+    )
+
+    # 5. Opt-in: actually load the TTS model (slow; the most thorough check).
+    if load_model:
+        try:
+            t0 = time.time()
+            from mlx_audio.tts.utils import load_model as _load
+
+            _load(MODEL_ID)
+            detail = f"{MODEL_ID} loaded in {time.time() - t0:.1f}s"
+            checks.append(_check("model-load", True, detail))
+        except Exception as e:  # noqa: BLE001 — any model-load failure is a check failure
+            checks.append(_check("model-load", False, f"{MODEL_ID} failed to load: {e}"))
+
+    all_ok = all(c["ok"] for c in checks)
+    print(json.dumps({"status": "ok" if all_ok else "failed", "checks": checks}, indent=2))
+    return 0 if all_ok else 1
+
+
 # --- main ------------------------------------------------------------------
 
 
-def main() -> int:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--manifest", required=True, type=Path)
+    # --manifest and --selftest are mutually exclusive: selftest is a pre-flight
+    # health check that never touches a manifest. One of them is required.
+    mode = ap.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--manifest", type=Path, help="manifest.json to render into an episode")
+    mode.add_argument(
+        "--selftest",
+        action="store_true",
+        help="pre-flight: check deps + credentials without a real run; exits non-zero on any fail",
+    )
+    ap.add_argument(
+        "--load-model",
+        action="store_true",
+        help="with --selftest: also load the TTS model (slow; the most thorough check)",
+    )
     ap.add_argument(
         "--dry-run", action="store_true", help="render audio/cover/timeline locally; skip upload"
     )
@@ -1486,9 +1839,62 @@ def main() -> int:
         "--workdir",
         type=Path,
         default=None,
-        help="working directory (default: a tmpdir under /tmp)",
+        help="working directory (default: a tmpdir under the system temp dir)",
     )
-    args = ap.parse_args()
+    ap.add_argument(
+        "--keep-workdir",
+        action="store_true",
+        help="keep the auto-created workdir after a successful run (default: delete it; "
+        "a failed run always keeps it for debugging)",
+    )
+    ap.add_argument(
+        "--prune-workdirs",
+        type=int,
+        default=0,
+        metavar="N",
+        help="before rendering, delete auto-created workdirs older than N days "
+        "(disk hygiene for unattended runs; 0 = off). Never deletes the active workdir.",
+    )
+    return ap.parse_args(argv)
+
+
+def main() -> int:
+    args = _parse_args()
+
+    # --selftest short-circuits everything: no manifest, no config load, no run-log
+    # record (it is not a "run"). Its own JSON summary + exit code are the contract.
+    if args.selftest:
+        return run_selftest(load_model=args.load_model)
+
+    global _RUN_CTX
+    record = _new_run_record()
+    record["manifest_path"] = str(args.manifest)
+    record["git_sha"] = resolve_render_sha()
+    _RUN_CTX = record
+    try:
+        return _render(args, record)
+    except SystemExit as e:
+        # die() (or any sys.exit) reached us with a non-zero code: log the failure
+        # record before propagating. The error string was stashed into the record by
+        # die(); a bare sys.exit(1) leaves it null. A zero exit is a clean return.
+        code = e.code if isinstance(e.code, int) else 1
+        if code != 0:
+            record["status"] = "failed"
+            write_run_log(record)
+        raise
+    finally:
+        _RUN_CTX = None
+
+
+def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
+    # Disk hygiene first (#21): prune stale auto-workdirs BEFORE creating this run's
+    # own, so the active workdir (created just below) can't exist yet and is therefore
+    # never a prune candidate. prune_workdirs() also supports an explicit `exclude` by
+    # resolved path (covered by tests) for any caller that prunes after creation.
+    if args.prune_workdirs:
+        pruned = prune_workdirs(args.prune_workdirs)
+        if pruned is not None:
+            record["pruned_workdirs"] = pruned
 
     if not args.manifest.exists():
         die(f"manifest not found: {args.manifest}")
@@ -1501,9 +1907,13 @@ def main() -> int:
     title = manifest["title"]
     summary = manifest["summary"]
     segments = manifest["segments"]
+    record["title"] = title
+    record["segment_count"] = len(segments)
 
-    workdir = args.workdir or Path(tempfile.mkdtemp(prefix="daily-podcast-"))
+    auto_workdir = args.workdir is None
+    workdir = args.workdir or Path(tempfile.mkdtemp(prefix=WORKDIR_PREFIX))
     workdir.mkdir(parents=True, exist_ok=True)
+    record["workdir"] = str(workdir)
     marker = workdir / "uploaded.json"
 
     # Resume: a prior run already uploaded into this workdir, so skip render + upload
@@ -1511,7 +1921,10 @@ def main() -> int:
     # (an auto tmpdir can't be resumed) and never for --dry-run (which never uploads).
     if args.workdir is not None and marker.exists() and not args.dry_run:
         log(f"workdir: {workdir}")
-        return _resume(workdir, marker, segments, title)
+        rc = _resume(workdir, marker, segments, title, record)
+        if rc == 0:
+            write_run_log(record)
+        return rc
 
     # Cross-day cron recovery (#37): before rendering a NEW episode, reconcile any
     # leftover in-flight episode (uploaded last run but never deduped). This marks
@@ -1530,6 +1943,8 @@ def main() -> int:
     voice, voice_instruct, ref_audio, ref_text = resolve_voice(manifest)
     voice_mode = resolve_voice_mode(voice_instruct, ref_audio)
     cover_date = resolve_cover_date(manifest)
+    record["voice"] = voice
+    record["voice_mode"] = voice_mode
 
     log(f"workdir: {workdir}")
     if ref_audio:
@@ -1552,7 +1967,8 @@ def main() -> int:
         raw_text=manifest.get("raw_text", False),
     )
     silences_ms = plan_silences(seg_paths)
-    episode_mp3 = concat_and_normalize(seg_paths, silences_ms, workdir)
+    episode_mp3, loudnorm = concat_and_normalize(seg_paths, silences_ms, workdir)
+    record["loudnorm"] = loudnorm
 
     # 4: cover
     cover = workdir / "cover.jpg"
@@ -1583,6 +1999,15 @@ def main() -> int:
         else:
             r2_would_publish = None
             log("[r2] dry-run: not configured, would skip")
+        chapter_count = sum(1 for it in timeline["items"] if "chapter" in it)
+        duration_s = mp3_duration_ms(episode_mp3) / 1000
+        record.update(
+            status="dry-run",
+            chapter_count=chapter_count,
+            duration_s=duration_s,
+            resumed=False,
+        )
+        write_run_log(record)
         print(
             json.dumps(
                 {
@@ -1593,8 +2018,9 @@ def main() -> int:
                     "timeline": str(timeline_path),
                     "voice": voice,
                     "voice_mode": voice_mode,
-                    "chapter_count": sum(1 for it in timeline["items"] if "chapter" in it),
-                    "duration_s": mp3_duration_ms(episode_mp3) / 1000,
+                    "chapter_count": chapter_count,
+                    "duration_s": duration_s,
+                    "loudnorm": loudnorm,
                     "r2_would_publish": r2_would_publish,
                 },
                 indent=2,
@@ -1652,6 +2078,17 @@ def main() -> int:
     # LAST, after dedup, so a crash anywhere above leaves it for the next run.
     _clear_inflight()
 
+    chapter_count = sum(1 for it in timeline["items"] if "chapter" in it)
+    duration_s = mp3_duration_ms(episode_mp3) / 1000
+    record.update(
+        status="ready",
+        episode_uri=episode_uri,
+        chapter_count=chapter_count,
+        duration_s=duration_s,
+        resumed=False,
+    )
+    write_run_log(record)
+
     print(
         json.dumps(
             {
@@ -1660,14 +2097,29 @@ def main() -> int:
                 "title": title,
                 "voice": voice,
                 "voice_mode": voice_mode,
-                "chapter_count": sum(1 for it in timeline["items"] if "chapter" in it),
-                "duration_s": mp3_duration_ms(episode_mp3) / 1000,
+                "chapter_count": chapter_count,
+                "duration_s": duration_s,
+                "loudnorm": loudnorm,
                 "r2_published": r2_published,
                 "resumed": False,
             },
             indent=2,
         )
     )
+
+    # 9: workdir hygiene (#21). Only auto-created workdirs are eligible — deleting an
+    # explicit --workdir would break the documented same-workdir resume/no-op path, so
+    # an explicit one is always kept. A failed run never reaches here, so failures keep
+    # their workdir for debugging automatically. Best-effort: a cleanup error is logged,
+    # not fatal (the episode is already live + deduped). The resume path keeps its
+    # workdir untouched (it never auto-deletes), preserving the idempotent re-run.
+    if auto_workdir and not args.keep_workdir:
+        try:
+            shutil.rmtree(workdir)
+            log(f"deleted workdir {workdir} (pass --keep-workdir to retain)")
+        except OSError as e:
+            log(f"warn: could not delete workdir {workdir}: {e}")
+
     return 0
 
 
