@@ -813,3 +813,417 @@ def test_prep_segment_text_normalizes_by_default():
 def test_prep_segment_text_raw_bypasses_normalization():
     # raw_text=True keeps the em dash (strip only) for pre-normalized callers.
     assert render._prep_segment_text("  a — b  ", raw_text=True) == "a — b"
+
+
+# --- segment cache key (#9) ----------------------------------------------
+
+
+def test_cache_key_changes_with_text():
+    a = render._segment_cache_key("hello world", "preset", "Ryan", None, None)
+    b = render._segment_cache_key("hello there", "preset", "Ryan", None, None)
+    assert a != b
+
+
+def test_cache_key_changes_with_voice_name():
+    a = render._segment_cache_key("hello", "preset", "Ryan", None, None)
+    b = render._segment_cache_key("hello", "preset", "Aiden", None, None)
+    assert a != b
+
+
+def test_cache_key_changes_with_mode():
+    # Same text + same voice label, but a different rendering engine must not collide.
+    clone = render._segment_cache_key("hello", "clone", "house", "deadbeef", "ref")
+    design = render._segment_cache_key("hello", "design", "house", None, "an instruct")
+    assert clone != design
+
+
+def test_cache_key_changes_with_ref_audio_fingerprint():
+    # Re-recording the house clip (same text, same label) must invalidate.
+    a = render._segment_cache_key("hello", "clone", "house", "fp-old", "ref text")
+    b = render._segment_cache_key("hello", "clone", "house", "fp-new", "ref text")
+    assert a != b
+
+
+def test_cache_key_changes_with_ref_text():
+    a = render._segment_cache_key("hello", "clone", "house", "fp", "transcript one")
+    b = render._segment_cache_key("hello", "clone", "house", "fp", "transcript two")
+    assert a != b
+
+
+def test_cache_key_stable_for_same_inputs():
+    a = render._segment_cache_key("hello", "clone", "house", "fp", "ref")
+    b = render._segment_cache_key("hello", "clone", "house", "fp", "ref")
+    assert a == b
+    assert len(a) == 64  # sha256 hexdigest
+
+
+def test_ref_audio_fingerprint_tracks_bytes(tmp_path):
+    p = tmp_path / "house.wav"
+    p.write_bytes(b"RIFFabc")
+    fp1 = render._ref_audio_fingerprint(str(p))
+    p.write_bytes(b"RIFFxyz")  # re-record the reference clip
+    fp2 = render._ref_audio_fingerprint(str(p))
+    assert fp1 != fp2
+    assert render._ref_audio_fingerprint(None) is None
+
+
+# --- render_segments cache behavior (#9) ---------------------------------
+
+
+class _FakeAudioResult:
+    """Mimics one mlx-audio generate() result: a `.audio` array-like."""
+
+    def __init__(self, n: int = 4):
+        self.audio = [0.0] * n
+
+
+@pytest.fixture
+def fake_tts(monkeypatch):
+    """Install fake numpy / soundfile / mlx_audio modules and stub ffmpeg so
+    render_segments runs without MLX, Metal, or a real encoder. The fake model
+    records every text it is asked to render so a test can assert cache hits/misses.
+
+    ffmpeg is replaced by a `run` stub that just `touch`es the target mp3, so the
+    sidecar + cache-hit logic (which keys on mp3 existence) is exercised faithfully.
+    """
+    import types
+
+    rendered_texts: list[str] = []
+    model_loads: list[str] = []
+
+    class FakeModel:
+        def generate(self, text, **kw):
+            rendered_texts.append(text)
+            return [_FakeAudioResult()]
+
+        def generate_voice_design(self, text, **kw):
+            rendered_texts.append(text)
+            return [_FakeAudioResult()]
+
+    fake_np = types.ModuleType("numpy")
+    fake_np.concatenate = lambda arrs: [x for a in arrs for x in a]
+    fake_np.array = lambda x: list(x)
+    monkeypatch.setitem(sys.modules, "numpy", fake_np)
+
+    fake_sf = types.ModuleType("soundfile")
+    fake_sf.write = lambda path, audio, sr: Path(path).write_bytes(b"\x00")
+    monkeypatch.setitem(sys.modules, "soundfile", fake_sf)
+
+    mlx_audio = types.ModuleType("mlx_audio")
+    mlx_tts = types.ModuleType("mlx_audio.tts")
+    mlx_utils = types.ModuleType("mlx_audio.tts.utils")
+
+    def _load_model(model_id):
+        model_loads.append(model_id)
+        return FakeModel()
+
+    mlx_utils.load_model = _load_model
+    monkeypatch.setitem(sys.modules, "mlx_audio", mlx_audio)
+    monkeypatch.setitem(sys.modules, "mlx_audio.tts", mlx_tts)
+    monkeypatch.setitem(sys.modules, "mlx_audio.tts.utils", mlx_utils)
+
+    def fake_run(cmd, **kw):
+        # ffmpeg -i wav ... mp3 — the mp3 path is the last positional arg.
+        Path(cmd[-1]).write_bytes(b"\x00")
+        return None
+
+    monkeypatch.setattr(render, "run", fake_run)
+
+    return types.SimpleNamespace(rendered_texts=rendered_texts, model_loads=model_loads)
+
+
+def _segs(*texts):
+    return [{"text": t} for t in texts]
+
+
+def test_render_segments_writes_sidecar_per_segment(tmp_path, fake_tts):
+    segs = _segs("alpha intro", "beta body")
+    paths = render.render_segments(segs, "Ryan", tmp_path)
+
+    assert [p.name for p in paths] == ["seg_01.mp3", "seg_02.mp3"]
+    for i in (1, 2):
+        sidecar = tmp_path / f"seg_{i:02d}.json"
+        assert sidecar.exists()
+        meta = json.loads(sidecar.read_text())
+        assert "key" in meta and len(meta["key"]) == 64
+    # Both rendered fresh on a cold workdir.
+    assert fake_tts.rendered_texts == ["alpha intro", "beta body"]
+
+
+def test_render_segments_full_cache_hit_skips_model_load(tmp_path, fake_tts):
+    segs = _segs("alpha intro", "beta body")
+    render.render_segments(segs, "Ryan", tmp_path)
+    assert len(fake_tts.model_loads) == 1  # cold run loaded the model once
+
+    # Re-run with the SAME workdir + manifest: every segment is cached.
+    fake_tts.rendered_texts.clear()
+    fake_tts.model_loads.clear()
+    paths = render.render_segments(segs, "Ryan", tmp_path)
+
+    assert [p.name for p in paths] == ["seg_01.mp3", "seg_02.mp3"]
+    assert fake_tts.rendered_texts == []  # nothing re-rendered
+    assert fake_tts.model_loads == []  # model load skipped entirely (acceptance)
+
+
+def test_render_segments_partial_cache_rerenders_only_changed(tmp_path, fake_tts):
+    segs = _segs("alpha intro", "beta body", "gamma outro")
+    render.render_segments(segs, "Ryan", tmp_path)
+
+    # Change only the middle segment's text; the other two stay cached.
+    fake_tts.rendered_texts.clear()
+    fake_tts.model_loads.clear()
+    segs2 = _segs("alpha intro", "beta body REVISED", "gamma outro")
+    render.render_segments(segs2, "Ryan", tmp_path)
+
+    assert fake_tts.rendered_texts == ["beta body REVISED"]  # only the change
+    assert len(fake_tts.model_loads) == 1  # partial → model still loads once
+
+
+def test_render_segments_voice_change_invalidates_all(tmp_path, fake_tts):
+    segs = _segs("alpha intro", "beta body")
+    render.render_segments(segs, "house", tmp_path, ref_audio=None, ref_text=None)
+    # Render under a clone voice (different mode), then switch to a preset.
+    fake_tts.rendered_texts.clear()
+    render.render_segments(segs, "Ryan", tmp_path)
+    # Different voice/mode → all entries invalidated, both re-rendered.
+    assert fake_tts.rendered_texts == ["alpha intro", "beta body"]
+
+
+def test_render_segments_ref_audio_change_invalidates_clone_cache(tmp_path, fake_tts):
+    ref = tmp_path / "house.wav"
+    ref.write_bytes(b"RIFF-v1")
+    segs = _segs("alpha intro", "beta body")
+    render.render_segments(segs, "house", tmp_path, ref_audio=str(ref), ref_text="ref")
+
+    # Re-record the house clip; same text + label, but the bytes changed.
+    ref.write_bytes(b"RIFF-v2-different")
+    fake_tts.rendered_texts.clear()
+    render.render_segments(segs, "house", tmp_path, ref_audio=str(ref), ref_text="ref")
+    assert fake_tts.rendered_texts == ["alpha intro", "beta body"]  # all re-rendered
+
+
+def test_render_segments_cache_hit_logs_reuse(tmp_path, fake_tts, capsys):
+    segs = _segs("alpha intro")
+    render.render_segments(segs, "Ryan", tmp_path)
+    capsys.readouterr()  # drop cold-run logs
+    render.render_segments(segs, "Ryan", tmp_path)
+    err = capsys.readouterr().err
+    assert "cache" in err.lower()  # a line distinguishes reuse from a fresh render
+
+
+def test_render_segments_stale_mp3_without_sidecar_rerenders(tmp_path, fake_tts):
+    # A pre-existing seg_01.mp3 with no sidecar (older run / partial write) must not
+    # be trusted as a cache hit — content identity is unknown, so re-render.
+    (tmp_path / "seg_01.mp3").write_bytes(b"stale")
+    segs = _segs("alpha intro")
+    render.render_segments(segs, "Ryan", tmp_path)
+    assert fake_tts.rendered_texts == ["alpha intro"]
+
+
+# --- in-flight episode log (#37) -----------------------------------------
+
+
+def test_inflight_write_and_clear_roundtrip(tmp_path, monkeypatch):
+    inflight = tmp_path / "inflight.json"
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(render, "INFLIGHT_PATH", inflight)
+
+    render._write_inflight(
+        episode_uri="spotify:episode:abc",
+        title="T",
+        workdir=tmp_path / "wd",
+        source_urls=["https://example.com/a", "https://example.com/b"],
+    )
+    data = json.loads(inflight.read_text())
+    assert data["episode_uri"] == "spotify:episode:abc"
+    assert data["source_urls"] == ["https://example.com/a", "https://example.com/b"]
+    assert data["title"] == "T"
+
+    render._clear_inflight()
+    assert not inflight.exists()
+
+
+def test_clear_inflight_is_noop_when_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(render, "INFLIGHT_PATH", tmp_path / "nope.json")
+    render._clear_inflight()  # no raise
+
+
+def test_load_inflight_treats_malformed_as_none(tmp_path, monkeypatch):
+    p = tmp_path / "inflight.json"
+    p.write_text("{not json")
+    monkeypatch.setattr(render, "INFLIGHT_PATH", p)
+    assert render._load_inflight() is None
+
+
+def test_load_inflight_returns_none_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(render, "INFLIGHT_PATH", tmp_path / "nope.json")
+    assert render._load_inflight() is None
+
+
+def test_recover_inflight_marks_urls_covered_and_clears(tmp_path, monkeypatch):
+    # Simulate: a prior run uploaded but died before dedup. A *different* workdir
+    # (gone) — recovery must still mark the URLs covered so curation can't re-pick
+    # them, then clear the log.
+    inflight = tmp_path / "inflight.json"
+    covered = tmp_path / "covered.json"
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(render, "INFLIGHT_PATH", inflight)
+    monkeypatch.setattr(render, "COVERED_PATH", covered)
+    inflight.write_text(
+        json.dumps(
+            {
+                "episode_uri": "spotify:episode:mon",
+                "title": "Monday",
+                "workdir": str(tmp_path / "gone-workdir"),  # does not exist
+                "source_urls": ["https://example.com/mon1", "https://example.com/mon2"],
+            }
+        )
+    )
+    # The server tail must NOT be attempted when the workdir/timeline is gone.
+    monkeypatch.setattr(
+        render, "set_timeline", lambda *a, **k: pytest.fail("no timeline set when workdir gone")
+    )
+    monkeypatch.setattr(render, "poll_ready", lambda *a, **k: pytest.fail("no poll when gone"))
+
+    render._recover_inflight()
+
+    cov = json.loads(covered.read_text())
+    assert cov["https://example.com/mon1"]["episode_uri"] == "spotify:episode:mon"
+    assert cov["https://example.com/mon2"]["episode_uri"] == "spotify:episode:mon"
+    assert not inflight.exists()  # cleared after dedup
+
+
+def test_recover_inflight_reruns_tail_when_workdir_present(tmp_path, monkeypatch):
+    # Monday's workdir survived: recovery re-runs set_timeline + poll_ready before
+    # marking covered, so a genuinely pending episode is finished.
+    inflight = tmp_path / "inflight.json"
+    covered = tmp_path / "covered.json"
+    wd = tmp_path / "mon-wd"
+    wd.mkdir()
+    (wd / "timeline.json").write_text(json.dumps({"items": []}))
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(render, "INFLIGHT_PATH", inflight)
+    monkeypatch.setattr(render, "COVERED_PATH", covered)
+    inflight.write_text(
+        json.dumps(
+            {
+                "episode_uri": "spotify:episode:mon",
+                "title": "Monday",
+                "workdir": str(wd),
+                "source_urls": ["https://example.com/mon1"],
+            }
+        )
+    )
+    calls = []
+    monkeypatch.setattr(render, "set_timeline", lambda eid, tp: calls.append(("set", eid)))
+    monkeypatch.setattr(render, "poll_ready", lambda eid: calls.append(("poll", eid)))
+
+    render._recover_inflight()
+
+    assert ("set", "mon") in calls
+    assert ("poll", "mon") in calls
+    cov = json.loads(covered.read_text())
+    assert "https://example.com/mon1" in cov
+    assert not inflight.exists()
+
+
+def test_recover_inflight_keeps_log_when_recovery_crashes(tmp_path, monkeypatch):
+    # A crash mid-recovery (poll_ready raises) must leave inflight.json intact for
+    # the next attempt, and must NOT have marked covered yet (dedup runs last).
+    inflight = tmp_path / "inflight.json"
+    covered = tmp_path / "covered.json"
+    wd = tmp_path / "mon-wd"
+    wd.mkdir()
+    (wd / "timeline.json").write_text(json.dumps({"items": []}))
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(render, "INFLIGHT_PATH", inflight)
+    monkeypatch.setattr(render, "COVERED_PATH", covered)
+    payload = {
+        "episode_uri": "spotify:episode:mon",
+        "title": "Monday",
+        "workdir": str(wd),
+        "source_urls": ["https://example.com/mon1"],
+    }
+    inflight.write_text(json.dumps(payload))
+    monkeypatch.setattr(render, "set_timeline", lambda eid, tp: None)
+
+    def boom(eid):
+        raise RuntimeError("spotify down")
+
+    monkeypatch.setattr(render, "poll_ready", boom)
+
+    with pytest.raises(RuntimeError):
+        render._recover_inflight()
+
+    assert json.loads(inflight.read_text()) == payload  # log intact for retry
+    assert not covered.exists()  # dedup never ran
+
+
+def test_recover_inflight_noop_when_log_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(render, "INFLIGHT_PATH", tmp_path / "nope.json")
+    monkeypatch.setattr(render, "set_timeline", lambda *a, **k: pytest.fail("nothing to recover"))
+    render._recover_inflight()  # no raise, no work
+
+
+def test_main_recovers_inflight_before_fresh_render(tmp_path, monkeypatch):
+    # End-to-end of the cron gap: Monday's upload is in-flight; Tuesday runs a fresh
+    # manifest in a DIFFERENT workdir. Tuesday's run must recover Monday first
+    # (Monday's URLs covered) and then proceed to ship Tuesday (its URLs covered too).
+    inflight = tmp_path / "inflight.json"
+    covered = tmp_path / "covered.json"
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(render, "INFLIGHT_PATH", inflight)
+    monkeypatch.setattr(render, "COVERED_PATH", covered)
+    inflight.write_text(
+        json.dumps(
+            {
+                "episode_uri": "spotify:episode:mon",
+                "title": "Monday",
+                "workdir": str(tmp_path / "gone"),  # Monday's tmp workdir is gone
+                "source_urls": ["https://example.com/monday"],
+            }
+        )
+    )
+
+    manifest = tmp_path / "tue.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "title": "Tuesday",
+                "summary": "s",
+                "show_id": "spotify:show:1",
+                "segments": [{"text": "hi", "source_url": "https://example.com/tuesday"}],
+            }
+        )
+    )
+    # Stub the whole render+upload tail so the test stays unit-light; the point is
+    # the recovery-then-ship ordering and that BOTH days end up covered.
+    monkeypatch.setattr(render, "load_config", lambda: {"show_id": "spotify:show:1"})
+    monkeypatch.setattr(render, "render_segments", lambda *a, **k: [tmp_path / "seg_01.mp3"])
+    monkeypatch.setattr(render, "plan_silences", lambda paths: [0])
+    monkeypatch.setattr(render, "concat_and_normalize", lambda *a, **k: tmp_path / "episode.mp3")
+    monkeypatch.setattr(render, "build_cover", lambda *a, **k: None)
+    monkeypatch.setattr(
+        render,
+        "build_timeline_and_description",
+        lambda *a, **k: ({"items": [{"chapter": {"title": "A", "start_time_ms": 0}}]}, "<p>d</p>"),
+    )
+    monkeypatch.setattr(render, "upload", lambda *a, **k: "spotify:episode:tue")
+    monkeypatch.setattr(render, "set_timeline", lambda *a, **k: None)
+    monkeypatch.setattr(render, "poll_ready", lambda *a, **k: None)
+    monkeypatch.setattr(render, "maybe_publish_r2", lambda *a, **k: False)
+    monkeypatch.setattr(render, "mp3_duration_ms", lambda p: 60_000)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["render.py", "--manifest", str(manifest), "--workdir", str(tmp_path / "tue-wd")],
+    )
+
+    assert render.main() == 0
+
+    cov = json.loads(covered.read_text())
+    # Monday recovered (no duplicate next-day re-ship) AND Tuesday shipped.
+    assert cov["https://example.com/monday"]["episode_uri"] == "spotify:episode:mon"
+    assert cov["https://example.com/tuesday"]["episode_uri"] == "spotify:episode:tue"
+    # In-flight log cleared after Tuesday's own dedup completed.
+    assert not inflight.exists()
