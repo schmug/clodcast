@@ -1,0 +1,8 @@
+# Revisions to ignore in `git blame` (bulk reformats, not real authorship changes).
+#
+# Enable locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# GitHub applies this file automatically in its blame view.
+
+# style: apply ruff format — one-time Black-style reformat of all .py (#36)
+ebab58dc5c0f25477281b9cb0644aed01d529c51

@@ -140,12 +140,20 @@ pip install ruff pytest      # tooling only (no MLX)
 pip install -e ".[dev]"
 ```
 
-**Lint** — `ruff check` is enforced; `ruff format --check` is advisory (the renderer keeps a hand-tuned layout):
+**Lint & format** — both `ruff check` and `ruff format --check` are enforced (CI fails on a format diff). The renderer's once hand-tuned layout was reformatted to `ruff format` in one isolated commit; run `ruff format .` to fix any diff before committing:
 
 ```bash
 ruff check .
-ruff format --check .   # advisory
+ruff format --check .   # enforced — fails on any diff
 ```
+
+The reformat commit is listed in [`.git-blame-ignore-revs`](.git-blame-ignore-revs) so the bulk-format churn doesn't pollute `git blame`. To skip it locally:
+
+```bash
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
+
+(GitHub honors this file automatically in its blame view.)
 
 **Tests:**
 
