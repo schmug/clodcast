@@ -1,7 +1,10 @@
-# Discussions are not enabled on this repo, so point questions at the README
-# instead of a Discussions board. Flip this to a discussions URL if/when they're on.
+# Questions and usage help go to Discussions (Q&A); the README stays as the
+# first-stop docs link. Issues are for confirmed bugs and concrete feature requests.
 blank_issues_enabled: true
 contact_links:
-  - name: Setup & usage questions
+  - name: Questions & usage help
+    url: https://github.com/schmug/clodcast/discussions/categories/q-a
+    about: Ask in Discussions (Q&A) — for install/config/usage questions rather than bug reports.
+  - name: Setup & usage docs
     url: https://github.com/schmug/clodcast#readme
     about: Read the README for install, config, and usage before filing an issue.
