@@ -68,10 +68,10 @@ HOUSE_VOICE_INSTRUCT = (
     "no dramatic emphasis. Bright but human, unobtrusive, not performative. "
     "Clear and natural. Resonant lower register."
 )
-TARGET_CHAPTER_MS = 30_500          # 30s + buffer; Spotify rejects <30s strict
+TARGET_CHAPTER_MS = 30_500  # 30s + buffer; Spotify rejects <30s strict
 MAX_SHORT_CHAPTERS = 3
 DEFAULT_SILENCE_MS = 800
-LAST_SILENCE_MS = 0                 # no silence after the final segment
+LAST_SILENCE_MS = 0  # no silence after the final segment
 CONFIG_DIR = Path.home() / ".config" / "daily-podcast"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 COVERED_PATH = CONFIG_DIR / "covered.json"
@@ -80,6 +80,7 @@ USER_HOUSE_AUDIO = VOICES_DIR / "house.wav"
 USER_HOUSE_TEXT = VOICES_DIR / "house.txt"
 
 # --- helpers ---------------------------------------------------------------
+
 
 def log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
@@ -170,6 +171,7 @@ def resolve_house_voice() -> tuple[Path, Path]:
 
 def mp3_duration_ms(path: Path) -> int:
     from mutagen.mp3 import MP3
+
     return int(MP3(str(path)).info.length * 1000)
 
 
@@ -200,8 +202,10 @@ def resolve_voice(manifest: dict[str, Any]) -> tuple[str, str | None, str | None
     elif requested in VOICES:
         voice = requested
     else:
-        die(f"unknown voice: {requested}. Expected 'house', 'random', "
-            f"one of {VOICES}, or set voice_instruct directly.")
+        die(
+            f"unknown voice: {requested}. Expected 'house', 'random', "
+            f"one of {VOICES}, or set voice_instruct directly."
+        )
     return voice, voice_instruct, ref_audio, ref_text
 
 
@@ -241,6 +245,7 @@ def resolve_cover_date(manifest: dict[str, Any]) -> str:
 
 # --- input safety ----------------------------------------------------------
 
+
 def validate_manifest(manifest: dict[str, Any]) -> None:
     """
     Fail fast (via die) on a malformed manifest BEFORE the ~15s model load, naming
@@ -269,7 +274,9 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             if seg.get(opt) is not None and not isinstance(seg[opt], str):
                 die(f"manifest segment[{i}].{opt} must be a string")
         url = seg.get("source_url")
-        if url is not None and not (isinstance(url, str) and url.startswith(("http://", "https://"))):
+        if url is not None and not (
+            isinstance(url, str) and url.startswith(("http://", "https://"))
+        ):
             die(f"manifest segment[{i}].source_url must be an http(s) URL (got {url!r})")
 
     voice = manifest.get("voice")
@@ -322,7 +329,7 @@ def normalize_for_tts(text: str) -> str:
     for smart, plain in _SMART_QUOTES.items():
         text = text.replace(smart, plain)
     text = _CODE_BLOCK_RE.sub("", text)  # whole fenced blocks (fences + content)
-    text = text.replace("`", "")         # stray inline backticks
+    text = text.replace("`", "")  # stray inline backticks
     text = _HEADING_RE.sub("", text)
     text = re.sub(r"[ \t]{2,}", " ", text)  # collapse runs left by stripped tokens
     return text.strip()
@@ -336,11 +343,16 @@ def _prep_segment_text(text: str, raw_text: bool) -> str:
 
 # --- audio rendering -------------------------------------------------------
 
-def render_segments(segments: list[dict], voice: str, workdir: Path,
-                   voice_instruct: str | None = None,
-                   ref_audio: str | None = None,
-                   ref_text: str | None = None,
-                   raw_text: bool = False) -> list[Path]:
+
+def render_segments(
+    segments: list[dict],
+    voice: str,
+    workdir: Path,
+    voice_instruct: str | None = None,
+    ref_audio: str | None = None,
+    ref_text: str | None = None,
+    raw_text: bool = False,
+) -> list[Path]:
     """
     Render each segment text to an mp3 in workdir; return list of mp3 paths.
 
@@ -377,32 +389,55 @@ def render_segments(segments: list[dict], voice: str, workdir: Path,
         log(f"[{i}/{len(segments)}] rendering ({len(text)} chars, voice={voice}, mode={mode})...")
         t0 = time.time()
         if use_clone:
-            results = list(model.generate(
-                text=text, language="English",
-                ref_audio=ref_audio, ref_text=ref_text,
-            ))
+            results = list(
+                model.generate(
+                    text=text,
+                    language="English",
+                    ref_audio=ref_audio,
+                    ref_text=ref_text,
+                )
+            )
         elif use_design:
-            results = list(model.generate_voice_design(
-                text=text, language="English", instruct=voice_instruct,
-            ))
+            results = list(
+                model.generate_voice_design(
+                    text=text,
+                    language="English",
+                    instruct=voice_instruct,
+                )
+            )
         else:
-            results = list(model.generate(
-                text=text, voice=voice, language="English",
-            ))
+            results = list(
+                model.generate(
+                    text=text,
+                    voice=voice,
+                    language="English",
+                )
+            )
         audio = np.concatenate([np.array(r.audio) for r in results])
         wav = workdir / f"seg_{i:02d}.wav"
         mp3 = workdir / f"seg_{i:02d}.mp3"
         sf.write(wav, audio, SAMPLE_RATE)
         # convert to mp3 at 44.1k mono so concat is clean
-        run([
-            "ffmpeg", "-y", "-i", str(wav),
-            "-ar", "44100", "-ac", "1",
-            "-c:a", "libmp3lame", "-b:a", "192k",
-            str(mp3),
-        ])
+        run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(wav),
+                "-ar",
+                "44100",
+                "-ac",
+                "1",
+                "-c:a",
+                "libmp3lame",
+                "-b:a",
+                "192k",
+                str(mp3),
+            ]
+        )
         dur_s = len(audio) / SAMPLE_RATE
         elapsed = time.time() - t0
-        log(f"  -> {dur_s:.2f}s in {elapsed:.1f}s ({dur_s/elapsed:.1f}x rt)")
+        log(f"  -> {dur_s:.2f}s in {elapsed:.1f}s ({dur_s / elapsed:.1f}x rt)")
         paths.append(mp3)
     return paths
 
@@ -435,10 +470,7 @@ def plan_silences(seg_paths: list[Path]) -> list[int]:
     MAX_SILENCE_MS = 12_000
 
     while len(short_indices()) > MAX_SHORT_CHAPTERS:
-        candidates = [
-            i for i in short_indices()
-            if i < n - 1 and silence[i] < MAX_SILENCE_MS
-        ]
+        candidates = [i for i in short_indices() if i < n - 1 and silence[i] < MAX_SILENCE_MS]
         if not candidates:
             die(
                 f"can't satisfy chapter rule: {len(short_indices())} short chapters, "
@@ -463,18 +495,27 @@ def write_silence(workdir: Path, ms: int) -> Path:
     if p.exists():
         return p
     secs = ms / 1000
-    run([
-        "ffmpeg", "-y", "-f", "lavfi",
-        "-i", "anullsrc=r=44100:cl=mono",
-        "-t", f"{secs:.3f}",
-        "-q:a", "9", "-acodec", "libmp3lame",
-        str(p),
-    ])
+    run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=44100:cl=mono",
+            "-t",
+            f"{secs:.3f}",
+            "-q:a",
+            "9",
+            "-acodec",
+            "libmp3lame",
+            str(p),
+        ]
+    )
     return p
 
 
-def concat_and_normalize(seg_paths: list[Path], silences_ms: list[int],
-                        workdir: Path) -> Path:
+def concat_and_normalize(seg_paths: list[Path], silences_ms: list[int], workdir: Path) -> Path:
     """Build concat list, encode raw, loudnorm. Return final mp3 path."""
     parts: list[Path] = []
     for i, seg in enumerate(seg_paths):
@@ -487,25 +528,52 @@ def concat_and_normalize(seg_paths: list[Path], silences_ms: list[int],
 
     raw = workdir / "episode_raw.mp3"
     final = workdir / "episode.mp3"
-    run([
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-        "-i", str(concat_list),
-        "-ar", "44100", "-ac", "1",
-        "-c:a", "libmp3lame", "-b:a", "192k",
-        str(raw),
-    ])
-    run([
-        "ffmpeg", "-y", "-i", str(raw),
-        "-af", "loudnorm",
-        "-ar", "44100", "-ac", "1",
-        "-c:a", "libmp3lame", "-b:a", "192k",
-        str(final),
-    ])
-    log(f"final episode: {mp3_duration_ms(final)/1000:.1f}s")
+    run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_list),
+            "-ar",
+            "44100",
+            "-ac",
+            "1",
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            "192k",
+            str(raw),
+        ]
+    )
+    run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(raw),
+            "-af",
+            "loudnorm",
+            "-ar",
+            "44100",
+            "-ac",
+            "1",
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            "192k",
+            str(final),
+        ]
+    )
+    log(f"final episode: {mp3_duration_ms(final) / 1000:.1f}s")
     return final
 
 
 # --- cover -----------------------------------------------------------------
+
 
 def resolve_font() -> str:
     """
@@ -544,11 +612,14 @@ def build_cover(out_path: Path, show_name: str, date_str: str, title_hint: str) 
     d = ImageDraw.Draw(bg)
     for y in range(H):
         t = y / (H - 1)
-        d.line([(0, y), (W, y)], fill=(
-            int(top[0] + (bot[0] - top[0]) * t),
-            int(top[1] + (bot[1] - top[1]) * t),
-            int(top[2] + (bot[2] - top[2]) * t),
-        ))
+        d.line(
+            [(0, y), (W, y)],
+            fill=(
+                int(top[0] + (bot[0] - top[0]) * t),
+                int(top[1] + (bot[1] - top[1]) * t),
+                int(top[2] + (bot[2] - top[2]) * t),
+            ),
+        )
 
     # Bottom darkening for legibility
     overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -617,25 +688,34 @@ def build_cover(out_path: Path, show_name: str, date_str: str, title_hint: str) 
 
 # --- timeline + description ------------------------------------------------
 
-def build_timeline_and_description(segments: list[dict], seg_paths: list[Path],
-                                   silences_ms: list[int], summary: str,
-                                   episode_mp3: Path) -> tuple[dict, str]:
+
+def build_timeline_and_description(
+    segments: list[dict],
+    seg_paths: list[Path],
+    silences_ms: list[int],
+    summary: str,
+    episode_mp3: Path,
+) -> tuple[dict, str]:
     items: list[dict] = []
     chapters: list[tuple[int, str, str | None]] = []  # (ms, title, url)
     cursor = 0
     for i, seg in enumerate(segments):
-        title = seg.get("title") or seg.get("source_title") or f"Segment {i+1}"
+        title = seg.get("title") or seg.get("source_title") or f"Segment {i + 1}"
         url = seg.get("source_url")
         items.append({"chapter": {"title": title, "start_time_ms": cursor}})
         dur = mp3_duration_ms(seg_paths[i])
         if url:
             link_start = cursor + max(1000, int(dur * 0.40))
             link_dur = min(6000, max(2000, dur - 2000))
-            items.append({"link": {
-                "start_time_ms": link_start,
-                "duration_ms": link_dur,
-                "url": url,
-            }})
+            items.append(
+                {
+                    "link": {
+                        "start_time_ms": link_start,
+                        "duration_ms": link_dur,
+                        "url": url,
+                    }
+                }
+            )
         chapters.append((cursor, title, url))
         cursor += dur + silences_ms[i]
 
@@ -664,16 +744,25 @@ def build_timeline_and_description(segments: list[dict], seg_paths: list[Path],
 
 # --- upload + poll ---------------------------------------------------------
 
-def upload(episode_mp3: Path, title: str, description: str, cover: Path,
-          show_id: str) -> str:
+
+def upload(episode_mp3: Path, title: str, description: str, cover: Path, show_id: str) -> str:
     """Return episode_uri."""
-    result = run([
-        "save-to-spotify", "--json", "upload", str(episode_mp3),
-        "--title", title,
-        "--summary", description,
-        "--show-id", show_id,
-        "--image", str(cover),
-    ])
+    result = run(
+        [
+            "save-to-spotify",
+            "--json",
+            "upload",
+            str(episode_mp3),
+            "--title",
+            title,
+            "--summary",
+            description,
+            "--show-id",
+            show_id,
+            "--image",
+            str(cover),
+        ]
+    )
     data = json.loads(result.stdout)
     if "error" in data:
         die(f"upload error: {data['error']}")
@@ -681,11 +770,18 @@ def upload(episode_mp3: Path, title: str, description: str, cover: Path,
 
 
 def set_timeline(episode_id: str, timeline_path: Path) -> None:
-    result = run([
-        "save-to-spotify", "--json", "timeline", "set",
-        "--episode-id", episode_id,
-        "--from-file", str(timeline_path),
-    ])
+    result = run(
+        [
+            "save-to-spotify",
+            "--json",
+            "timeline",
+            "set",
+            "--episode-id",
+            episode_id,
+            "--from-file",
+            str(timeline_path),
+        ]
+    )
     data = json.loads(result.stdout)
     if "error" in data:
         die(f"timeline set error: {data['error']}")
@@ -694,9 +790,15 @@ def set_timeline(episode_id: str, timeline_path: Path) -> None:
 def poll_ready(episode_id: str, timeout_s: int = 600) -> None:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        result = run([
-            "save-to-spotify", "--json", "episodes", "status", episode_id,
-        ])
+        result = run(
+            [
+                "save-to-spotify",
+                "--json",
+                "episodes",
+                "status",
+                episode_id,
+            ]
+        )
         data = json.loads(result.stdout)
         r = data.get("readiness", "")
         log(f"  status: {r}")
@@ -740,8 +842,11 @@ def _resume(workdir: Path, marker: Path, segments: list[dict], title: str) -> in
     episode_mp3 = workdir / "episode.mp3"
     cover = workdir / "cover.jpg"
     timeline_path = workdir / "timeline.json"
-    for path, name in ((episode_mp3, "episode.mp3"), (cover, "cover.jpg"),
-                       (timeline_path, "timeline.json")):
+    for path, name in (
+        (episode_mp3, "episode.mp3"),
+        (cover, "cover.jpg"),
+        (timeline_path, "timeline.json"),
+    ):
         if not path.exists():
             die(f"workdir has uploaded.json but missing {name}; cannot resume safely")
 
@@ -751,16 +856,21 @@ def _resume(workdir: Path, marker: Path, segments: list[dict], title: str) -> in
     _save_dedup(segments, episode_uri)
 
     timeline = json.loads(timeline_path.read_text())
-    print(json.dumps({
-        "status": "ready",
-        "episode_uri": episode_uri,
-        "title": data.get("title", title),
-        "voice": data.get("voice"),
-        "voice_mode": data.get("voice_mode"),
-        "chapter_count": sum(1 for it in timeline.get("items", []) if "chapter" in it),
-        "duration_s": mp3_duration_ms(episode_mp3) / 1000,
-        "resumed": True,
-    }, indent=2))
+    print(
+        json.dumps(
+            {
+                "status": "ready",
+                "episode_uri": episode_uri,
+                "title": data.get("title", title),
+                "voice": data.get("voice"),
+                "voice_mode": data.get("voice_mode"),
+                "chapter_count": sum(1 for it in timeline.get("items", []) if "chapter" in it),
+                "duration_s": mp3_duration_ms(episode_mp3) / 1000,
+                "resumed": True,
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -806,21 +916,32 @@ def chapters_from_timeline(timeline: dict[str, Any]) -> list[dict[str, Any]]:
     for item in timeline.get("items", []):
         if "chapter" in item:
             ch = item["chapter"]
-            chapters.append({
-                "title": ch.get("title", ""),
-                "start_ms": ch.get("start_time_ms", 0),
-                "source_url": None,
-            })
+            chapters.append(
+                {
+                    "title": ch.get("title", ""),
+                    "start_ms": ch.get("start_time_ms", 0),
+                    "source_url": None,
+                }
+            )
         elif "link" in item and chapters:
             chapters[-1]["source_url"] = item["link"].get("url")
     return chapters
 
 
-def build_manifest_entry(*, slug: str, title: str, description: str, pubdate: str,
-                         mp3_url: str, mp3_bytes: int, duration_s: float,
-                         chapters: list[dict[str, Any]], spotify_uri: str | None = None,
-                         cover_url: str | None = None,
-                         explicit: bool = False) -> dict[str, Any]:
+def build_manifest_entry(
+    *,
+    slug: str,
+    title: str,
+    description: str,
+    pubdate: str,
+    mp3_url: str,
+    mp3_bytes: int,
+    duration_s: float,
+    chapters: list[dict[str, Any]],
+    spotify_uri: str | None = None,
+    cover_url: str | None = None,
+    explicit: bool = False,
+) -> dict[str, Any]:
     """One entry conforming to cortech.online's episodeSchema. Pure — the caller
     supplies byte size and duration so this stays trivially testable. Optional fields
     are omitted (not null) when absent to keep the manifest tidy; the schema treats
@@ -852,8 +973,9 @@ def _parse_pubdate(s: Any) -> dt.datetime:
     return d if d.tzinfo else d.replace(tzinfo=dt.timezone.utc)
 
 
-def upsert_manifest(entries: list[dict[str, Any]], entry: dict[str, Any],
-                    cap: int = 200) -> list[dict[str, Any]]:
+def upsert_manifest(
+    entries: list[dict[str, Any]], entry: dict[str, Any], cap: int = 200
+) -> list[dict[str, Any]]:
     """Insert `entry`, replacing any existing entry with the same slug, sort
     newest-first by pubDate, and cap to the most recent `cap`. Pure; the atomic PUT
     happens in the caller. Newest-first + cap keeps the consumer's build-time fetch
@@ -909,6 +1031,7 @@ def r2_client(cfg: dict[str, Any]):
     renderer never hard-requires boto3 unless R2 is actually configured — mirrors the
     mutagen import inside mp3_duration_ms."""
     import boto3
+
     return boto3.client(
         "s3",
         endpoint_url=f"https://{cfg['account_id']}.r2.cloudflarestorage.com",
@@ -918,10 +1041,14 @@ def r2_client(cfg: dict[str, Any]):
     )
 
 
-def _r2_put(client, bucket: str, key: str, body: bytes, content_type: str,
-            cache_control: str | None = None) -> None:
+def _r2_put(
+    client, bucket: str, key: str, body: bytes, content_type: str, cache_control: str | None = None
+) -> None:
     kwargs: dict[str, Any] = {
-        "Bucket": bucket, "Key": key, "Body": body, "ContentType": content_type,
+        "Bucket": bucket,
+        "Key": key,
+        "Body": body,
+        "ContentType": content_type,
     }
     if cache_control:
         kwargs["CacheControl"] = cache_control
@@ -934,6 +1061,7 @@ def _r2_get_manifest(client, bucket: str, key: str = "manifest.json") -> list[di
     propagates so the caller aborts instead of clobbering history with a one-entry
     file. Malformed JSON is treated as empty, matching the consumer's tolerance."""
     from botocore.exceptions import ClientError
+
     try:
         resp = client.get_object(Bucket=bucket, Key=key)
     except ClientError as e:
@@ -988,9 +1116,16 @@ def resolve_pages_hook_url(config: dict[str, Any]) -> str | None:
     return None
 
 
-def maybe_publish_r2(config: dict[str, Any], *, episode_mp3: Path, cover: Path | None,
-                     timeline: dict[str, Any], manifest: dict[str, Any],
-                     description: str, episode_uri: str | None) -> bool:
+def maybe_publish_r2(
+    config: dict[str, Any],
+    *,
+    episode_mp3: Path,
+    cover: Path | None,
+    timeline: dict[str, Any],
+    manifest: dict[str, Any],
+    description: str,
+    episode_uri: str | None,
+) -> bool:
     """Publish the episode mp3, optional cover, and a manifest entry to R2. Returns
     True on success, False on skip-or-failure. Never raises: Spotify is the canonical
     artifact, so a broken R2 must not fail the run or roll back the dedup log."""
@@ -1008,8 +1143,14 @@ def maybe_publish_r2(config: dict[str, Any], *, episode_mp3: Path, cover: Path |
 
         # mp3 first: the manifest must never reference an object that isn't up yet.
         mp3_key = f"{slug}.mp3"
-        _r2_put(client, cfg["bucket"], mp3_key, episode_mp3.read_bytes(),
-                "audio/mpeg", cache_control=immutable)
+        _r2_put(
+            client,
+            cfg["bucket"],
+            mp3_key,
+            episode_mp3.read_bytes(),
+            "audio/mpeg",
+            cache_control=immutable,
+        )
         mp3_url = f"{base}/{mp3_key}"
 
         # Cover is best-effort: a flaky image upload must not sink the episode.
@@ -1017,19 +1158,29 @@ def maybe_publish_r2(config: dict[str, Any], *, episode_mp3: Path, cover: Path |
         if cover and Path(cover).exists():
             try:
                 cover_key = f"{slug}.jpg"
-                _r2_put(client, cfg["bucket"], cover_key, Path(cover).read_bytes(),
-                        "image/jpeg", cache_control=immutable)
+                _r2_put(
+                    client,
+                    cfg["bucket"],
+                    cover_key,
+                    Path(cover).read_bytes(),
+                    "image/jpeg",
+                    cache_control=immutable,
+                )
                 cover_url = f"{base}/{cover_key}"
             except Exception as e:
                 log(f"[r2] cover upload failed (non-fatal): {e}")
 
         entry = build_manifest_entry(
-            slug=slug, title=title, description=description,
-            pubdate=resolve_pubdate(manifest), mp3_url=mp3_url,
+            slug=slug,
+            title=title,
+            description=description,
+            pubdate=resolve_pubdate(manifest),
+            mp3_url=mp3_url,
             mp3_bytes=episode_mp3.stat().st_size,
             duration_s=mp3_duration_ms(episode_mp3) / 1000,
             chapters=chapters_from_timeline(timeline),
-            spotify_uri=episode_uri, cover_url=cover_url,
+            spotify_uri=episode_uri,
+            cover_url=cover_url,
         )
 
         # manifest last + single atomic PUT. Object PUTs replace wholesale (no torn
@@ -1037,9 +1188,14 @@ def maybe_publish_r2(config: dict[str, Any], *, episode_mp3: Path, cover: Path |
         # key. no-cache keeps the consumer's build-time fetch from reading a stale CDN
         # copy right after a deploy-hook rebuild.
         entries = upsert_manifest(_r2_get_manifest(client, cfg["bucket"]), entry)
-        _r2_put(client, cfg["bucket"], "manifest.json",
-                json.dumps(entries, indent=2).encode(), "application/json",
-                cache_control="no-cache")
+        _r2_put(
+            client,
+            cfg["bucket"],
+            "manifest.json",
+            json.dumps(entries, indent=2).encode(),
+            "application/json",
+            cache_control="no-cache",
+        )
         log(f"[r2] published {mp3_url} (manifest now {len(entries)} entries)")
 
         hook = resolve_pages_hook_url(config)
@@ -1053,13 +1209,19 @@ def maybe_publish_r2(config: dict[str, Any], *, episode_mp3: Path, cover: Path |
 
 # --- main ------------------------------------------------------------------
 
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", required=True, type=Path)
-    ap.add_argument("--dry-run", action="store_true",
-                    help="render audio/cover/timeline locally; skip upload")
-    ap.add_argument("--workdir", type=Path, default=None,
-                    help="working directory (default: a tmpdir under /tmp)")
+    ap.add_argument(
+        "--dry-run", action="store_true", help="render audio/cover/timeline locally; skip upload"
+    )
+    ap.add_argument(
+        "--workdir",
+        type=Path,
+        default=None,
+        help="working directory (default: a tmpdir under /tmp)",
+    )
     args = ap.parse_args()
 
     if not args.manifest.exists():
@@ -1106,10 +1268,15 @@ def main() -> int:
         log(f"voice: {voice}")
 
     # 1-3: render, plan silences, concat
-    seg_paths = render_segments(segments, voice, workdir,
-                                voice_instruct=voice_instruct,
-                                ref_audio=ref_audio, ref_text=ref_text,
-                                raw_text=manifest.get("raw_text", False))
+    seg_paths = render_segments(
+        segments,
+        voice,
+        workdir,
+        voice_instruct=voice_instruct,
+        ref_audio=ref_audio,
+        ref_text=ref_text,
+        raw_text=manifest.get("raw_text", False),
+    )
     silences_ms = plan_silences(seg_paths)
     episode_mp3 = concat_and_normalize(seg_paths, silences_ms, workdir)
 
@@ -1135,23 +1302,30 @@ def main() -> int:
         if r2_cfg:
             slug = slugify(title, manifest.get("date") or dt.date.today().isoformat())
             r2_would_publish = f"{r2_cfg['public_base_url'].rstrip('/')}/{slug}.mp3"
-            log(f"[r2] dry-run: would publish {r2_would_publish} + manifest entry "
-                f"to bucket {r2_cfg['bucket']}")
+            log(
+                f"[r2] dry-run: would publish {r2_would_publish} + manifest entry "
+                f"to bucket {r2_cfg['bucket']}"
+            )
         else:
             r2_would_publish = None
             log("[r2] dry-run: not configured, would skip")
-        print(json.dumps({
-            "status": "dry-run",
-            "workdir": str(workdir),
-            "episode_mp3": str(episode_mp3),
-            "cover": str(cover),
-            "timeline": str(timeline_path),
-            "voice": voice,
-            "voice_mode": voice_mode,
-            "chapter_count": sum(1 for it in timeline["items"] if "chapter" in it),
-            "duration_s": mp3_duration_ms(episode_mp3) / 1000,
-            "r2_would_publish": r2_would_publish,
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "status": "dry-run",
+                    "workdir": str(workdir),
+                    "episode_mp3": str(episode_mp3),
+                    "cover": str(cover),
+                    "timeline": str(timeline_path),
+                    "voice": voice,
+                    "voice_mode": voice_mode,
+                    "chapter_count": sum(1 for it in timeline["items"] if "chapter" in it),
+                    "duration_s": mp3_duration_ms(episode_mp3) / 1000,
+                    "r2_would_publish": r2_would_publish,
+                },
+                indent=2,
+            )
+        )
         return 0
 
     # 6: upload, then immediately record the upload — BEFORE the failure-prone tail
@@ -1159,12 +1333,18 @@ def main() -> int:
     # resumes from here instead of re-uploading a duplicate episode.
     episode_uri = upload(episode_mp3, title, description, cover, show_id)
     episode_id = episode_uri.removeprefix("spotify:episode:")
-    _atomic_write_text(marker, json.dumps({
-        "episode_uri": episode_uri,
-        "title": title,
-        "voice": voice,
-        "voice_mode": voice_mode,
-    }, indent=2))
+    _atomic_write_text(
+        marker,
+        json.dumps(
+            {
+                "episode_uri": episode_uri,
+                "title": title,
+                "voice": voice,
+                "voice_mode": voice_mode,
+            },
+            indent=2,
+        ),
+    )
     log(f"uploaded: {episode_uri}")
     set_timeline(episode_id, timeline_path)
     log("timeline set; polling for READY...")
@@ -1173,24 +1353,34 @@ def main() -> int:
     # 7: R2 publish — additive, after READY. Never blocks the dedup write below or
     # fails the run; a False result just surfaces in the final JSON line.
     r2_published = maybe_publish_r2(
-        config, episode_mp3=episode_mp3, cover=cover, timeline=timeline,
-        manifest=manifest, description=description, episode_uri=episode_uri,
+        config,
+        episode_mp3=episode_mp3,
+        cover=cover,
+        timeline=timeline,
+        manifest=manifest,
+        description=description,
+        episode_uri=episode_uri,
     )
 
     # 8: dedup log update (only after READY, regardless of R2 outcome)
     _save_dedup(segments, episode_uri)
 
-    print(json.dumps({
-        "status": "ready",
-        "episode_uri": episode_uri,
-        "title": title,
-        "voice": voice,
-        "voice_mode": voice_mode,
-        "chapter_count": sum(1 for it in timeline["items"] if "chapter" in it),
-        "duration_s": mp3_duration_ms(episode_mp3) / 1000,
-        "r2_published": r2_published,
-        "resumed": False,
-    }, indent=2))
+    print(
+        json.dumps(
+            {
+                "status": "ready",
+                "episode_uri": episode_uri,
+                "title": title,
+                "voice": voice,
+                "voice_mode": voice_mode,
+                "chapter_count": sum(1 for it in timeline["items"] if "chapter" in it),
+                "duration_s": mp3_duration_ms(episode_mp3) / 1000,
+                "r2_published": r2_published,
+                "resumed": False,
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
