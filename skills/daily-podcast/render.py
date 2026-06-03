@@ -1372,8 +1372,10 @@ def _resume(
 #
 # This is strictly additive: R2 is never allowed to block the dedup-log write or
 # fail the run. A missing config no-ops; any publish error warns and continues.
-# Runs on the fresh path only — the resume path (_resume) stays config-free by
-# design (see the resume test), so a resumed episode is not back-filled to R2.
+# Runs on BOTH the fresh path and the resume path (#40): each publishes after
+# READY and before the dedup-log write. The resume path stays config-free — it
+# passes an empty config so R2 settings resolve from env / secrets.json only and
+# never call load_config (pinned by test_resume_skips_upload_and_runs_idempotent_tail).
 
 
 def slugify(title: str, date: str) -> str:
