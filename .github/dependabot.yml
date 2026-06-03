@@ -1,0 +1,24 @@
+# Dependabot keeps the GitHub Actions pinned in our workflows up to date.
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates
+#
+# Only the github-actions ecosystem is enabled. pip is intentionally omitted:
+# the runtime deps (mlx-audio) are Apple-Silicon-only and don't resolve on
+# Dependabot's Linux runners, and `ruff` is pinned in lockstep across three
+# sites (pyproject's `dev` extra, .pre-commit-config.yaml, and the inline pin
+# in ci.yml) — an automated bump to one would desync the others and redden CI.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      # `chore` is a CLAUDE.md-mandated prefix; git-cliff files it under
+      # "Miscellaneous" so dependency bumps don't crowd the changelog.
+      prefix: "chore"
+    groups:
+      # Roll every action bump into one weekly PR rather than one PR per action.
+      actions:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 5

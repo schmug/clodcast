@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Claude Code **plugin** (manifest at [.claude-plugin/plugin.json](.claude-plugin/plugin.json)) that ships a single skill, `daily-podcast`, at [skills/daily-podcast/](skills/daily-podcast/). The skill turns a list of saved URLs into a fully-produced Spotify episode in one pass, on top of the external `save-to-spotify` CLI.
 
-There is no test suite, no linter, no build step. The "build" is `python3 render.py`. The contract between the skill prose ([SKILL.md](skills/daily-podcast/SKILL.md)) and the executable ([render.py](skills/daily-podcast/render.py)) is the manifest schema described in both — keep them in sync when changing either.
+There is no build step — the "build" is `python3 render.py`. Linting is `ruff` (lint + format-check) and there's a `pytest` invariant suite under [tests/](tests/), both enforced in [CI](.github/workflows/ci.yml) across Python 3.10–3.12; see the README's *Development* section. The contract between the skill prose ([SKILL.md](skills/daily-podcast/SKILL.md)) and the executable ([render.py](skills/daily-podcast/render.py)) is the manifest schema described in both — keep them in sync when changing either.
 
 ## How development works here
 
