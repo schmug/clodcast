@@ -171,6 +171,7 @@ Every `render.py` run appends one JSON record to `~/.config/daily-podcast/runs.j
   "git_sha": "ea5e845",                      // of render.py (mtime fallback off-git)
   "loudnorm": {"input_i": -19.4, "output_i": -16.0, "output_tp": -1.5, "output_lra": 6.9},
   "pruned_workdirs": null,                    // {count, freed_bytes} when --prune-workdirs ran
+  "r2_status": "published",                   // "published" | "skipped" | "failed" or null pre-publish (#48)
   "resumed": false
 }
 ```
@@ -200,10 +201,19 @@ episode to a Cloudflare R2 bucket *after* the Spotify upload reaches `READY`:
   reads this at build time and renders `/podcast/` plus an iTunes RSS feed at
   `/podcast/rss.xml`.
 
-This is strictly additive: **Spotify is the canonical artifact.** A missing config
-no-ops with one log line; any publish error warns, still writes `covered.json`, still
-exits 0, and reports `"r2_published": false` in the final JSON line. `--dry-run` skips
-the publish and prints where it *would* have gone (`r2_would_publish`).
+Each manifest entry carries both a Spotify-flavored `description` (HTML — `<p>summary</p>`
+followed by one timestamped `<p>… - <a>source</a></p>` per chapter) **and** a clean
+`summary` field (#45) so web/RSS consumers can render prose without HTML-stripping the
+description. `summary` is **HTML-by-contract** (the user authored it), so a consumer
+should still escape it as untrusted text rather than trusting it as guaranteed-plain.
+`description` and `chapters[]` are unchanged — the `summary` field is purely additive.
+
+This is strictly additive: **Spotify is the canonical artifact.** A publish never fails
+the run, changes the exit code, or rolls back `covered.json`. The final JSON line reports
+a 3-state `"r2_status"` (#48): `"published"` (uploaded), `"skipped"` (R2 not configured —
+a benign no-op), or `"failed"` (configured but the upload errored — the alarming case an
+operator should notice; the episode is still live on Spotify). `--dry-run` skips the
+publish and prints where it *would* have gone (`r2_would_publish`).
 
 **Credentials never go in `config.json`.** Read from env (preferred for cron) or an
 optional `~/.config/daily-podcast/secrets.json` (mode 0600):
@@ -227,10 +237,13 @@ first-non-empty-wins across three homes: env → `secrets.json`
 `config.json` is the shareable-file convenience. Unset everywhere → no hook fired
 (the pre-existing behaviour). `--dry-run` never fires it.
 
-> Resume note: the R2 publish runs on a normal fresh run only. The `--workdir`
-> resume path (`_resume`) recovers the Spotify tail without touching `config.json`,
-> so a resumed episode is **not** back-filled to R2 — re-run fresh if you need it on
-> the web feed.
+> Resume note: the R2 publish runs on both the fresh run **and** the `--workdir`
+> resume path (`_resume`). A resumed episode (e.g. one that first failed at
+> `poll_ready` and was recovered) is back-filled to R2 too, so it still lands on the
+> web feed (#40). Resume stays `config.json`-free: it resolves R2 config from env /
+> `secrets.json` only (never `load_config`), and the publish is additive + non-fatal
+> exactly as on the fresh path. (An older workdir from before this change that lacks
+> `description.html` degrades to a skipped back-fill rather than aborting the resume.)
 
 ## Running the pipeline
 
@@ -296,7 +309,7 @@ To resume, **re-run the same manifest with the same `--workdir`**:
 python3 <skill-dir>/render.py --manifest manifest.json --workdir /tmp/daily-podcast-<date>
 ```
 
-When `--workdir` is passed and it contains `uploaded.json`, `render.py` skips TTS rendering, the cover, and the upload, reuses the existing `episode.mp3` / `cover.jpg` / `timeline.json`, and re-runs only the idempotent tail (`timeline set` + poll + dedup). The final report carries `"resumed": true`. Notes:
+When `--workdir` is passed and it contains `uploaded.json`, `render.py` skips TTS rendering, the cover, and the upload, reuses the existing `episode.mp3` / `cover.jpg` / `timeline.json`, and re-runs only the idempotent tail (`timeline set` + poll + R2 back-fill + dedup). The final report carries `"resumed": true` and the same 3-state `"r2_status"` as a fresh run (#40). Notes:
 
 - Resume only triggers with an **explicit** `--workdir`; an auto tmpdir cannot be resumed. Keep the workdir around if you want this safety net.
 - If the workdir has `uploaded.json` but is missing an artifact, `render.py` fails fast (`workdir has uploaded.json but missing …`) rather than re-uploading.

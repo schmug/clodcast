@@ -95,8 +95,12 @@ support is a convenience for the shareable file; if all three are unset, no hook
 (unchanged).
 
 When all five resolve, a successful run publishes `<slug>.mp3` + a `manifest.json`
-entry and prints `"r2_published": true`. On any R2 error the run still succeeds (the
-Spotify episode is canonical) and prints `"r2_published": false`. See
+entry (which carries both the Spotify-flavored HTML `description` and a clean plain-text
+`summary` for web/RSS consumers) and prints `"r2_status": "published"`. The run always
+succeeds regardless of the R2 outcome (the Spotify episode is canonical): the 3-state
+`"r2_status"` is `"published"`, `"skipped"` (R2 not configured), or `"failed"` (configured
+but the upload errored — surfaced so an operator can spot a silent web-feed miss). The
+`--workdir` resume path back-fills to R2 the same way. See
 [SKILL.md](skills/daily-podcast/SKILL.md#publishing-to-the-web-cloudflare-r2) for details.
 
 ## Usage
