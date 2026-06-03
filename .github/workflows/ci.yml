@@ -42,9 +42,11 @@ jobs:
       - name: Ruff lint
         run: ruff check .
 
-      # Format is advisory (the renderer keeps a hand-tuned layout); never blocks.
-      - name: Ruff format (advisory)
-        run: ruff format --check . || echo "::warning::ruff format differences (advisory, not enforced)"
+      # Format is enforced: a format diff fails the job. The renderer's once
+      # hand-tuned layout was reformatted to ruff format in one isolated commit
+      # (see .git-blame-ignore-revs); the gate keeps the tree formatted from here on.
+      - name: Ruff format
+        run: ruff format --check .
 
       - name: Tests
         run: pytest

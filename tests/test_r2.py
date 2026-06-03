@@ -6,6 +6,7 @@ upsert/cap/order, config resolution) and the publish orchestration against a
 fake S3 client — no network, no boto3 round-trip, no save-to-spotify. The audio
 seam (`mp3_duration_ms`) is monkeypatched, as elsewhere in the suite.
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -116,9 +117,16 @@ def test_build_manifest_entry_shape():
 
 def test_build_manifest_entry_omits_empty_optionals():
     entry = render.build_manifest_entry(
-        slug="s", title="t", description="d", pubdate="2026-06-01T12:00:00+00:00",
-        mp3_url="https://a.test/s.mp3", mp3_bytes=1, duration_s=1.0, chapters=[],
-        spotify_uri=None, cover_url=None,
+        slug="s",
+        title="t",
+        description="d",
+        pubdate="2026-06-01T12:00:00+00:00",
+        mp3_url="https://a.test/s.mp3",
+        mp3_bytes=1,
+        duration_s=1.0,
+        chapters=[],
+        spotify_uri=None,
+        cover_url=None,
     )
     assert "spotify_uri" not in entry
     assert "cover_url" not in entry
@@ -161,8 +169,13 @@ def test_upsert_tolerates_bad_pubdate():
 
 
 def _clear_r2_env(monkeypatch):
-    for k in ("R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_ACCOUNT_ID",
-              "R2_BUCKET", "R2_PUBLIC_BASE_URL"):
+    for k in (
+        "R2_ACCESS_KEY_ID",
+        "R2_SECRET_ACCESS_KEY",
+        "R2_ACCOUNT_ID",
+        "R2_BUCKET",
+        "R2_PUBLIC_BASE_URL",
+    ):
         monkeypatch.delenv(k, raising=False)
 
 
@@ -178,12 +191,18 @@ def test_load_r2_config_from_env(monkeypatch, tmp_path):
     monkeypatch.setenv("R2_ACCESS_KEY_ID", "ak")
     monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "sk")
     monkeypatch.setenv("R2_ACCOUNT_ID", "acct")
-    cfg = render.load_r2_config({
-        "r2_bucket": "clodcast", "r2_public_base_url": "https://audio.cortech.online",
-    })
+    cfg = render.load_r2_config(
+        {
+            "r2_bucket": "clodcast",
+            "r2_public_base_url": "https://audio.cortech.online",
+        }
+    )
     assert cfg == {
-        "account_id": "acct", "access_key": "ak", "secret_key": "sk",
-        "bucket": "clodcast", "public_base_url": "https://audio.cortech.online",
+        "account_id": "acct",
+        "access_key": "ak",
+        "secret_key": "sk",
+        "bucket": "clodcast",
+        "public_base_url": "https://audio.cortech.online",
     }
 
 
@@ -199,9 +218,15 @@ def test_load_r2_config_missing_bucket_returns_none(monkeypatch, tmp_path):
 def test_load_r2_config_secrets_file_fallback(monkeypatch, tmp_path):
     _clear_r2_env(monkeypatch)
     monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
-    (tmp_path / "secrets.json").write_text(json.dumps({
-        "R2_ACCESS_KEY_ID": "ak", "R2_SECRET_ACCESS_KEY": "sk", "R2_ACCOUNT_ID": "acct",
-    }))
+    (tmp_path / "secrets.json").write_text(
+        json.dumps(
+            {
+                "R2_ACCESS_KEY_ID": "ak",
+                "R2_SECRET_ACCESS_KEY": "sk",
+                "R2_ACCOUNT_ID": "acct",
+            }
+        )
+    )
     cfg = render.load_r2_config({"r2_bucket": "b", "r2_public_base_url": "https://a.test"})
     assert cfg["access_key"] == "ak" and cfg["account_id"] == "acct"
 
@@ -229,27 +254,31 @@ def test_resolve_hook_from_env(monkeypatch, tmp_path):
 def test_resolve_hook_from_secrets(monkeypatch, tmp_path):
     monkeypatch.delenv("PAGES_DEPLOY_HOOK_URL", raising=False)
     monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
-    (tmp_path / "secrets.json").write_text(json.dumps(
-        {"PAGES_DEPLOY_HOOK_URL": "https://hook.test/secrets"}))
+    (tmp_path / "secrets.json").write_text(
+        json.dumps({"PAGES_DEPLOY_HOOK_URL": "https://hook.test/secrets"})
+    )
     assert render.resolve_pages_hook_url({}) == "https://hook.test/secrets"
 
 
 def test_resolve_hook_from_config(monkeypatch, tmp_path):
     monkeypatch.delenv("PAGES_DEPLOY_HOOK_URL", raising=False)
     monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)  # no secrets.json here
-    assert render.resolve_pages_hook_url(
-        {"pages_deploy_hook_url": "https://hook.test/config"}
-    ) == "https://hook.test/config"
+    assert (
+        render.resolve_pages_hook_url({"pages_deploy_hook_url": "https://hook.test/config"})
+        == "https://hook.test/config"
+    )
 
 
 def test_resolve_hook_env_wins_over_secrets_and_config(monkeypatch, tmp_path):
     monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
-    (tmp_path / "secrets.json").write_text(json.dumps(
-        {"PAGES_DEPLOY_HOOK_URL": "https://hook.test/secrets"}))
+    (tmp_path / "secrets.json").write_text(
+        json.dumps({"PAGES_DEPLOY_HOOK_URL": "https://hook.test/secrets"})
+    )
     monkeypatch.setenv("PAGES_DEPLOY_HOOK_URL", "https://hook.test/env")
-    assert render.resolve_pages_hook_url(
-        {"pages_deploy_hook_url": "https://hook.test/config"}
-    ) == "https://hook.test/env"
+    assert (
+        render.resolve_pages_hook_url({"pages_deploy_hook_url": "https://hook.test/config"})
+        == "https://hook.test/env"
+    )
 
 
 def test_resolve_hook_secrets_wins_over_config(monkeypatch, tmp_path):
@@ -257,11 +286,13 @@ def test_resolve_hook_secrets_wins_over_config(monkeypatch, tmp_path):
     present -> the 0600 secrets.json shadows the shareable config.json."""
     monkeypatch.delenv("PAGES_DEPLOY_HOOK_URL", raising=False)
     monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
-    (tmp_path / "secrets.json").write_text(json.dumps(
-        {"PAGES_DEPLOY_HOOK_URL": "https://hook.test/secrets"}))
-    assert render.resolve_pages_hook_url(
-        {"pages_deploy_hook_url": "https://hook.test/config"}
-    ) == "https://hook.test/secrets"
+    (tmp_path / "secrets.json").write_text(
+        json.dumps({"PAGES_DEPLOY_HOOK_URL": "https://hook.test/secrets"})
+    )
+    assert (
+        render.resolve_pages_hook_url({"pages_deploy_hook_url": "https://hook.test/config"})
+        == "https://hook.test/secrets"
+    )
 
 
 def test_resolve_hook_empty_string_falls_through(monkeypatch, tmp_path):
@@ -278,9 +309,10 @@ def test_resolve_hook_unreadable_secrets_warns_and_falls_through(monkeypatch, tm
     monkeypatch.delenv("PAGES_DEPLOY_HOOK_URL", raising=False)
     monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
     (tmp_path / "secrets.json").write_text("{not json")
-    assert render.resolve_pages_hook_url(
-        {"pages_deploy_hook_url": "https://hook.test/config"}
-    ) == "https://hook.test/config"
+    assert (
+        render.resolve_pages_hook_url({"pages_deploy_hook_url": "https://hook.test/config"})
+        == "https://hook.test/config"
+    )
     assert "unreadable" in capsys.readouterr().err
 
 
@@ -374,8 +406,9 @@ def test_publish_happy_path(monkeypatch, tmp_path):
 
 
 def test_publish_appends_to_existing_manifest(monkeypatch, tmp_path):
-    s3 = FakeS3(manifest=[{"slug": "older", "pubDate": "2026-05-01T12:00:00+00:00",
-                           "title": "Older"}])
+    s3 = FakeS3(
+        manifest=[{"slug": "older", "pubDate": "2026-05-01T12:00:00+00:00", "title": "Older"}]
+    )
     _configured(monkeypatch, tmp_path, s3)
     ok = render.maybe_publish_r2(
         {"r2_bucket": "b", "r2_public_base_url": "https://a.test"},
@@ -430,9 +463,13 @@ def test_publish_fires_pages_hook_from_secrets(monkeypatch, tmp_path):
     secrets.json still fires after a successful publish (issue #42)."""
     s3 = FakeS3()
     _configured(monkeypatch, tmp_path, s3)  # clears the env var; CONFIG_DIR -> tmp_path
-    (tmp_path / "secrets.json").write_text(json.dumps({
-        "PAGES_DEPLOY_HOOK_URL": "https://hook.test/from-secrets",
-    }))
+    (tmp_path / "secrets.json").write_text(
+        json.dumps(
+            {
+                "PAGES_DEPLOY_HOOK_URL": "https://hook.test/from-secrets",
+            }
+        )
+    )
     fired = []
     monkeypatch.setattr(render, "fire_pages_hook", lambda url: fired.append(url))
     render.maybe_publish_r2(
@@ -450,8 +487,11 @@ def test_publish_fires_pages_hook_from_config(monkeypatch, tmp_path):
     fired = []
     monkeypatch.setattr(render, "fire_pages_hook", lambda url: fired.append(url))
     render.maybe_publish_r2(
-        {"r2_bucket": "b", "r2_public_base_url": "https://a.test",
-         "pages_deploy_hook_url": "https://hook.test/from-config"},
+        {
+            "r2_bucket": "b",
+            "r2_public_base_url": "https://a.test",
+            "pages_deploy_hook_url": "https://hook.test/from-config",
+        },
         **_publish_kwargs(tmp_path),
     )
     assert fired == ["https://hook.test/from-config"]
@@ -490,14 +530,21 @@ def test_manifest_entry_conforms_to_consumer_episode_schema():
         mp3_url="https://audio.cortech.online/daily-digest-june-1-2026.mp3",
         mp3_bytes=272134,
         duration_s=611.311,
-        chapters=render.chapters_from_timeline({
-            "items": [
-                {"chapter": {"title": "Intro", "start_time_ms": 0}},
-                {"chapter": {"title": "Story", "start_time_ms": 30000}},
-                {"link": {"start_time_ms": 31000, "duration_ms": 4000,
-                          "url": "https://x.test/a"}},
-            ]
-        }),
+        chapters=render.chapters_from_timeline(
+            {
+                "items": [
+                    {"chapter": {"title": "Intro", "start_time_ms": 0}},
+                    {"chapter": {"title": "Story", "start_time_ms": 30000}},
+                    {
+                        "link": {
+                            "start_time_ms": 31000,
+                            "duration_ms": 4000,
+                            "url": "https://x.test/a",
+                        }
+                    },
+                ]
+            }
+        ),
         spotify_uri="spotify:episode:abc",
         cover_url="https://audio.cortech.online/daily-digest-june-1-2026.jpg",
     )

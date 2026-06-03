@@ -3,8 +3,9 @@
 # The reference clip and its transcript must stay byte-exact (the transcript has to
 # match the audio), so refs/ is excluded from every hook below.
 #
-# ruff format is intentionally omitted: the renderer keeps a hand-tuned layout, so
-# only lint (ruff check) is enforced — matching the CI / README "lint-only" stance.
+# Both ruff hooks are enforced: ruff-check (lint, autofix) and ruff-format. The
+# format gate matches the CI / README stance — the renderer's hand-tuned layout
+# was reformatted to ruff format in one isolated commit (see .git-blame-ignore-revs).
 exclude: '^skills/daily-podcast/refs/'
 
 repos:
@@ -13,6 +14,7 @@ repos:
     hooks:
       - id: ruff-check
         args: [--fix]
+      - id: ruff-format
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0

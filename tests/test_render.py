@@ -5,6 +5,7 @@ These cover the pure-Python logic — chapter-rule enforcement, voice precedence
 timeline math, dedup-log handling — without requiring MLX, ffmpeg, or the
 save-to-spotify CLI. The audio I/O seam (`mp3_duration_ms`) is monkeypatched.
 """
+
 from __future__ import annotations
 
 import json
@@ -244,7 +245,11 @@ def test_build_timeline_one_to_one_chapter_source_mapping(tmp_path, monkeypatch)
     _patch_durations(monkeypatch, durations)
 
     timeline, _ = render.build_timeline_and_description(
-        segments, paths, silences_ms=[800, 800, 0], summary="s", episode_mp3=episode,
+        segments,
+        paths,
+        silences_ms=[800, 800, 0],
+        summary="s",
+        episode_mp3=episode,
     )
 
     chapters = [it["chapter"] for it in timeline["items"] if "chapter" in it]
@@ -266,7 +271,11 @@ def test_build_timeline_link_companion_bounds(tmp_path, monkeypatch):
     _patch_durations(monkeypatch, durations)
 
     timeline, _ = render.build_timeline_and_description(
-        segments, paths, silences_ms=[0], summary="s", episode_mp3=episode,
+        segments,
+        paths,
+        silences_ms=[0],
+        summary="s",
+        episode_mp3=episode,
     )
 
     chapter = timeline["items"][0]["chapter"]
@@ -284,7 +293,11 @@ def test_description_escapes_title_special_chars(tmp_path, monkeypatch):
     _patch_durations(monkeypatch, {paths[0]: 40_000, episode: 40_000})
 
     _, description = render.build_timeline_and_description(
-        segments, paths, silences_ms=[0], summary="s", episode_mp3=episode,
+        segments,
+        paths,
+        silences_ms=[0],
+        summary="s",
+        episode_mp3=episode,
     )
 
     assert "She said &quot;hi&quot; &amp; left" in description
@@ -298,12 +311,16 @@ def test_description_escapes_url_ampersand_and_quote(tmp_path, monkeypatch):
     _patch_durations(monkeypatch, {paths[0]: 40_000, episode: 40_000})
 
     timeline, description = render.build_timeline_and_description(
-        segments, paths, silences_ms=[0], summary="s", episode_mp3=episode,
+        segments,
+        paths,
+        silences_ms=[0],
+        summary="s",
+        episode_mp3=episode,
     )
 
-    assert "a=1&amp;b=2" in description       # query-string & is escaped
-    assert "&#x27;" in description            # single quote escaped — can't close the href
-    assert "a=1&b=2'q" not in description     # no raw, href-breaking form survives
+    assert "a=1&amp;b=2" in description  # query-string & is escaped
+    assert "&#x27;" in description  # single quote escaped — can't close the href
+    assert "a=1&b=2'q" not in description  # no raw, href-breaking form survives
     # The timeline carries the RAW url; escaping is description-only.
     assert timeline["items"][1]["link"]["url"] == "https://x.com/p?a=1&b=2'q"
 
@@ -315,7 +332,11 @@ def test_description_summary_passes_through_unescaped(tmp_path, monkeypatch):
     _patch_durations(monkeypatch, {paths[0]: 40_000, episode: 40_000})
 
     _, description = render.build_timeline_and_description(
-        segments, paths, silences_ms=[0], summary="<b>bold</b> & raw", episode_mp3=episode,
+        segments,
+        paths,
+        silences_ms=[0],
+        summary="<b>bold</b> & raw",
+        episode_mp3=episode,
     )
 
     assert "<b>bold</b> & raw" in description  # summary is HTML-by-contract
@@ -330,7 +351,11 @@ def test_build_timeline_fatal_when_last_chapter_starts_after_episode_ends(tmp_pa
 
     with pytest.raises(SystemExit):
         render.build_timeline_and_description(
-            segments, paths, silences_ms=[0, 0], summary="s", episode_mp3=episode,
+            segments,
+            paths,
+            silences_ms=[0, 0],
+            summary="s",
+            episode_mp3=episode,
         )
 
 
@@ -365,9 +390,7 @@ def test_load_covered_returns_dict_when_well_formed(tmp_path, monkeypatch):
     path.write_text('{"https://example.com/a": {"date": "2026-01-01"}}')
     monkeypatch.setattr(render, "COVERED_PATH", path)
 
-    assert render.load_covered() == {
-        "https://example.com/a": {"date": "2026-01-01"}
-    }
+    assert render.load_covered() == {"https://example.com/a": {"date": "2026-01-01"}}
 
 
 # --- save_covered (atomic write) -----------------------------------------
@@ -427,42 +450,54 @@ def test_resolve_cover_date_bad_value_dies():
 
 def _seed_uploaded_workdir(wd: Path, *, with_artifacts: bool = True) -> None:
     wd.mkdir(parents=True, exist_ok=True)
-    (wd / "uploaded.json").write_text(json.dumps({
-        "episode_uri": "spotify:episode:abc123",
-        "title": "T",
-        "voice": "house",
-        "voice_mode": "clone",
-    }))
+    (wd / "uploaded.json").write_text(
+        json.dumps(
+            {
+                "episode_uri": "spotify:episode:abc123",
+                "title": "T",
+                "voice": "house",
+                "voice_mode": "clone",
+            }
+        )
+    )
     if with_artifacts:
         (wd / "episode.mp3").write_bytes(b"x")
         (wd / "cover.jpg").write_bytes(b"x")
-        (wd / "timeline.json").write_text(json.dumps(
-            {"items": [{"chapter": {"title": "A", "start_time_ms": 0}}]}
-        ))
+        (wd / "timeline.json").write_text(
+            json.dumps({"items": [{"chapter": {"title": "A", "start_time_ms": 0}}]})
+        )
 
 
 def test_resume_skips_upload_and_runs_idempotent_tail(tmp_path, monkeypatch, capsys):
     wd = tmp_path / "wd"
     _seed_uploaded_workdir(wd)
     manifest = tmp_path / "m.json"
-    manifest.write_text(json.dumps({
-        "title": "T", "summary": "s",
-        "segments": [{"text": "hi", "source_url": "https://example.com/a"}],
-    }))
+    manifest.write_text(
+        json.dumps(
+            {
+                "title": "T",
+                "summary": "s",
+                "segments": [{"text": "hi", "source_url": "https://example.com/a"}],
+            }
+        )
+    )
 
     # Prove the upload + config are never touched on resume; record the tail.
-    monkeypatch.setattr(render, "upload",
-                        lambda *a, **k: pytest.fail("upload must not run on resume"))
-    monkeypatch.setattr(render, "load_config",
-                        lambda: pytest.fail("load_config must not run on resume"))
+    monkeypatch.setattr(
+        render, "upload", lambda *a, **k: pytest.fail("upload must not run on resume")
+    )
+    monkeypatch.setattr(
+        render, "load_config", lambda: pytest.fail("load_config must not run on resume")
+    )
     calls = []
     monkeypatch.setattr(render, "set_timeline", lambda eid, tp: calls.append(("set_timeline", eid)))
     monkeypatch.setattr(render, "poll_ready", lambda eid: calls.append(("poll_ready", eid)))
     monkeypatch.setattr(render, "mp3_duration_ms", lambda p: 60_000)
     covered_path = tmp_path / "covered.json"
     monkeypatch.setattr(render, "COVERED_PATH", covered_path)
-    monkeypatch.setattr(sys, "argv",
-                        ["render.py", "--manifest", str(manifest), "--workdir", str(wd)])
+    monkeypatch.setattr(
+        sys, "argv", ["render.py", "--manifest", str(manifest), "--workdir", str(wd)]
+    )
 
     assert render.main() == 0
 
@@ -481,8 +516,9 @@ def test_resume_dies_when_artifact_missing(tmp_path, monkeypatch):
     manifest = tmp_path / "m.json"
     manifest.write_text(json.dumps({"title": "T", "summary": "s", "segments": [{"text": "hi"}]}))
     monkeypatch.setattr(render, "upload", lambda *a, **k: pytest.fail("upload must not run"))
-    monkeypatch.setattr(sys, "argv",
-                        ["render.py", "--manifest", str(manifest), "--workdir", str(wd)])
+    monkeypatch.setattr(
+        sys, "argv", ["render.py", "--manifest", str(manifest), "--workdir", str(wd)]
+    )
 
     with pytest.raises(SystemExit):
         render.main()
@@ -508,8 +544,15 @@ def test_validate_manifest_accepts_valid():
 
 def test_validate_manifest_accepts_optional_fields():
     m = _valid_manifest()
-    m.update({"voice": "house", "date": "2026-05-20", "raw_text": True,
-              "show_id": "spotify:show:1", "voice_instruct": "calm"})
+    m.update(
+        {
+            "voice": "house",
+            "date": "2026-05-20",
+            "raw_text": True,
+            "show_id": "spotify:show:1",
+            "voice_instruct": "calm",
+        }
+    )
     render.validate_manifest(m)  # no raise
 
 
@@ -577,8 +620,8 @@ def test_normalize_em_dash_and_smart_quotes():
 def test_normalize_strips_code_block_and_inline_backticks():
     out = render.normalize_for_tts("run ```python\nx=1\n``` then `pip install` it")
     assert "`" not in out
-    assert "x=1" not in out          # fenced block content removed
-    assert "pip install" in out      # inline content kept, backticks gone
+    assert "x=1" not in out  # fenced block content removed
+    assert "pip install" in out  # inline content kept, backticks gone
 
 
 def test_normalize_strips_urls_and_headings():
