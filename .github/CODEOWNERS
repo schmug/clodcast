@@ -1,0 +1,4 @@
+# Code owners for clodcast.
+# Single maintainer: @schmug is the default reviewer for everything.
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+* @schmug
