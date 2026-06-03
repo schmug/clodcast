@@ -72,6 +72,17 @@ TARGET_CHAPTER_MS = 30_500  # 30s + buffer; Spotify rejects <30s strict
 MAX_SHORT_CHAPTERS = 3
 DEFAULT_SILENCE_MS = 800
 LAST_SILENCE_MS = 0  # no silence after the final segment
+# Spotify caps an episode description at 4000 characters (Spotify Web API
+# `description`/`html_description` field; same limit surfaces in Spotify for
+# Podcasters episode show notes). Past the cap the upload silently truncates or
+# rejects the summary, so build_timeline_and_description fits the HTML under it
+# by dropping whole trailing chapter <p> blocks rather than cutting mid-tag.
+SPOTIFY_SUMMARY_MAX_CHARS = 4000
+# covered.json dedup-log retention. A daily run covers ~10 URLs, so the log
+# would grow ~3.6k entries/year unbounded. 180 days is comfortably larger than
+# the feed-curation lookback window (lookback_hours, default 24h — the only
+# window in which dedup actually matters), and bounds the file at ~1800 entries.
+COVERED_RETENTION_DAYS = 180
 CONFIG_DIR = Path.home() / ".config" / "daily-podcast"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 COVERED_PATH = CONFIG_DIR / "covered.json"
@@ -141,10 +152,42 @@ def _atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+def _prune_covered(data: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    """Drop entries whose `date` is strictly older than COVERED_RETENTION_DAYS.
+
+    Entries with a missing or non-ISO-date `date` are KEPT — we never lose dedup
+    state on schema drift; an unparseable date is treated as "recent enough".
+    Returns (pruned_dict, dropped_count). Pure: does not touch the filesystem.
+    """
+    cutoff = dt.date.today() - dt.timedelta(days=COVERED_RETENTION_DAYS)
+    kept: dict[str, Any] = {}
+    dropped = 0
+    for url, entry in data.items():
+        raw = entry.get("date") if isinstance(entry, dict) else None
+        try:
+            entry_date = dt.date.fromisoformat(raw) if isinstance(raw, str) else None
+        except ValueError:
+            entry_date = None  # malformed date string ("yesterday") — keep the entry
+        if entry_date is not None and entry_date < cutoff:
+            dropped += 1
+            continue
+        kept[url] = entry
+    return kept, dropped
+
+
 def save_covered(data: dict[str, Any]) -> None:
     # The dedup log is load-bearing for "don't re-upload the same URLs", so write it
     # atomically — a crash mid-write must not truncate it. Formatting preserved.
-    _atomic_write_text(COVERED_PATH, json.dumps(data, indent=2, sort_keys=True))
+    #
+    # Prune on write (not on load — load_covered returns the file as-is so the read
+    # contract stays predictable). Pruning only drops entries OUTSIDE the retention
+    # window, so the dedup invariant holds: any URL covered within the last
+    # COVERED_RETENTION_DAYS (>> the curation lookback) is still recorded and won't
+    # be re-podcasted. covered.json is still only written after poll_ready -> READY.
+    pruned, dropped = _prune_covered(data)
+    if dropped:
+        log(f"pruned {dropped} covered.json entr(ies) older than {COVERED_RETENTION_DAYS}d")
+    _atomic_write_text(COVERED_PATH, json.dumps(pruned, indent=2, sort_keys=True))
 
 
 def resolve_house_voice() -> tuple[Path, Path]:
@@ -738,6 +781,24 @@ def build_timeline_and_description(
         else:
             parts.append(f"<p>{ts} - {safe_title}</p>")
     description = "".join(parts)
+
+    # Fit under Spotify's summary cap WITHOUT breaking the HTML: each list entry
+    # is a self-contained <p>…</p>, so drop whole chapter blocks from the end
+    # (longest-suffix-first) until it fits — never cut mid-tag, never ellipsize a
+    # block. parts[0] is the summary <p> and is always preserved (it's the hook).
+    # The timeline JSON above is untouched: the audio chapters still exist, only
+    # the show-notes listing is trimmed.
+    if len(description) > SPOTIFY_SUMMARY_MAX_CHARS:
+        kept = list(parts)
+        while len(kept) > 1 and len("".join(kept)) > SPOTIFY_SUMMARY_MAX_CHARS:
+            kept.pop()
+        dropped = len(parts) - len(kept)
+        log(
+            f"description {len(description)} chars > {SPOTIFY_SUMMARY_MAX_CHARS} cap: "
+            f"dropped {dropped} trailing chapter block(s) from show notes "
+            "(timeline/audio chapters unaffected)"
+        )
+        description = "".join(kept)
 
     return {"items": items}, description
 

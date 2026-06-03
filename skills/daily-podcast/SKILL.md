@@ -141,7 +141,9 @@ Spotify rejects timelines where >3 chapters are under 30 seconds. Qwen3 reads ~4
 ```
 
 ```jsonc
-// ~/.config/daily-podcast/covered.json — written by render.py on successful upload
+// ~/.config/daily-podcast/covered.json — written by render.py on successful upload.
+// Pruned to a 180-day retention window on each write (the `date` field drives this);
+// entries with a missing/malformed `date` are kept.
 {
   "https://example.com/post-1": {"date": "2026-05-22", "episode_uri": "spotify:episode:..."},
   "https://example.com/post-2": {"date": "2026-05-21", "episode_uri": "spotify:episode:..."}
