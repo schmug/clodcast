@@ -20,6 +20,10 @@ dependencies = [
     # cortech.online web feed). Lazy-imported in render.py, so a host that never
     # sets R2 env vars doesn't need it installed.
     "boto3",
+    # OPML can arrive from shared feed-reader exports → treat as untrusted input;
+    # stdlib xml.etree is XXE / billion-laughs vulnerable. defusedxml is a drop-in
+    # safe wrapper used by parse_opml in orchestrate.py.
+    "defusedxml",
 ]
 
 [project.optional-dependencies]

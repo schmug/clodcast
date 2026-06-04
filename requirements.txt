@@ -7,3 +7,4 @@ mutagen
 Pillow
 numpy
 feedparser
+defusedxml
