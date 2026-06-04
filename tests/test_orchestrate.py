@@ -217,3 +217,52 @@ def test_summarize_item_timeout():
 
     r = orchestrate.summarize_item(ITEM, TPL, timeout=1, runner=runner)
     assert r["outcome"] == "TIMEOUT"
+
+
+def test_fan_out_keeps_survivors_in_order_and_logs_drops():
+    ranked = [
+        {"title": "A", "url": "u/a", "feed_name": "F1"},
+        {"title": "B", "url": "u/b", "feed_name": "F2"},  # will be blocked
+        {"title": "C", "url": "u/c", "feed_name": "F3"},
+    ]
+
+    def fake_summarize(item, tpl, **kw):
+        base = orchestrate._drop_fields(item)
+        if item["title"] == "B":
+            return {
+                **base,
+                "outcome": "BLOCKED",
+                "segment": None,
+                "source_url": None,
+                "detail": "usage-policy classifier",
+            }
+        return {
+            **base,
+            "outcome": "OK",
+            "segment": f"seg-{item['title']}",
+            "source_url": item["url"],
+            "detail": "",
+        }
+
+    survivors, dropped = orchestrate.fan_out(
+        ranked, "tpl", target=10, concurrency=2, summarize=fake_summarize
+    )
+    assert [s["title"] for s in survivors] == ["A", "C"]
+    assert survivors[0]["feed_name"] == "F1"
+    assert len(dropped) == 1 and dropped[0]["reason"] == "blocked" and dropped[0]["url"] == "u/b"
+
+
+def test_fan_out_respects_target_cap():
+    ranked = [{"title": f"T{i}", "url": f"u/{i}", "feed_name": "F"} for i in range(5)]
+
+    def ok(item, tpl, **kw):
+        return {
+            **orchestrate._drop_fields(item),
+            "outcome": "OK",
+            "segment": "s",
+            "source_url": item["url"],
+            "detail": "",
+        }
+
+    survivors, dropped = orchestrate.fan_out(ranked, "tpl", target=3, summarize=ok)
+    assert len(survivors) == 3 and dropped == []  # extras beyond target are unused, not dropped
