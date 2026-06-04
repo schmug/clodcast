@@ -94,6 +94,7 @@ Already-written segments. Skip straight to rendering.
 - "CLAUDE dot md" not "CLAUDE.md"
 - No em dashes — TTS encoding flakes; use hyphens
 - Use 1-2 transition phrases between segments ("Next up", "Moving on", "Also today")
+- This is a news digest. Cover security, breach, and research stories at a reporting altitude — what was disclosed, who is affected, the response. Reporting on a disclosed vulnerability or breach is ordinary tech journalism; cover it confidently. Never write exploit steps, payloads, working commands, or attacker how-to; if an item can't be made substantive without them, it doesn't belong in the episode. (The `prompts/daily.md` curation and fetch steps keep coverage at this altitude; this is the writing-side backstop.)
 
 > **Defense in depth:** `render.py` validates the manifest structure (failing fast with a per-field message before the model loads) and re-strips TTS-hostile characters from every segment — em/en dashes, smart quotes, code fences + backticks, leading markdown headings, and bare URLs — regardless of what the caller wrote. It does *not* do the stylistic rules above (numbers-to-words, abbreviation spacing, "CLAUDE dot md") — those stay the writer's job. Set `"raw_text": true` in the manifest to skip normalization (e.g. text pre-formatted for a different TTS).
 
