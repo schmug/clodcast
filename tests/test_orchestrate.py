@@ -292,3 +292,18 @@ def test_make_intro_outro_falls_back_on_garbage():
 
     out = orchestrate.make_intro_outro(["A", "B"], "June 4, 2026", runner=runner)
     assert "2 stories today" in out["intro"]  # deterministic fallback
+
+
+def test_assemble_manifest_shape():
+    survivors = [
+        {"title": "A", "segment": "seg a", "source_url": "u/a", "feed_name": "F1"},
+        {"title": "B", "segment": "seg b", "source_url": "u/b", "feed_name": "F2"},
+    ]
+    io = {"intro": "I", "outro": "O", "summary": "S"}
+    m = orchestrate.assemble_manifest("June 4, 2026", "2026-06-04", survivors, io)
+    assert m["title"] == "Daily Digest - June 4, 2026"
+    assert m["summary"] == "S" and m["voice"] == "house" and m["date"] == "2026-06-04"
+    assert [s["text"] for s in m["segments"]] == ["I", "seg a", "seg b", "O"]
+    assert m["segments"][0]["source_url"] is None  # intro
+    assert m["segments"][1]["source_url"] == "u/a"  # 1:1 mapping
+    assert m["segments"][-1]["title"] == "Sign-off"
