@@ -100,3 +100,41 @@ def test_rank_per_feed_cap():
     ranked = orchestrate.rank_candidates(cands, {}, NOW, 24, target=10, buffer=0,
                                          per_feed_cap=2)
     assert len(ranked) == 2  # capped to 2 from the same feed
+
+
+def test_gather_filters_lookback_dedup_and_clean(tmp_path):
+    opml = tmp_path / "f.opml"
+    opml.write_text(
+        '<opml><body><outline type="rss" text="Feed A" xmlUrl="https://a/rss"/></body></opml>'
+    )
+    fresh = (2026, 6, 4, 9, 0, 0, 0, 0, 0)   # 3h before NOW
+    stale = (2026, 6, 2, 9, 0, 0, 0, 0, 0)   # >24h before NOW
+
+    def fake_parse(url):
+        return {"entries": [
+            {"title": "Fresh <b>x</b>", "link": "https://a/1",
+             "summary": "<p>body</p>", "published_parsed": fresh},
+            {"title": "Stale", "link": "https://a/2", "summary": "old",
+             "published_parsed": stale},
+            {"title": "Dup", "link": "https://a/covered", "summary": "s",
+             "published_parsed": fresh},
+        ]}
+
+    out = orchestrate.gather_candidates(
+        [str(opml)], 24, {"https://a/covered": {}}, NOW, parse=fake_parse
+    )
+    assert len(out) == 1
+    assert out[0]["url"] == "https://a/1"
+    assert out[0]["title"] == "Fresh x"        # tags stripped
+    assert out[0]["summary"] == "body"
+    assert out[0]["feed_name"] == "Feed A"
+
+
+def test_gather_feed_exception_is_skipped(tmp_path):
+    opml = tmp_path / "f.opml"
+    opml.write_text('<opml><body><outline type="rss" text="A" xmlUrl="https://a/rss"/></body></opml>')
+
+    def boom(url):
+        raise OSError("timeout")
+
+    assert orchestrate.gather_candidates([str(opml)], 24, {}, NOW, parse=boom) == []
