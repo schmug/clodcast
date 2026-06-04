@@ -6,6 +6,7 @@ import subprocess
 from types import SimpleNamespace
 
 import orchestrate
+import pytest
 
 NOW = dt.datetime(2026, 6, 4, 12, 0, tzinfo=dt.timezone.utc)
 
@@ -333,3 +334,47 @@ def test_write_dropped_log_appends_jsonl(tmp_path):
     assert len(lines) == 2
     rec = orchestrate.json.loads(lines[0])
     assert rec["reason"] == "blocked" and rec["run_date"] == "2026-06-04" and rec["url"] == "u"
+
+
+def test_run_render_parses_result(tmp_path):
+    def runner(cmd, **kw):
+        assert "--dry-run" not in cmd
+        return SimpleNamespace(
+            stdout='{\n  "status": "ready",\n  "episode_uri": "spotify:episode:1",\n'
+            '  "title": "Daily Digest - June 4, 2026",\n  "chapter_count": 5,\n'
+            '  "duration_s": 412.3,\n  "r2_status": "published"\n}',
+            stderr="",
+            returncode=0,
+        )
+
+    res = orchestrate.run_render(tmp_path / "m.json", tmp_path, dry_run=False, runner=runner)
+    assert res["episode_uri"] == "spotify:episode:1" and res["chapter_count"] == 5
+
+
+def test_run_render_raises_on_failure(tmp_path):
+    def runner(cmd, **kw):
+        return SimpleNamespace(stdout="", stderr="boom: ffmpeg missing", returncode=1)
+
+    with pytest.raises(orchestrate.RenderError, match="ffmpeg missing"):
+        orchestrate.run_render(tmp_path / "m.json", tmp_path, dry_run=False, runner=runner)
+
+
+def test_build_report_shipped_and_dryrun():
+    ready = {
+        "status": "ready",
+        "episode_uri": "spotify:episode:1",
+        "title": "T",
+        "chapter_count": 5,
+        "duration_s": 412.3,
+        "r2_status": "published",
+    }
+    line = orchestrate.build_report(ready)
+    assert line == "SHIPPED spotify:episode:1 - T - 5 chapters - 412.3s - r2=ok"
+    dry = {
+        "status": "dry-run",
+        "title": "T",
+        "chapter_count": 5,
+        "duration_s": 412.3,
+        "r2_status": None,
+    }
+    assert orchestrate.build_report(dry).startswith("DRY-RUN ok - T - 5 chapters")
