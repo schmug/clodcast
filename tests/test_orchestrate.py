@@ -48,3 +48,33 @@ def test_parse_opml_rejects_entity_expansion(tmp_path):
         '<opml><body><outline type="rss" text="&a;" xmlUrl="https://a/rss"/></body></opml>'
     )
     assert orchestrate.parse_opml(evil) == []
+
+
+import datetime as dt
+
+NOW = dt.datetime(2026, 6, 4, 12, 0, tzinfo=dt.timezone.utc)
+
+
+def test_source_tier_score():
+    assert orchestrate.source_tier_score("Simon Willison") == 1.0
+    assert orchestrate.source_tier_score("Hacker News") == 0.2
+    assert orchestrate.source_tier_score("Some Unknown Feed") == 0.5  # DEFAULT_TIER
+
+
+def test_recency_score():
+    assert orchestrate.recency_score(NOW, NOW, 24) == 1.0           # brand new
+    old = NOW - dt.timedelta(hours=24)
+    assert orchestrate.recency_score(old, NOW, 24) == 0.0           # window edge
+    assert orchestrate.recency_score(None, NOW, 24) == 0.3          # unknown date
+
+
+def test_concreteness_score():
+    assert orchestrate.concreteness_score("Patch for CVE-2026-1234", "") == 0.2
+    assert orchestrate.concreteness_score("A vague think piece", "no specifics") == 0.0
+
+
+def test_variety_penalty():
+    usage = {"Feed A": "2026-06-03"}  # used yesterday
+    assert orchestrate.variety_penalty("Feed A", usage, NOW) == orchestrate.VARIETY_PENALTY
+    assert orchestrate.variety_penalty("Feed A", {"Feed A": "2026-05-01"}, NOW) == 0.0
+    assert orchestrate.variety_penalty("Feed Z", usage, NOW) == 0.0
