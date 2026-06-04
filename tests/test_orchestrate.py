@@ -1,12 +1,18 @@
 # tests/test_orchestrate.py
 from __future__ import annotations
 
+import datetime as dt
+
 import orchestrate
+
+NOW = dt.datetime(2026, 6, 4, 12, 0, tzinfo=dt.timezone.utc)
 
 
 def test_extract_last_json_single_line():
     assert orchestrate.extract_last_json('noise\n{"ok": true, "segment": "x"}') == {
-        "ok": True, "segment": "x"}
+        "ok": True,
+        "segment": "x",
+    }
 
 
 def test_extract_last_json_multiline_fallback():
@@ -50,11 +56,6 @@ def test_parse_opml_rejects_entity_expansion(tmp_path):
     assert orchestrate.parse_opml(evil) == []
 
 
-import datetime as dt
-
-NOW = dt.datetime(2026, 6, 4, 12, 0, tzinfo=dt.timezone.utc)
-
-
 def test_source_tier_score():
     assert orchestrate.source_tier_score("Simon Willison") == 1.0
     assert orchestrate.source_tier_score("Hacker News") == 0.2
@@ -62,10 +63,10 @@ def test_source_tier_score():
 
 
 def test_recency_score():
-    assert orchestrate.recency_score(NOW, NOW, 24) == 1.0           # brand new
+    assert orchestrate.recency_score(NOW, NOW, 24) == 1.0  # brand new
     old = NOW - dt.timedelta(hours=24)
-    assert orchestrate.recency_score(old, NOW, 24) == 0.0           # window edge
-    assert orchestrate.recency_score(None, NOW, 24) == 0.3          # unknown date
+    assert orchestrate.recency_score(old, NOW, 24) == 0.0  # window edge
+    assert orchestrate.recency_score(None, NOW, 24) == 0.3  # unknown date
 
 
 def test_concreteness_score():
@@ -81,15 +82,21 @@ def test_variety_penalty():
 
 
 def _cand(feed, title="t", summary="", published=NOW):
-    return {"feed_name": feed, "title": title, "summary": summary, "published": published,
-            "url": f"https://x/{feed}/{title}", "category": ""}
+    return {
+        "feed_name": feed,
+        "title": title,
+        "summary": summary,
+        "published": published,
+        "url": f"https://x/{feed}/{title}",
+        "category": "",
+    }
 
 
 def test_rank_orders_by_score_and_caps_per_feed():
     cands = [
-        _cand("Hacker News", "agg"),               # tier 3, low
+        _cand("Hacker News", "agg"),  # tier 3, low
         _cand("Simon Willison", "orig CVE-2026-1"),  # tier 1 + concrete, high
-        _cand("Ars Technica", "news 4.2"),         # tier 2 + concrete
+        _cand("Ars Technica", "news 4.2"),  # tier 2 + concrete
     ]
     ranked = orchestrate.rank_candidates(cands, {}, NOW, 24, target=2, buffer=0)
     assert [c["feed_name"] for c in ranked] == ["Simon Willison", "Ars Technica"]
@@ -97,8 +104,7 @@ def test_rank_orders_by_score_and_caps_per_feed():
 
 def test_rank_per_feed_cap():
     cands = [_cand("Ars Technica", f"n{i}") for i in range(5)]
-    ranked = orchestrate.rank_candidates(cands, {}, NOW, 24, target=10, buffer=0,
-                                         per_feed_cap=2)
+    ranked = orchestrate.rank_candidates(cands, {}, NOW, 24, target=10, buffer=0, per_feed_cap=2)
     assert len(ranked) == 2  # capped to 2 from the same feed
 
 
@@ -107,34 +113,75 @@ def test_gather_filters_lookback_dedup_and_clean(tmp_path):
     opml.write_text(
         '<opml><body><outline type="rss" text="Feed A" xmlUrl="https://a/rss"/></body></opml>'
     )
-    fresh = (2026, 6, 4, 9, 0, 0, 0, 0, 0)   # 3h before NOW
-    stale = (2026, 6, 2, 9, 0, 0, 0, 0, 0)   # >24h before NOW
+    fresh = (2026, 6, 4, 9, 0, 0, 0, 0, 0)  # 3h before NOW
+    stale = (2026, 6, 2, 9, 0, 0, 0, 0, 0)  # >24h before NOW
 
     def fake_parse(url):
-        return {"entries": [
-            {"title": "Fresh <b>x</b>", "link": "https://a/1",
-             "summary": "<p>body</p>", "published_parsed": fresh},
-            {"title": "Stale", "link": "https://a/2", "summary": "old",
-             "published_parsed": stale},
-            {"title": "Dup", "link": "https://a/covered", "summary": "s",
-             "published_parsed": fresh},
-        ]}
+        return {
+            "entries": [
+                {
+                    "title": "Fresh <b>x</b>",
+                    "link": "https://a/1",
+                    "summary": "<p>body</p>",
+                    "published_parsed": fresh,
+                },
+                {
+                    "title": "Stale",
+                    "link": "https://a/2",
+                    "summary": "old",
+                    "published_parsed": stale,
+                },
+                {
+                    "title": "Dup",
+                    "link": "https://a/covered",
+                    "summary": "s",
+                    "published_parsed": fresh,
+                },
+            ]
+        }
 
     out = orchestrate.gather_candidates(
         [str(opml)], 24, {"https://a/covered": {}}, NOW, parse=fake_parse
     )
     assert len(out) == 1
     assert out[0]["url"] == "https://a/1"
-    assert out[0]["title"] == "Fresh x"        # tags stripped
+    assert out[0]["title"] == "Fresh x"  # tags stripped
     assert out[0]["summary"] == "body"
     assert out[0]["feed_name"] == "Feed A"
 
 
 def test_gather_feed_exception_is_skipped(tmp_path):
     opml = tmp_path / "f.opml"
-    opml.write_text('<opml><body><outline type="rss" text="A" xmlUrl="https://a/rss"/></body></opml>')
+    opml.write_text(
+        '<opml><body><outline type="rss" text="A" xmlUrl="https://a/rss"/></body></opml>'
+    )
 
     def boom(url):
         raise OSError("timeout")
 
     assert orchestrate.gather_candidates([str(opml)], 24, {}, NOW, parse=boom) == []
+
+
+def test_classify_ok():
+    r = orchestrate.classify_output('{"ok": true, "segment": "hello", "source_url": "u"}', "", 0)
+    assert r["outcome"] == "OK" and r["segment"] == "hello"
+
+
+def test_classify_refused():
+    r = orchestrate.classify_output('{"ok": false, "reason": "not news"}', "", 0)
+    assert r["outcome"] == "REFUSED" and "not news" in r["detail"]
+
+
+def test_classify_blocked_on_policy_marker():
+    r = orchestrate.classify_output("", "API Error ... violative cyber content ... Usage Policy", 1)
+    assert r["outcome"] == "BLOCKED"
+
+
+def test_classify_error_when_garbage():
+    r = orchestrate.classify_output("blah no json", "", 1)
+    assert r["outcome"] == "ERROR"
+
+
+def test_classify_ok_requires_nonempty_segment():
+    r = orchestrate.classify_output('{"ok": true, "segment": "   "}', "", 0)
+    assert r["outcome"] == "ERROR"  # empty segment is not a usable success

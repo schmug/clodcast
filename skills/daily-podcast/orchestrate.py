@@ -13,6 +13,7 @@ agent context pools many security-feed candidates into a single request. Isolati
 one article per request contains the block. See
 docs/superpowers/specs/2026-06-04-per-item-orchestrator-design.md.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -24,8 +25,8 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 # defusedxml is imported lazily inside parse_opml (keeps module import light for CI,
 # which installs only dev tools — mirrors the lazy feedparser import in gather).
@@ -296,8 +297,12 @@ def classify_output(stdout: str, stderr: str, returncode: int) -> dict:
             "detail": str(obj.get("reason", ""))[:300],
         }
     if POLICY_RE.search(f"{stdout}\n{stderr}"):
-        return {"outcome": "BLOCKED", "segment": None, "source_url": None,
-                "detail": "usage-policy classifier"}
+        return {
+            "outcome": "BLOCKED",
+            "segment": None,
+            "source_url": None,
+            "detail": "usage-policy classifier",
+        }
     return {
         "outcome": "ERROR",
         "segment": None,
@@ -329,9 +334,7 @@ def summarize_item(
     the item's feed_name/url/title plus outcome/segment/source_url/detail."""
     prompt = fill_prompt(prompt_template, item)
     try:
-        proc = runner(
-            [claude_bin, "-p", prompt], capture_output=True, text=True, timeout=timeout
-        )
+        proc = runner([claude_bin, "-p", prompt], capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return {
             **_drop_fields(item),
@@ -379,13 +382,21 @@ def fan_out(
             continue
         if r["outcome"] == "OK" and len(survivors) < target:
             survivors.append(
-                {"title": r["title"], "segment": r["segment"],
-                 "source_url": r["source_url"], "feed_name": r["feed_name"]}
+                {
+                    "title": r["title"],
+                    "segment": r["segment"],
+                    "source_url": r["source_url"],
+                    "feed_name": r["feed_name"],
+                }
             )
         elif r["outcome"] != "OK":
             dropped.append(
-                {"feed_name": r["feed_name"], "url": r["url"],
-                 "reason": r["outcome"].lower(), "detail": r["detail"]}
+                {
+                    "feed_name": r["feed_name"],
+                    "url": r["url"],
+                    "reason": r["outcome"].lower(),
+                    "detail": r["detail"],
+                }
             )
     return survivors, dropped
 
@@ -415,7 +426,7 @@ def make_intro_outro(
         "You are writing the intro and sign-off for a daily NEWS-DIGEST podcast. Below are "
         f"the headlines for today's episode (titles only). Write for {date_long}.\n\n"
         f"HEADLINES:\n{headlines}\n\n"
-        f'INTRO (~350 chars): "Today\'s digest for {date_long}. <N> stories today, covering '
+        f"INTRO (~350 chars): \"Today's digest for {date_long}. <N> stories today, covering "
         "<2-4 word theme list>. Here's the rundown.\" Use the real count and 2-4 topic words "
         "drawn from the headlines.\n"
         "SIGN-OFF (~250 chars): brief, no new content, do not mention show notes or links.\n"
@@ -424,9 +435,7 @@ def make_intro_outro(
         '"summary": "..."}'
     )
     try:
-        proc = runner(
-            [claude_bin, "-p", prompt], capture_output=True, text=True, timeout=timeout
-        )
+        proc = runner([claude_bin, "-p", prompt], capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return fallback_intro_outro(date_long, len(titles))
     obj = extract_last_json(proc.stdout or "")
@@ -442,13 +451,14 @@ def assemble_manifest(
 ) -> dict:
     """Build the render.py manifest: intro + one segment per survivor (strict 1:1
     source mapping) + sign-off. Shape matches render.validate_manifest."""
-    segments: list[dict] = [
-        {"title": "Intro", "text": intro_outro["intro"], "source_url": None}
-    ]
+    segments: list[dict] = [{"title": "Intro", "text": intro_outro["intro"], "source_url": None}]
     for s in survivors:
         segments.append(
-            {"title": (s["title"][:120] or "Story"), "text": s["segment"],
-             "source_url": s["source_url"]}
+            {
+                "title": (s["title"][:120] or "Story"),
+                "text": s["segment"],
+                "source_url": s["source_url"],
+            }
         )
     segments.append({"title": "Sign-off", "text": intro_outro["outro"], "source_url": None})
     return {
@@ -556,10 +566,7 @@ def build_report(result: dict) -> str:
     title = result.get("title", "")
     if result.get("status") == "dry-run":
         return f"DRY-RUN ok - {title} - {cc} chapters - {dur}s"
-    return (
-        f"SHIPPED {result.get('episode_uri', '')} - {title} - "
-        f"{cc} chapters - {dur}s - r2={r2}"
-    )
+    return f"SHIPPED {result.get('episode_uri', '')} - {title} - {cc} chapters - {dur}s - r2={r2}"
 
 
 def _fail(msg: str) -> int:
@@ -570,7 +577,8 @@ def _fail(msg: str) -> int:
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Unattended per-item daily-podcast orchestrator")
     ap.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="forward to render.py; skip upload + feed_usage write",
     )
     ap.add_argument("--workdir", type=Path, default=None)
