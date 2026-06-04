@@ -52,6 +52,9 @@ PER_FEED_CAP = 3  # at most this many items from one feed in the ranked set
 VARIETY_DAYS = 3  # penalize feeds used within this many days (daily.md priority 3)
 CONCURRENCY_DEFAULT = 3  # parallel claude -p calls (wide fan-out trips a rate-limit nag)
 SUMMARIZE_TIMEOUT_S = 150  # per-item claude -p wall clock
+# Below this a chapter risks render's "max 3 chapters under 30s" limit; drop the one
+# item (REFUSED) instead of letting a short segment fail the whole episode.
+MIN_SEGMENT_CHARS = 500
 
 # Source tiers (daily.md priority 1: original reporting/analysis > aggregators).
 TIER_SCORE = {1: 1.0, 2: 0.5, 3: 0.2}
@@ -258,7 +261,10 @@ def gather_candidates(
         entries = d.get("entries", []) if hasattr(d, "get") else getattr(d, "entries", [])
         for entry in entries:
             url = entry.get("link") or ""
-            if not url or url in covered or url in seen:
+            # Skip non-http(s) links (relative, mailto:, tag: — common in RSS). They would be
+            # forced into the manifest source_url and rejected by render.validate_manifest,
+            # failing the whole run; drop at gather so one bad link can't poison the batch.
+            if not url.startswith(("http://", "https://")) or url in covered or url in seen:
                 continue
             published = _entry_published(entry)
             if published is not None and published < cutoff:
@@ -283,9 +289,19 @@ def classify_output(stdout: str, stderr: str, returncode: int) -> dict:
     BLOCKED (policy markers, no usable JSON) | ERROR (everything else)."""
     obj = extract_last_json(stdout)
     if isinstance(obj, dict) and obj.get("ok") is True and str(obj.get("segment", "")).strip():
+        seg = obj["segment"].strip()
+        if len(seg) < MIN_SEGMENT_CHARS:
+            # A short segment becomes a <30s chapter and can trip render's short-chapter
+            # limit, failing the whole episode. Drop this one item instead.
+            return {
+                "outcome": "REFUSED",
+                "segment": None,
+                "source_url": None,
+                "detail": f"segment too short ({len(seg)} chars)",
+            }
         return {
             "outcome": "OK",
-            "segment": obj["segment"].strip(),
+            "segment": seg,
             "source_url": obj.get("source_url", ""),
             "detail": "",
         }

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -166,9 +167,38 @@ def test_gather_feed_exception_is_skipped(tmp_path):
     assert orchestrate.gather_candidates([str(opml)], 24, {}, NOW, parse=boom) == []
 
 
+def test_gather_drops_non_http_links(tmp_path):
+    opml = tmp_path / "f.opml"
+    opml.write_text(
+        '<opml><body><outline type="rss" text="Feed A" xmlUrl="https://a/rss"/></body></opml>'
+    )
+    fresh = (2026, 6, 4, 9, 0, 0, 0, 0, 0)
+
+    def fake_parse(url):
+        entries = [
+            {"title": "Rel", "link": "/x/1", "summary": "s", "published_parsed": fresh},
+            {"title": "Mail", "link": "mailto:a@b", "summary": "s", "published_parsed": fresh},
+            {"title": "Good", "link": "https://a/ok", "summary": "s", "published_parsed": fresh},
+        ]
+        return {"entries": entries}
+
+    out = orchestrate.gather_candidates([str(opml)], 24, {}, NOW, parse=fake_parse)
+    assert [c["url"] for c in out] == ["https://a/ok"]  # non-http links dropped at gather
+
+
 def test_classify_ok():
-    r = orchestrate.classify_output('{"ok": true, "segment": "hello", "source_url": "u"}', "", 0)
-    assert r["outcome"] == "OK" and r["segment"] == "hello"
+    seg = "x" * 600
+    out = json.dumps({"ok": True, "segment": seg, "source_url": "u"})
+    r = orchestrate.classify_output(out, "", 0)
+    assert r["outcome"] == "OK" and r["segment"] == seg
+
+
+def test_classify_short_segment_is_refused():
+    # Too-short (sub-MIN_SEGMENT_CHARS) segment drops the one item instead of risking
+    # render's "max 3 chapters under 30s" limit failing the whole episode.
+    out = json.dumps({"ok": True, "segment": "x" * 200})
+    r = orchestrate.classify_output(out, "", 0)
+    assert r["outcome"] == "REFUSED" and "too short" in r["detail"]
 
 
 def test_classify_refused():
@@ -201,7 +231,7 @@ def test_summarize_item_ok():
     def runner(cmd, **kw):
         captured["cmd"] = cmd
         return SimpleNamespace(
-            stdout='{"ok": true, "segment": "seg", "source_url": "ignored"}',
+            stdout=json.dumps({"ok": True, "segment": "x" * 600, "source_url": "ignored"}),
             stderr="",
             returncode=0,
         )
