@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import orchestrate
@@ -378,3 +379,95 @@ def test_build_report_shipped_and_dryrun():
         "r2_status": None,
     }
     assert orchestrate.build_report(dry).startswith("DRY-RUN ok - T - 5 chapters")
+
+
+def test_main_happy_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestrate, "CONFIG_PATH", tmp_path / "config.json")
+    (tmp_path / "config.json").write_text(
+        '{"opml_files": ["/x.opml"], "lookback_hours": 24, "target_item_count": 2}'
+    )
+    monkeypatch.setattr(orchestrate, "COVERED_PATH", tmp_path / "covered.json")
+    monkeypatch.setattr(orchestrate, "FEED_USAGE_PATH", tmp_path / "feed_usage.json")
+    monkeypatch.setattr(orchestrate, "DROPPED_LOG_PATH", tmp_path / "dropped.jsonl")
+    monkeypatch.setattr(orchestrate, "SUMMARIZE_PROMPT_PATH", tmp_path / "p.md")
+    (tmp_path / "p.md").write_text("PROMPT <<TITLE>>")
+
+    monkeypatch.setattr(
+        orchestrate,
+        "gather_candidates",
+        lambda *a, **k: [
+            {
+                "title": "A",
+                "url": "u/a",
+                "feed_name": "F1",
+                "summary": "",
+                "published": None,
+                "category": "",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "fan_out",
+        lambda *a, **k: (
+            [{"title": "A", "segment": "seg a", "source_url": "u/a", "feed_name": "F1"}],
+            [],
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "make_intro_outro",
+        lambda *a, **k: {"intro": "I", "outro": "O", "summary": "S"},
+    )
+    captured = {}
+
+    def fake_render(manifest_path, workdir, dry_run, runner=None):
+        captured["manifest"] = orchestrate.json.loads(Path(manifest_path).read_text())
+        return {
+            "status": "ready",
+            "episode_uri": "spotify:episode:9",
+            "title": "T",
+            "chapter_count": 3,
+            "duration_s": 100.0,
+            "r2_status": "skipped",
+        }
+
+    monkeypatch.setattr(orchestrate, "run_render", fake_render)
+    rc = orchestrate.main(["--workdir", str(tmp_path / "wd")])
+    assert rc == 0
+    # 1:1 mapping survived into the manifest (intro + 1 story + outro)
+    assert len(captured["manifest"]["segments"]) == 3
+    assert (tmp_path / "feed_usage.json").exists()  # updated on ready
+
+
+def test_main_no_survivors_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestrate, "CONFIG_PATH", tmp_path / "config.json")
+    (tmp_path / "config.json").write_text('{"opml_files": ["/x.opml"]}')
+    monkeypatch.setattr(orchestrate, "COVERED_PATH", tmp_path / "c.json")
+    monkeypatch.setattr(orchestrate, "SUMMARIZE_PROMPT_PATH", tmp_path / "p.md")
+    (tmp_path / "p.md").write_text("P")
+    monkeypatch.setattr(
+        orchestrate,
+        "gather_candidates",
+        lambda *a, **k: [
+            {
+                "title": "A",
+                "url": "u/a",
+                "feed_name": "F",
+                "summary": "",
+                "published": None,
+                "category": "",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "fan_out",
+        lambda *a, **k: (
+            [],
+            [{"feed_name": "F", "url": "u/a", "reason": "blocked", "detail": "x"}],
+        ),
+    )
+    monkeypatch.setattr(orchestrate, "DROPPED_LOG_PATH", tmp_path / "d.jsonl")
+    rc = orchestrate.main(["--workdir", str(tmp_path / "wd")])
+    assert rc == 1
