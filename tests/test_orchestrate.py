@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import subprocess
+from types import SimpleNamespace
 
 import orchestrate
 
@@ -185,3 +187,33 @@ def test_classify_error_when_garbage():
 def test_classify_ok_requires_nonempty_segment():
     r = orchestrate.classify_output('{"ok": true, "segment": "   "}', "", 0)
     assert r["outcome"] == "ERROR"  # empty segment is not a usable success
+
+
+ITEM = {"title": "T", "url": "https://x/1", "feed_name": "Feed A"}
+TPL = "title=<<TITLE>> url=<<URL>> feed=<<FEED>>"
+
+
+def test_summarize_item_ok():
+    captured = {}
+
+    def runner(cmd, **kw):
+        captured["cmd"] = cmd
+        return SimpleNamespace(
+            stdout='{"ok": true, "segment": "seg", "source_url": "ignored"}',
+            stderr="",
+            returncode=0,
+        )
+
+    r = orchestrate.summarize_item(ITEM, TPL, runner=runner)
+    assert r["outcome"] == "OK"
+    assert r["source_url"] == "https://x/1"  # forced to the item url
+    assert r["feed_name"] == "Feed A" and r["url"] == "https://x/1"
+    assert "title=T url=https://x/1 feed=Feed A" in captured["cmd"][2]  # template filled
+
+
+def test_summarize_item_timeout():
+    def runner(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, 1)
+
+    r = orchestrate.summarize_item(ITEM, TPL, timeout=1, runner=runner)
+    assert r["outcome"] == "TIMEOUT"
