@@ -37,7 +37,7 @@ jobs:
       # .pre-commit-config.yaml — a floating ruff can promote rules and redden CI.
       # Keep this in lockstep with the pre-commit rev and pyproject's `dev` extra.
       - name: Install dev tools
-        run: python -m pip install "ruff==0.14.10" "pytest>=8.0" boto3
+        run: python -m pip install "ruff==0.14.10" "pytest>=8.0" boto3 defusedxml
 
       - name: Ruff lint
         run: ruff check .

@@ -114,10 +114,12 @@ Ask Claude to ship today's podcast. The skill activates automatically:
 
 ### Headless (unattended schedule)
 
-Run the bundled `claude -p` prompt:
+Run the orchestrator, which gathers + curates deterministically and summarizes each item
+in its own isolated `claude -p` subprocess — so a cyber-content classifier block drops
+only that item instead of failing the whole run:
 
 ```bash
-claude -p "$(cat skills/daily-podcast/prompts/daily.md)"
+python3 skills/daily-podcast/orchestrate.py
 ```
 
 Final stdout is a single line: `SHIPPED <episode_uri> ...` or `FAILED <reason>`.
@@ -127,22 +129,31 @@ Hook it up to launchd, cron, or any scheduler.
 ### Scheduled runs (pre-flight + disk hygiene)
 
 For unattended runs, pre-flight with `render.py --selftest` so a broken dependency or an
-expired `save-to-spotify auth` fails loudly *before* the scheduled hour, and pass
-`--prune-workdirs 7` to keep the temp dir tidy:
+expired `save-to-spotify auth` fails loudly *before* the scheduled hour:
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$HOME/clodcast"
 python3 skills/daily-podcast/render.py --selftest || { echo "selftest failed"; exit 1; }
-claude -p "$(cat skills/daily-podcast/prompts/daily.md)"   # or: render.py --manifest m.json --prune-workdirs 7
+python3 skills/daily-podcast/orchestrate.py
 ```
+
+For disk hygiene, `render.py --prune-workdirs N` is the mechanism — pass it when calling
+`render.py` directly with `--manifest`. `orchestrate.py` does not forward this flag.
 
 `--selftest` (mutually exclusive with `--manifest`) checks ffmpeg/ffprobe, `save-to-spotify`
 auth, `config.json`, and the house-voice clip — printing a pass/fail line per check and a
 JSON summary — and exits non-zero on any failure. It runs in under 5 seconds. On a successful
 real run the auto-created workdir is deleted (pass `--keep-workdir` to retain it; a failed run
 always keeps it for debugging).
+
+### Config files
+
+The orchestrator writes two additional state files alongside `covered.json` and `runs.jsonl`:
+
+- `~/.config/daily-podcast/feed_usage.json` — records the last date each feed contributed a segment; drives the variety penalty so the same feed doesn't dominate consecutive episodes. Updated only on a successful real run (`--dry-run` leaves it unchanged).
+- `~/.config/daily-podcast/dropped.jsonl` — append-only log of every item that was blocked, refused, timed out, or errored during a run. One JSON line per dropped item: `{timestamp, run_date, feed_name, url, reason, detail}`. Useful for diagnosing feed-level issues or cyber-content policy patterns.
 
 ### Run log
 
