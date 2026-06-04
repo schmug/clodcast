@@ -78,3 +78,25 @@ def test_variety_penalty():
     assert orchestrate.variety_penalty("Feed A", usage, NOW) == orchestrate.VARIETY_PENALTY
     assert orchestrate.variety_penalty("Feed A", {"Feed A": "2026-05-01"}, NOW) == 0.0
     assert orchestrate.variety_penalty("Feed Z", usage, NOW) == 0.0
+
+
+def _cand(feed, title="t", summary="", published=NOW):
+    return {"feed_name": feed, "title": title, "summary": summary, "published": published,
+            "url": f"https://x/{feed}/{title}", "category": ""}
+
+
+def test_rank_orders_by_score_and_caps_per_feed():
+    cands = [
+        _cand("Hacker News", "agg"),               # tier 3, low
+        _cand("Simon Willison", "orig CVE-2026-1"),  # tier 1 + concrete, high
+        _cand("Ars Technica", "news 4.2"),         # tier 2 + concrete
+    ]
+    ranked = orchestrate.rank_candidates(cands, {}, NOW, 24, target=2, buffer=0)
+    assert [c["feed_name"] for c in ranked] == ["Simon Willison", "Ars Technica"]
+
+
+def test_rank_per_feed_cap():
+    cands = [_cand("Ars Technica", f"n{i}") for i in range(5)]
+    ranked = orchestrate.rank_candidates(cands, {}, NOW, 24, target=10, buffer=0,
+                                         per_feed_cap=2)
+    assert len(ranked) == 2  # capped to 2 from the same feed
