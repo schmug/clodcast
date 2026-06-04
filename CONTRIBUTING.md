@@ -88,8 +88,8 @@ pip install pre-commit && pre-commit install
 
 - **Use [Conventional Commit](https://www.conventionalcommits.org/) prefixes** on commits
   and PR titles: `feat:` / `fix:` / `refactor:` / `test:` / `chore:` / `docs:` /
-  `security:`. The CHANGELOG is generated from these by
-  [git-cliff](https://git-cliff.org), so the prefix is load-bearing.
+  `security:`. The CHANGELOG and the next version number are generated from these by
+  [release-please](https://github.com/googleapis/release-please), so the prefix is load-bearing.
 - **Branch and open a PR — `main` is protected**, so it doesn't accept direct pushes.
 - Fill in the [PR template](.github/pull_request_template.md): summary, linked issue,
   acceptance criteria, testing, and any renderer invariants touched.

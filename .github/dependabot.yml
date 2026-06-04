@@ -13,8 +13,8 @@ updates:
     schedule:
       interval: "weekly"
     commit-message:
-      # `chore` is a CLAUDE.md-mandated prefix; git-cliff files it under
-      # "Miscellaneous" so dependency bumps don't crowd the changelog.
+      # `chore` is a CLAUDE.md-mandated prefix; release-please keeps `chore`
+      # commits out of the changelog so dependency bumps don't crowd it.
       prefix: "chore"
     groups:
       # Roll every action bump into one weekly PR rather than one PR per action.

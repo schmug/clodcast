@@ -1,0 +1,27 @@
+name: release-please
+
+# Automated releases. On every push to main, release-please opens/updates a
+# single "release PR" with the next version (derived from conventional commits)
+# + the CHANGELOG entry. Merging that PR cuts the vX.Y.Z tag + GitHub Release.
+# This replaces the old manual release.yml — never push to main directly.
+on:
+  push:
+    branches: [main]
+
+# Least privilege: open/update the release PR (pull-requests) and create the
+# tag + Release and commit to the PR branch (contents). Nothing else.
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
