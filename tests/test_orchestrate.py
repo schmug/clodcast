@@ -307,3 +307,29 @@ def test_assemble_manifest_shape():
     assert m["segments"][0]["source_url"] is None  # intro
     assert m["segments"][1]["source_url"] == "u/a"  # 1:1 mapping
     assert m["segments"][-1]["title"] == "Sign-off"
+
+
+def test_load_covered_malformed_is_empty(tmp_path, monkeypatch):
+    p = tmp_path / "covered.json"
+    p.write_text("{ not json")
+    monkeypatch.setattr(orchestrate, "COVERED_PATH", p)
+    assert orchestrate.load_covered() == {}
+
+
+def test_update_feed_usage_merges(tmp_path):
+    p = tmp_path / "feed_usage.json"
+    p.write_text('{"Old Feed": "2026-01-01"}')
+    orchestrate.update_feed_usage(["Feed A", "Feed B"], "2026-06-04", path=p)
+    data = orchestrate.json.loads(p.read_text())
+    assert data["Feed A"] == "2026-06-04" and data["Old Feed"] == "2026-01-01"
+
+
+def test_write_dropped_log_appends_jsonl(tmp_path):
+    p = tmp_path / "dropped.jsonl"
+    dropped = [{"feed_name": "F", "url": "u", "reason": "blocked", "detail": "x"}]
+    orchestrate.write_dropped_log(dropped, "2026-06-04", path=p)
+    orchestrate.write_dropped_log(dropped, "2026-06-04", path=p)
+    lines = p.read_text().strip().splitlines()
+    assert len(lines) == 2
+    rec = orchestrate.json.loads(lines[0])
+    assert rec["reason"] == "blocked" and rec["run_date"] == "2026-06-04" and rec["url"] == "u"
