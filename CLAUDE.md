@@ -18,23 +18,28 @@ python3 skills/daily-podcast/render.py --manifest /tmp/manifest.json --dry-run
 
 For a fast iteration loop on script-template or formatting changes, write a minimal manifest with one or two short segments and dry-run against it. The Qwen3-TTS model load is ~10-15 s on first invocation; subsequent segments stream at ~4-5x realtime on Apple Silicon.
 
-To exercise the headless path, pipe the prompt to a fresh Claude session:
+To exercise the unattended path, run the orchestrator:
 
 ```bash
-claude -p "$(cat skills/daily-podcast/prompts/daily.md)"
+python3 skills/daily-podcast/orchestrate.py --dry-run
 ```
 
-The headless prompt's final stdout is a single line — `SHIPPED <uri> ...` or `FAILED <reason>`. Don't change that contract; schedulers parse it.
+The orchestrator's final stdout is a single line — `SHIPPED <uri> ...` or `FAILED <reason>`. Don't change that contract; schedulers parse it. (`daily.md` is a deprecated reference; the `claude -p "$(cat daily.md)"` form still works but is no longer the cron path.)
 
 ## Architecture: the big picture
 
-Three documents are load-bearing; read all of them before changing behavior:
+Four documents are load-bearing; read all of them before changing behavior:
 
 1. **[skills/daily-podcast/SKILL.md](skills/daily-podcast/SKILL.md)** — the script template, voice rules, chapter-duration guardrail, manifest schema. This is what Claude reads when the skill activates.
 2. **[skills/daily-podcast/render.py](skills/daily-podcast/render.py)** — the manifest → episode driver. Single file, ~590 lines, no internal modules.
-3. **[skills/daily-podcast/prompts/daily.md](skills/daily-podcast/prompts/daily.md)** — the `claude -p` prompt that drives an unattended end-to-end run (OPML → curation → manifest → render).
+3. **[skills/daily-podcast/orchestrate.py](skills/daily-podcast/orchestrate.py)** — the **unattended entry point** (replaces `claude -p "$(cat daily.md)"`). Pure-Python gather → deterministic metadata-only ranking → one isolated `claude -p` per item → assemble manifest → invoke `render.py`.
+4. **[skills/daily-podcast/prompts/daily.md](skills/daily-podcast/prompts/daily.md)** — **deprecated reference**. Still describes the segment/voice rules and manifest shape, but is no longer the cron entry point. Use `orchestrate.py` for scheduled runs.
 
 `render.py` is intentionally "dumb": it consumes a manifest that already has the segments written and only handles TTS, concat, cover, upload, timeline, poll, and dedup-log update. Anything script-shaped (curation, fetching, segment writing, self-critique) lives in the skill prose / headless prompt — i.e., is Claude's job, not the renderer's.
+
+### Orchestrator core invariant
+
+**No LLM request holds more than one article body.** Curation is deterministic metadata-only (feedparser titles, dates, summaries — never article bodies). Each ranked item is summarized by its own isolated `claude -p` subprocess. A per-item block, timeout, or error drops only that item and logs it to `dropped.jsonl`; the remaining items still ship. `feed_usage.json` drives the variety penalty so the same feed doesn't dominate consecutive episodes.
 
 ### Invariants the renderer enforces
 
@@ -67,11 +72,13 @@ Don't add a fourth mode without updating SKILL.md and [docs/durable-voices.md](d
 
 User-level config sits outside the repo at `~/.config/daily-podcast/`:
 
-- `config.json` — `show_id`, `show_name`, `host_name`, `opml_files`, `lookback_hours`, `target_item_count`. Loaded by `render.py` and the headless prompt.
+- `config.json` — `show_id`, `show_name`, `host_name`, `opml_files`, `lookback_hours`, `target_item_count`. Loaded by `render.py` and `orchestrate.py`.
 - `covered.json` — URL → `{date, episode_uri}` dedup log. Written by `render.py` only on successful upload. Treat malformed JSON as `{}` rather than failing the run. Pruned to a 180-day retention window (`COVERED_RETENTION_DAYS`) on each write so it stays bounded; entries with a missing/malformed `date` are retained.
 - `runs.jsonl` — append-only JSONL operational log, one record per run (see the run-log invariant above). Best-effort observability; not load-bearing for any pipeline decision. Retention is the operator's job (≈ one line/day).
+- `feed_usage.json` — `{feed_name: last_used_date}` map written by `orchestrate.py` after each successful real run. Drives the variety penalty so the same feed doesn't dominate consecutive episodes.
+- `dropped.jsonl` — append-only JSONL log written by `orchestrate.py` for every item that was blocked, refused, timed out, or errored. One record per dropped item: `{timestamp, run_date, feed_name, url, reason, detail}`. Observability-only; never affects pipeline decisions.
 
-Both are documented in [SKILL.md](skills/daily-podcast/SKILL.md#show--dedup-config) and [README.md](README.md#setup).
+All are documented in [SKILL.md](skills/daily-podcast/SKILL.md#show--dedup-config) and [README.md](README.md#setup).
 
 ## Runtime dependencies
 

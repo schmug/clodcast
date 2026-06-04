@@ -255,11 +255,40 @@ Two entry points:
 python3 <skill-dir>/render.py --manifest manifest.json
 ```
 
-**Headless (`claude -p`):** Use the self-contained run prompt at `./prompts/daily.md`. Pipe it to a fresh Claude session and walk away:
+**Headless (unattended schedule):** Use the orchestrator, which gathers + curates deterministically and summarizes each item in its own isolated `claude -p` subprocess:
 ```bash
-claude -p "$(cat <skill-dir>/prompts/daily.md)"
+python3 <skill-dir>/orchestrate.py
 ```
-The prompt reads OPML feeds from config, filters against the dedup log, writes the script, builds the manifest, and invokes `render.py` end to end. Final stdout is a single line: `SHIPPED <episode_uri> ...` or `FAILED <reason>`.
+Final stdout is a single line: `SHIPPED <episode_uri> ...` or `FAILED <reason>`.
+
+`prompts/daily.md` is kept as a deprecated reference for the segment/voice rules and the manifest shape, but is no longer the cron entry point.
+
+### Orchestrator (unattended)
+
+`orchestrate.py` is the unattended entry point for scheduled runs. Core invariant: **no LLM request ever holds more than one article body** — curation is deterministic metadata-only (feedparser titles, dates, summaries), and each ranked item is summarized by its own isolated `claude -p` subprocess. A per-item classifier block, timeout, or error drops only that item (logged to `dropped.jsonl`); the remaining items still ship.
+
+Pipeline:
+1. Parse OPML, fetch feeds — metadata only, no article bodies
+2. Deterministic ranking: source tier × recency × concreteness, variety penalty (feeds used within 3 days are deprioritized), per-feed cap
+3. Fan-out: one `claude -p prompts/summarize_item.md` per ranked item, concurrency-capped
+4. Survivors (non-blocked items) assembled into a manifest and handed to `render.py`
+
+**CLI flags** (for `orchestrate.py`):
+
+| Flag | Purpose |
+| --- | --- |
+| `--dry-run` | Forward to `render.py --dry-run`; skip upload + `feed_usage.json` write |
+| `--workdir PATH` | Use this directory for the manifest and render artifacts |
+| `--limit N` | Cap items fanned out (useful for testing) |
+| `--manifest-only` | Assemble the manifest then stop (no render/upload) |
+| `--concurrency N` | Parallel `claude -p` calls (default: 3; wide fan-out can trip API rate limits) |
+
+**State files written by the orchestrator** (under `~/.config/daily-podcast/`):
+
+- `feed_usage.json` — `{feed_name: last_used_date}` map; drives the variety penalty so the same feed doesn't dominate back-to-back episodes. Updated only on a successful real (`ready`) run; `--dry-run` leaves it unchanged.
+- `dropped.jsonl` — append-only JSONL record of every item that was blocked, refused, timed out, or errored during a run. One record per dropped item: `{timestamp, run_date, feed_name, url, reason, detail}`. Useful for diagnosing feed-level issues or cyber-content policy patterns.
+
+Note: `orchestrate.py` does **not** accept `--selftest` or `--prune-workdirs` — those flags belong to `render.py`. For disk hygiene, call `render.py --prune-workdirs N` separately.
 
 `render.py` exits non-zero with a diagnostic on any failure. Always check the exit code; do not assume success.
 
@@ -286,7 +315,7 @@ It finishes in under 5 seconds (no model load unless `--load-model`).
 
 ### Scheduled runs (cron / launchd)
 
-Recommended unattended recipe: pre-flight with `--selftest`, then run with `--prune-workdirs 7` for automatic disk hygiene.
+Recommended unattended recipe: pre-flight with `render.py --selftest`, then run via the orchestrator. Add `render.py --prune-workdirs 7` for automatic disk hygiene.
 
 ```bash
 #!/usr/bin/env bash
@@ -294,11 +323,11 @@ set -euo pipefail
 cd "$HOME/clodcast"
 # Pre-flight: bail loudly if deps/auth are broken BEFORE doing real work.
 python3 skills/daily-podcast/render.py --selftest || { echo "selftest failed"; exit 1; }
-# Real run via the headless prompt; --prune-workdirs keeps /tmp tidy.
-claude -p "$(cat skills/daily-podcast/prompts/daily.md)"
+# Real run: per-item isolated orchestrator (drop-on-block, deterministic curation).
+python3 skills/daily-podcast/orchestrate.py
 ```
 
-(When invoking `render.py` directly rather than through the headless prompt, add `--prune-workdirs 7` to its argument list.)
+For disk hygiene, `render.py --prune-workdirs N` is still the mechanism — pass it when calling `render.py` directly with `--manifest`. `orchestrate.py` does not accept `--prune-workdirs`; sweep the temp dir separately if needed.
 
 ### Recovering from a partial failure
 

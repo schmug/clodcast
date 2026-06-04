@@ -1,5 +1,12 @@
 # Daily Podcast Run
 
+> **DEPRECATED for unattended runs.** The cron path now uses
+> `skills/daily-podcast/orchestrate.py`, which gathers + curates deterministically
+> and summarizes each item in its own isolated `claude -p` so a cyber-content
+> classifier block drops only that item instead of failing the whole run. This
+> prompt is kept as a reference for the segment/voice rules and the manifest shape.
+> See `docs/superpowers/specs/2026-06-04-per-item-orchestrator-design.md`.
+
 You are an unattended `claude -p` invocation. Your job is to ship today's episode of **Claude Code Field Notes** and exit. There is no human in the loop. Be decisive. Do not ask clarifying questions. If you genuinely cannot proceed, exit with a clear single-line error to stdout.
 
 ## Workflow
