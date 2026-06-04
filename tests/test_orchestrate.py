@@ -266,3 +266,29 @@ def test_fan_out_respects_target_cap():
 
     survivors, dropped = orchestrate.fan_out(ranked, "tpl", target=3, summarize=ok)
     assert len(survivors) == 3 and dropped == []  # extras beyond target are unused, not dropped
+
+
+def test_fallback_intro_outro_pluralization():
+    one = orchestrate.fallback_intro_outro("June 4, 2026", 1)
+    assert "1 story today" in one["intro"]
+    many = orchestrate.fallback_intro_outro("June 4, 2026", 3)
+    assert "3 stories today" in many["intro"]
+    assert many["outro"] and many["summary"]
+
+
+def test_make_intro_outro_uses_llm_json():
+    def runner(cmd, **kw):
+        return SimpleNamespace(
+            stdout='{"intro": "I", "outro": "O", "summary": "S"}', stderr="", returncode=0
+        )
+
+    out = orchestrate.make_intro_outro(["A", "B"], "June 4, 2026", runner=runner)
+    assert out == {"intro": "I", "outro": "O", "summary": "S"}
+
+
+def test_make_intro_outro_falls_back_on_garbage():
+    def runner(cmd, **kw):
+        return SimpleNamespace(stdout="no json here", stderr="", returncode=0)
+
+    out = orchestrate.make_intro_outro(["A", "B"], "June 4, 2026", runner=runner)
+    assert "2 stories today" in out["intro"]  # deterministic fallback
