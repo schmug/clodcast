@@ -498,7 +498,8 @@ def test_main_dry_run_skips_feed_usage_update(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(orchestrate, "COVERED_PATH", tmp_path / "covered.json")
     monkeypatch.setattr(orchestrate, "FEED_USAGE_PATH", tmp_path / "feed_usage.json")
-    (tmp_path / "feed_usage.json").write_text('{"Old Feed": "2026-01-01"}')
+    initial_feed_usage = '{"F1": "2026-01-01"}'
+    (tmp_path / "feed_usage.json").write_text(initial_feed_usage)
     monkeypatch.setattr(orchestrate, "DROPPED_LOG_PATH", tmp_path / "dropped.jsonl")
     monkeypatch.setattr(orchestrate, "SUMMARIZE_PROMPT_PATH", tmp_path / "p.md")
     (tmp_path / "p.md").write_text("PROMPT <<TITLE>>")
@@ -544,7 +545,7 @@ def test_main_dry_run_skips_feed_usage_update(tmp_path, monkeypatch):
 
     rc = orchestrate.main(["--dry-run", "--workdir", str(tmp_path / "wd")])
     assert rc == 0
-    assert (tmp_path / "feed_usage.json").read_text() == '{"Old Feed": "2026-01-01"}'
+    assert (tmp_path / "feed_usage.json").read_text() == initial_feed_usage
 
 
 def test_main_no_survivors_fails(tmp_path, monkeypatch):
