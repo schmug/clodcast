@@ -216,6 +216,24 @@ def test_classify_error_when_garbage():
     assert r["outcome"] == "ERROR"
 
 
+def test_classify_auth_failure_is_distinct():
+    # Under the scheduled-task harness a child `claude -p` starts with NO credentials and
+    # prints a 401 auth error with no parseable JSON. That's SYSTEMIC (every item fails the
+    # same way), not a per-item error — classify it distinctly so the run can fail fast.
+    stderr = (
+        'API Error: 401 {"type":"error","error":{"type":"authentication_error",'
+        '"message":"Invalid authentication credentials"}}'
+    )
+    assert orchestrate.classify_output("", stderr, 1)["outcome"] == "AUTH"
+
+
+def test_classify_transient_errors_stay_error():
+    # Rate-limit / overload / connection failures are NOT auth — they must stay ERROR so a
+    # bad-feed night never misfires the credentials diagnostic.
+    for msg in ("API Error: 429 rate_limit_error", "Overloaded (529)", "connection error"):
+        assert orchestrate.classify_output("", msg, 1)["outcome"] == "ERROR"
+
+
 def test_classify_ok_requires_nonempty_segment():
     r = orchestrate.classify_output('{"ok": true, "segment": "   "}', "", 0)
     assert r["outcome"] == "ERROR"  # empty segment is not a usable success
@@ -282,6 +300,25 @@ def test_fan_out_keeps_survivors_in_order_and_logs_drops():
     assert [s["title"] for s in survivors] == ["A", "C"]
     assert survivors[0]["feed_name"] == "F1"
     assert len(dropped) == 1 and dropped[0]["reason"] == "blocked" and dropped[0]["url"] == "u/b"
+
+
+def test_fan_out_tags_auth_drop_reason():
+    # Lock the classify->fan_out seam: an AUTH outcome must surface as reason "auth" so
+    # main()'s fail-fast diagnostic (which keys on d["reason"] == "auth") actually fires.
+    ranked = [{"title": "A", "url": "u/a", "feed_name": "F"}]
+
+    def auth_summarize(item, tpl, **kw):
+        return {
+            **orchestrate._drop_fields(item),
+            "outcome": "AUTH",
+            "segment": None,
+            "source_url": None,
+            "detail": "401 / no usable credentials",
+        }
+
+    survivors, dropped = orchestrate.fan_out(ranked, "tpl", target=10, summarize=auth_summarize)
+    assert survivors == []
+    assert len(dropped) == 1 and dropped[0]["reason"] == "auth"
 
 
 def test_fan_out_respects_target_cap():
@@ -501,3 +538,45 @@ def test_main_no_survivors_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrate, "DROPPED_LOG_PATH", tmp_path / "d.jsonl")
     rc = orchestrate.main(["--workdir", str(tmp_path / "wd")])
     assert rc == 1
+
+
+def test_main_auth_failure_fails_fast_with_actionable_message(tmp_path, monkeypatch, capsys):
+    # When every item drops on a 401 (scheduled harness, no creds for child claude -p), the
+    # run must fail fast with an actionable single-line message instead of silently degrading
+    # to the generic "no viable items". See SKILL.md "Unattended runs need durable credentials".
+    monkeypatch.setattr(orchestrate, "CONFIG_PATH", tmp_path / "config.json")
+    (tmp_path / "config.json").write_text('{"opml_files": ["/x.opml"]}')
+    monkeypatch.setattr(orchestrate, "COVERED_PATH", tmp_path / "c.json")
+    monkeypatch.setattr(orchestrate, "SUMMARIZE_PROMPT_PATH", tmp_path / "p.md")
+    (tmp_path / "p.md").write_text("P")
+    monkeypatch.setattr(
+        orchestrate,
+        "gather_candidates",
+        lambda *a, **k: [
+            {
+                "title": "A",
+                "url": "u/a",
+                "feed_name": "F",
+                "summary": "",
+                "published": None,
+                "category": "",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "fan_out",
+        lambda *a, **k: (
+            [],
+            [{"feed_name": "F", "url": "u/a", "reason": "auth", "detail": "401 ..."}],
+        ),
+    )
+    monkeypatch.setattr(orchestrate, "DROPPED_LOG_PATH", tmp_path / "d.jsonl")
+    rc = orchestrate.main(["--workdir", str(tmp_path / "wd")])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert out.startswith("FAILED ")  # single-line scheduler contract preserved
+    assert "401" in out and "credential" in out.lower()  # actionable, not generic
+    assert "(all dropped/blocked)" not in out  # distinct from the generic-drop message
+    assert "SKILL.md" in out  # points at the operator-setup section that must exist
+    assert "\n" not in out.strip()  # stays one line

@@ -126,6 +126,14 @@ Final stdout is a single line: `SHIPPED <episode_uri> ...` or `FAILED <reason>`.
 
 Hook it up to launchd, cron, or any scheduler.
 
+> **Heads up — child `claude -p` needs its own credentials.** Each item is summarized in a
+> child `claude -p` subprocess that authenticates from disk/env, not from the parent's
+> in-memory login. A scheduler can start those children with no usable credential, in which
+> case every item 401s and the run fails fast with an actionable line (instead of silently
+> reporting "no viable items"). Give the job a durable credential — a persistent on-disk
+> token, or `ANTHROPIC_API_KEY` in the scheduler's own environment — and verify it from
+> inside the scheduled context. See SKILL.md, *"Unattended runs need durable credentials"*.
+
 ### Scheduled runs (pre-flight + disk hygiene)
 
 For unattended runs, pre-flight with `render.py --selftest` so a broken dependency or an
@@ -153,7 +161,7 @@ always keeps it for debugging).
 The orchestrator writes two additional state files alongside `covered.json` and `runs.jsonl`:
 
 - `~/.config/daily-podcast/feed_usage.json` — records the last date each feed contributed a segment; drives the variety penalty so the same feed doesn't dominate consecutive episodes. Updated only on a successful real run (`--dry-run` leaves it unchanged).
-- `~/.config/daily-podcast/dropped.jsonl` — append-only log of every item that was blocked, refused, timed out, or errored during a run. One JSON line per dropped item: `{timestamp, run_date, feed_name, url, reason, detail}`. Useful for diagnosing feed-level issues or cyber-content policy patterns.
+- `~/.config/daily-podcast/dropped.jsonl` — append-only log of every item that was blocked, refused, timed out, errored, or hit an auth failure during a run. One JSON line per dropped item: `{timestamp, run_date, feed_name, url, reason, detail}` (`reason` ∈ `refused`/`blocked`/`auth`/`timeout`/`error`). Useful for diagnosing feed-level issues or cyber-content policy patterns; an all-`auth` night means child `claude -p` could not authenticate (see SKILL.md).
 
 ### Run log
 
