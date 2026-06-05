@@ -18,7 +18,8 @@ Depends on the `save-to-spotify` CLI being installed and authenticated. Install 
 This skill ships an executable `render.py` and a headless prompt. References in this document are relative to the skill directory:
 
 - `./render.py` — the manifest → episode driver (audio render, cover, upload, timeline, polling)
-- `./prompts/daily.md` — the self-contained `claude -p` prompt for unattended daily runs
+- `./orchestrate.py` — the unattended entry point for scheduled runs (deterministic metadata-only curation + one isolated `claude -p` per item)
+- `./prompts/daily.md` — **deprecated** reference for the segment/voice rules and manifest shape; no longer the cron entry point (use `./orchestrate.py`)
 
 ## Input
 
