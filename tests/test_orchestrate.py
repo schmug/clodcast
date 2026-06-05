@@ -388,6 +388,14 @@ def test_make_intro_outro_falls_back_on_garbage():
     assert "2 stories today" in out["intro"]  # deterministic fallback
 
 
+def test_make_intro_outro_falls_back_on_timeout():
+    def runner(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kw["timeout"])
+
+    out = orchestrate.make_intro_outro(["A", "B"], "June 4, 2026", runner=runner)
+    assert out == orchestrate.fallback_intro_outro("June 4, 2026", 2)
+
+
 def test_assemble_manifest_shape():
     survivors = [
         {"title": "A", "segment": "seg a", "source_url": "u/a", "feed_name": "F1"},
@@ -442,6 +450,19 @@ def test_run_render_parses_result(tmp_path):
 
     res = orchestrate.run_render(tmp_path / "m.json", tmp_path, dry_run=False, runner=runner)
     assert res["episode_uri"] == "spotify:episode:1" and res["chapter_count"] == 5
+
+
+def test_run_render_forwards_dry_run(tmp_path):
+    def runner(cmd, **kw):
+        assert "--dry-run" in cmd
+        return SimpleNamespace(
+            stdout='{"status": "dry-run", "title": "Daily Digest - June 4, 2026"}',
+            stderr="",
+            returncode=0,
+        )
+
+    res = orchestrate.run_render(tmp_path / "m.json", tmp_path, dry_run=True, runner=runner)
+    assert res["status"] == "dry-run"
 
 
 def test_run_render_parses_real_nested_loudnorm_result(tmp_path):
@@ -556,6 +577,63 @@ def test_main_happy_path(tmp_path, monkeypatch):
     # 1:1 mapping survived into the manifest (intro + 1 story + outro)
     assert len(captured["manifest"]["segments"]) == 3
     assert (tmp_path / "feed_usage.json").exists()  # updated on ready
+
+
+def test_main_dry_run_skips_feed_usage_update(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestrate, "CONFIG_PATH", tmp_path / "config.json")
+    (tmp_path / "config.json").write_text(
+        '{"opml_files": ["/x.opml"], "lookback_hours": 24, "target_item_count": 2}'
+    )
+    monkeypatch.setattr(orchestrate, "COVERED_PATH", tmp_path / "covered.json")
+    monkeypatch.setattr(orchestrate, "FEED_USAGE_PATH", tmp_path / "feed_usage.json")
+    initial_feed_usage = '{"F1": "2026-01-01"}'
+    (tmp_path / "feed_usage.json").write_text(initial_feed_usage)
+    monkeypatch.setattr(orchestrate, "DROPPED_LOG_PATH", tmp_path / "dropped.jsonl")
+    monkeypatch.setattr(orchestrate, "SUMMARIZE_PROMPT_PATH", tmp_path / "p.md")
+    (tmp_path / "p.md").write_text("PROMPT <<TITLE>>")
+
+    monkeypatch.setattr(
+        orchestrate,
+        "gather_candidates",
+        lambda *a, **k: [
+            {
+                "title": "A",
+                "url": "u/a",
+                "feed_name": "F1",
+                "summary": "",
+                "published": None,
+                "category": "",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "fan_out",
+        lambda *a, **k: (
+            [{"title": "A", "segment": "seg a", "source_url": "u/a", "feed_name": "F1"}],
+            [],
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "make_intro_outro",
+        lambda *a, **k: {"intro": "I", "outro": "O", "summary": "S"},
+    )
+    monkeypatch.setattr(
+        orchestrate,
+        "run_render",
+        lambda *a, **k: {
+            "status": "ready",
+            "title": "T",
+            "chapter_count": 3,
+            "duration_s": 100.0,
+            "r2_status": "skipped",
+        },
+    )
+
+    rc = orchestrate.main(["--dry-run", "--workdir", str(tmp_path / "wd")])
+    assert rc == 0
+    assert (tmp_path / "feed_usage.json").read_text() == initial_feed_usage
 
 
 def test_main_no_survivors_fails(tmp_path, monkeypatch):
