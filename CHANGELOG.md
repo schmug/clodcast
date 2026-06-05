@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 This file is generated from conventional commits by [git-cliff](https://git-cliff.org).
 
+## [0.1.1](https://github.com/schmug/clodcast/compare/v0.1.0...v0.1.1) (2026-06-05)
+
+
+### Features
+
+* per-item orchestrator to contain the cyber-content classifier block ([#63](https://github.com/schmug/clodcast/issues/63)) ([95339c0](https://github.com/schmug/clodcast/commit/95339c07eb43729065c0f86f976abcbc91d4d2f1))
+
+
+### Bug Fixes
+
+* fail fast when scheduled claude -p cannot authenticate (401) ([#70](https://github.com/schmug/clodcast/issues/70)) ([7055dd5](https://github.com/schmug/clodcast/commit/7055dd5fe3d967e54bbcacee6a6e1a976cb1adee))
+* parse nested-loudnorm result so a successful real ship isn't reported FAILED ([#69](https://github.com/schmug/clodcast/issues/69)) ([0b8772a](https://github.com/schmug/clodcast/commit/0b8772a92dc18895fc9cdbbda6ceae77e920b670))
+
 ## [0.1.0] - 2026-06-03
 
 ### Features
