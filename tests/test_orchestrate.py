@@ -30,6 +30,31 @@ def test_extract_last_json_none_when_absent():
     assert orchestrate.extract_last_json("") is None
 
 
+def test_extract_last_json_indented_with_nested_object():
+    """render.py prints its real result via json.dumps(indent=2), and that object nests
+    a `loudnorm` sub-object. The fallback must return the OUTER object — regression: the
+    old rfind('{') fallback grabbed the inner loudnorm brace, yielding a malformed span
+    that parsed to None and made a successful real ship report FAILED."""
+    result = {
+        "status": "ready",
+        "episode_uri": "spotify:episode:4zuLE5DOQlHvJylHXOQn2z",
+        "duration_s": 412.3,
+        "loudnorm": {"input_i": -22.5, "output_i": -24.0, "input_tp": -3.1},
+        "r2_status": "published",
+        "resumed": False,
+    }
+    assert orchestrate.extract_last_json(json.dumps(result, indent=2)) == result
+
+
+def test_extract_last_json_returns_last_of_several_nested():
+    """When several pretty-printed objects (each with a nested sub-object) appear,
+    return the LAST top-level object, not an earlier one or an inner brace."""
+    first = json.dumps({"status": "old", "loudnorm": {"input_i": -1.0}}, indent=2)
+    second = json.dumps({"status": "new", "loudnorm": {"input_i": -2.0}}, indent=2)
+    out = orchestrate.extract_last_json(f"log line\n{first}\nmore log\n{second}\n")
+    assert out == {"status": "new", "loudnorm": {"input_i": -2.0}}
+
+
 def test_parse_opml(tmp_path):
     opml = tmp_path / "feeds.opml"
     opml.write_text(
@@ -380,6 +405,32 @@ def test_run_render_parses_result(tmp_path):
 
     res = orchestrate.run_render(tmp_path / "m.json", tmp_path, dry_run=False, runner=runner)
     assert res["episode_uri"] == "spotify:episode:1" and res["chapter_count"] == 5
+
+
+def test_run_render_parses_real_nested_loudnorm_result(tmp_path):
+    """A successful REAL (non-dry-run) render prints a result whose `loudnorm` value is a
+    nested object. run_render must parse it to a dict and return it — not raise RenderError
+    (which main() would surface as FAILED even though the episode shipped). This mirrors
+    render.py's actual json.dumps(indent=2) output shape."""
+    real_result = {
+        "status": "ready",
+        "episode_uri": "spotify:episode:4zuLE5DOQlHvJylHXOQn2z",
+        "title": "Daily Digest - June 5, 2026",
+        "voice": "house",
+        "voice_mode": "ref_audio",
+        "chapter_count": 6,
+        "duration_s": 503.7,
+        "loudnorm": {"input_i": -22.5, "output_i": -24.0, "input_tp": -3.1},
+        "r2_status": "published",
+        "resumed": False,
+    }
+
+    def runner(cmd, **kw):
+        assert "--dry-run" not in cmd
+        return SimpleNamespace(stdout=json.dumps(real_result, indent=2), stderr="", returncode=0)
+
+    res = orchestrate.run_render(tmp_path / "m.json", tmp_path, dry_run=False, runner=runner)
+    assert res == real_result
 
 
 def test_run_render_raises_on_failure(tmp_path):

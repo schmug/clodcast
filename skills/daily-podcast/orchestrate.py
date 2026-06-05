@@ -105,13 +105,25 @@ def extract_last_json(text: str) -> dict | None:
                 return json.loads(s)
             except json.JSONDecodeError:
                 continue
-    start, end = text.rfind("{"), text.rfind("}")
-    if 0 <= start < end:
+    # Pretty-printed fallback: render.py prints its result with indent=2, and that object
+    # nests a `loudnorm` sub-object. A naive rfind("{") grabbed the INNER brace and built a
+    # malformed span (a successful real ship then parsed to None -> reported FAILED). Scan
+    # each "{" forward with raw_decode and skip past whole decoded objects (pos = end) so we
+    # only ever consider TOP-LEVEL objects, returning the last one. raw_decode is also robust
+    # to "{" inside string values, which a brace-counter or span-grab is not.
+    decoder = json.JSONDecoder()
+    last: dict | None = None
+    pos = 0
+    while (start := text.find("{", pos)) != -1:
         try:
-            return json.loads(text[start : end + 1])
+            obj, end = decoder.raw_decode(text, start)
         except json.JSONDecodeError:
-            return None
-    return None
+            pos = start + 1
+            continue
+        if isinstance(obj, dict):
+            last = obj
+        pos = end if end > start else start + 1
+    return last
 
 
 def parse_opml(path: Path) -> list[dict]:
