@@ -79,6 +79,18 @@ VARIETY_PENALTY = 0.5
 
 # A blocked claude -p surfaces these markers in stdout/stderr; used to tag drops.
 POLICY_RE = re.compile(r"usage policy|violative cyber|unable to respond|cyber verification", re.I)
+# A cold-credential claude -p (the scheduled-task harness: no ~/.claude/.credentials.json,
+# no ANTHROPIC_API_KEY — the parent's session creds aren't inherited by children) prints a
+# 401 auth error and nothing parseable. Detected DISTINCTLY from a per-item ERROR because
+# it's SYSTEMIC: every item fails identically, so the run fails fast with an actionable
+# message instead of silently dropping all N items as generic errors. Anchored to auth
+# strings only — transient failures (rate_limit, overloaded/529, connection) stay ERROR so a
+# bad-feed night never misfires the credentials diagnostic.
+AUTH_RE = re.compile(
+    r"invalid authentication credentials|authentication_error|invalid x-api-key|"
+    r"invalid bearer token|oauth token (?:has )?expired|\b401 unauthorized\b",
+    re.I,
+)
 # Concreteness: a digit, a CVE id, or a version-like token (daily.md priority 2).
 CONCRETE_RE = re.compile(r"\d|\bCVE-\d{4}-\d+\b|\bv?\d+\.\d+\b")
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -298,6 +310,7 @@ def gather_candidates(
 def classify_output(stdout: str, stderr: str, returncode: int) -> dict:
     """Map one claude -p result to an outcome. Pure: no I/O.
     OK (valid {"ok":true} with non-empty segment) | REFUSED ({"ok":false}) |
+    AUTH (401/no-credential markers, no usable JSON — systemic) |
     BLOCKED (policy markers, no usable JSON) | ERROR (everything else)."""
     obj = extract_last_json(stdout)
     if isinstance(obj, dict) and obj.get("ok") is True and str(obj.get("segment", "")).strip():
@@ -324,7 +337,15 @@ def classify_output(stdout: str, stderr: str, returncode: int) -> dict:
             "source_url": None,
             "detail": str(obj.get("reason", ""))[:300],
         }
-    if POLICY_RE.search(f"{stdout}\n{stderr}"):
+    blob = f"{stdout}\n{stderr}"
+    if AUTH_RE.search(blob):
+        return {
+            "outcome": "AUTH",
+            "segment": None,
+            "source_url": None,
+            "detail": "401 / no usable credentials",
+        }
+    if POLICY_RE.search(blob):
         return {
             "outcome": "BLOCKED",
             "segment": None,
@@ -646,6 +667,18 @@ def main(argv: list[str] | None = None) -> int:
     write_dropped_log(dropped, date_iso)
     log(f"survivors={len(survivors)} dropped={len(dropped)}")
     if not survivors:
+        # A 401 from a child `claude -p` is systemic, not per-item: under a scheduler the
+        # children inherit no credentials, so every item fails identically. Surface that as an
+        # actionable single-line failure instead of the generic "no viable items" — but only
+        # when there are genuinely zero survivors (a stray auth match while auth actually works
+        # would still leave survivors and skip this branch). Wording stays factual so it reads
+        # correctly whether it's all-items-auth or a lone false positive.
+        if any(d["reason"] == "auth" for d in dropped):
+            return _fail(
+                "no viable items; at least one item reported a 401 authentication error - "
+                "under a scheduler, child `claude -p` likely has no credentials. See SKILL.md "
+                '"Unattended runs need durable credentials".'
+            )
         return _fail("no viable items (all dropped/blocked)")
 
     intro_outro = make_intro_outro([s["title"] for s in survivors], date_long)

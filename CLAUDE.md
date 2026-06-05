@@ -41,6 +41,8 @@ Four documents are load-bearing; read all of them before changing behavior:
 
 **No LLM request holds more than one article body.** Curation is deterministic metadata-only (feedparser titles, dates, summaries — never article bodies). Each ranked item is summarized by its own isolated `claude -p` subprocess. A per-item block, timeout, or error drops only that item and logs it to `dropped.jsonl`; the remaining items still ship. `feed_usage.json` drives the variety penalty so the same feed doesn't dominate consecutive episodes.
 
+**Auth failure is systemic, not per-item.** A child `claude -p` authenticates from disk/env, not from the parent's in-memory session login, so under a scheduler the children can start with no usable credential and every item 401s. `classify_output` maps that to a distinct `AUTH` outcome (`AUTH_RE`, anchored to auth strings only so transient rate-limit/overload errors stay `ERROR`). When a run ends with **zero survivors and any `auth` drop**, `main()` fails fast with an actionable single line pointing at SKILL.md *"Unattended runs need durable credentials"* — instead of silently degrading to the generic `no viable items`. Detection is post-fan-out (a 401 returns fast, so there's no happy-path cost and no preflight probe). Keep `AUTH_RE` auth-only and keep the diagnostic gated on `not survivors`.
+
 ### Invariants the renderer enforces
 
 These are subtle and easy to break. Preserve them or the produced episode is rejected by Spotify or sounds wrong.
@@ -76,7 +78,7 @@ User-level config sits outside the repo at `~/.config/daily-podcast/`:
 - `covered.json` — URL → `{date, episode_uri}` dedup log. Written by `render.py` only on successful upload. Treat malformed JSON as `{}` rather than failing the run. Pruned to a 180-day retention window (`COVERED_RETENTION_DAYS`) on each write so it stays bounded; entries with a missing/malformed `date` are retained.
 - `runs.jsonl` — append-only JSONL operational log, one record per run (see the run-log invariant above). Best-effort observability; not load-bearing for any pipeline decision. Retention is the operator's job (≈ one line/day).
 - `feed_usage.json` — `{feed_name: last_used_date}` map written by `orchestrate.py` after each successful real run. Drives the variety penalty so the same feed doesn't dominate consecutive episodes.
-- `dropped.jsonl` — append-only JSONL log written by `orchestrate.py` for every item that was blocked, refused, timed out, or errored. One record per dropped item: `{timestamp, run_date, feed_name, url, reason, detail}`. Observability-only; never affects pipeline decisions.
+- `dropped.jsonl` — append-only JSONL log written by `orchestrate.py` for every item that was blocked, refused, timed out, errored, or hit an auth failure. One record per dropped item: `{timestamp, run_date, feed_name, url, reason, detail}` (`reason` ∈ `refused`/`blocked`/`auth`/`timeout`/`error`). Observability-only; never affects pipeline decisions — except that the systemic `auth` case (zero survivors) drives the fail-fast diagnostic noted in the orchestrator invariant above.
 
 All are documented in [SKILL.md](skills/daily-podcast/SKILL.md#show--dedup-config) and [README.md](README.md#setup).
 
