@@ -547,62 +547,6 @@ def test_main_dry_run_skips_feed_usage_update(tmp_path, monkeypatch):
     assert (tmp_path / "feed_usage.json").read_text() == '{"Old Feed": "2026-01-01"}'
 
 
-def test_main_dry_run_ready_result_keeps_feed_usage_unchanged(tmp_path, monkeypatch):
-    monkeypatch.setattr(orchestrate, "CONFIG_PATH", tmp_path / "config.json")
-    (tmp_path / "config.json").write_text(
-        '{"opml_files": ["/x.opml"], "lookback_hours": 24, "target_item_count": 2}'
-    )
-    monkeypatch.setattr(orchestrate, "COVERED_PATH", tmp_path / "covered.json")
-    monkeypatch.setattr(orchestrate, "FEED_USAGE_PATH", tmp_path / "feed_usage.json")
-    (tmp_path / "feed_usage.json").write_text('{"Old Feed": "2026-01-01"}')
-    monkeypatch.setattr(orchestrate, "DROPPED_LOG_PATH", tmp_path / "dropped.jsonl")
-    monkeypatch.setattr(orchestrate, "SUMMARIZE_PROMPT_PATH", tmp_path / "p.md")
-    (tmp_path / "p.md").write_text("PROMPT <<TITLE>>")
-
-    monkeypatch.setattr(
-        orchestrate,
-        "gather_candidates",
-        lambda *a, **k: [
-            {
-                "title": "A",
-                "url": "u/a",
-                "feed_name": "F1",
-                "summary": "",
-                "published": None,
-                "category": "",
-            }
-        ],
-    )
-    monkeypatch.setattr(
-        orchestrate,
-        "fan_out",
-        lambda *a, **k: (
-            [{"title": "A", "segment": "seg a", "source_url": "u/a", "feed_name": "F1"}],
-            [],
-        ),
-    )
-    monkeypatch.setattr(
-        orchestrate,
-        "make_intro_outro",
-        lambda *a, **k: {"intro": "I", "outro": "O", "summary": "S"},
-    )
-    monkeypatch.setattr(
-        orchestrate,
-        "run_render",
-        lambda *a, **k: {
-            "status": "ready",
-            "title": "T",
-            "chapter_count": 3,
-            "duration_s": 100.0,
-            "r2_status": "skipped",
-        },
-    )
-
-    rc = orchestrate.main(["--dry-run", "--workdir", str(tmp_path / "wd")])
-    assert rc == 0
-    assert (tmp_path / "feed_usage.json").read_text() == '{"Old Feed": "2026-01-01"}'
-
-
 def test_main_no_survivors_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrate, "CONFIG_PATH", tmp_path / "config.json")
     (tmp_path / "config.json").write_text('{"opml_files": ["/x.opml"]}')
