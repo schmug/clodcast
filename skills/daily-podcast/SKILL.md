@@ -18,7 +18,8 @@ Depends on the `save-to-spotify` CLI being installed and authenticated. Install 
 This skill ships an executable `render.py` and a headless prompt. References in this document are relative to the skill directory:
 
 - `./render.py` — the manifest → episode driver (audio render, cover, upload, timeline, polling)
-- `./prompts/daily.md` — the self-contained `claude -p` prompt for unattended daily runs
+- `./orchestrate.py` — the unattended entry point for scheduled runs (deterministic metadata-only curation + one isolated `claude -p` per item)
+- `./prompts/daily.md` — **deprecated** reference for the segment/voice rules and manifest shape; no longer the cron entry point (use `./orchestrate.py`)
 
 ## Input
 
@@ -286,7 +287,7 @@ Pipeline:
 **State files written by the orchestrator** (under `~/.config/daily-podcast/`):
 
 - `feed_usage.json` — `{feed_name: last_used_date}` map; drives the variety penalty so the same feed doesn't dominate back-to-back episodes. Updated only on a successful real (`ready`) run; `--dry-run` leaves it unchanged.
-- `dropped.jsonl` — append-only JSONL record of every item that was blocked, refused, timed out, or errored during a run. One record per dropped item: `{timestamp, run_date, feed_name, url, reason, detail}`. Useful for diagnosing feed-level issues or cyber-content policy patterns.
+- `dropped.jsonl` — append-only JSONL record of every item that was blocked, refused, timed out, errored, or hit an auth failure during a run. One record per dropped item: `{timestamp, run_date, feed_name, url, reason, detail}` (`reason` ∈ `refused`/`blocked`/`auth`/`timeout`/`error`). Useful for diagnosing feed-level issues or cyber-content policy patterns; an all-`auth` night means child `claude -p` could not authenticate (see [Unattended runs need durable credentials](#unattended-runs-need-durable-credentials)).
 
 Note: `orchestrate.py` does **not** accept `--selftest` or `--prune-workdirs` — those flags belong to `render.py`. For disk hygiene, call `render.py --prune-workdirs N` separately.
 
@@ -328,6 +329,31 @@ python3 skills/daily-podcast/orchestrate.py
 ```
 
 For disk hygiene, `render.py --prune-workdirs N` is still the mechanism — pass it when calling `render.py` directly with `--manifest`. `orchestrate.py` does not accept `--prune-workdirs`; sweep the temp dir separately if needed.
+
+### Unattended runs need durable credentials
+
+`orchestrate.py` summarizes each ranked item — and writes the intro/sign-off — by spawning a **child `claude -p` subprocess**. Those children authenticate on their own: they read whatever credential is on disk or in their environment, **not** the parent's in-memory session login. In an interactive `claude` session this is invisible, because a persistent OAuth credential (`~/.claude/.credentials.json`) is already on disk for the children to use.
+
+Under a scheduler (launchd / cron, or any harness that injects a session-scoped credential the parent holds only in memory), the children can start with **no usable credential** — no on-disk token and no `ANTHROPIC_API_KEY`. Every item then fails with `401 Invalid authentication credentials`. The orchestrator detects this case (the `AUTH` outcome) and **fails fast** with a single actionable line rather than silently degrading to the generic "no viable items":
+
+```
+FAILED no viable items; at least one item reported a 401 authentication error - under a scheduler, child `claude -p` likely has no credentials. See SKILL.md "Unattended runs need durable credentials".
+```
+
+**The requirement:** the scheduled job's child processes must be able to authenticate *without* the interactive session. That means one of:
+
+- a **persistent on-disk credential** the children can read at run time (e.g. a valid `~/.claude/.credentials.json` for the user the job runs as), or
+- an **API key in the job's own environment** (`ANTHROPIC_API_KEY`) — set in the launchd plist / cron environment itself, since a scheduled job does **not** inherit your interactive shell env (the same constraint that pushes R2 / Pages secrets into the plist or `secrets.json`). Keep keys out of `config.json` and git.
+
+**Verify it in your actual scheduler before relying on it.** Auth in the scheduled harness is exactly the non-obvious part, so don't assume a recipe works — confirm a bare child can authenticate *from inside the scheduled context* (not your terminal):
+
+```bash
+# Run this from the scheduler itself (a one-off scheduled task / `launchctl kickstart`),
+# capturing output — NOT from an interactive shell, which has different credentials.
+claude -p 'reply with the single word OK' || echo "child claude -p cannot authenticate here"
+```
+
+If that 401s, fix the credential before scheduling the orchestrator; if no durable credential is available to children in your environment, drive the daily run with in-session subagents (which share the parent's working auth) instead of the `claude -p` fan-out.
 
 ### Recovering from a partial failure
 
