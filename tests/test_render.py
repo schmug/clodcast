@@ -490,7 +490,9 @@ def test_load_covered_returns_dict_when_well_formed(tmp_path, monkeypatch):
 def test_save_covered_round_trips(tmp_path, monkeypatch):
     monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(render, "COVERED_PATH", tmp_path / "covered.json")
-    data = {"https://example.com/a": {"date": "2026-01-01", "episode_uri": "spotify:episode:x"}}
+    # Use a recent date so this exercises the round trip, not retention pruning
+    # (a hardcoded past date silently rots once it falls outside the 180-day window).
+    data = {"https://example.com/a": {"date": _iso_days_ago(1), "episode_uri": "spotify:episode:x"}}
 
     render.save_covered(data)
 
@@ -503,7 +505,8 @@ def test_save_covered_atomic_keeps_prior_on_crash(tmp_path, monkeypatch):
     monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
     covered = tmp_path / "covered.json"
     monkeypatch.setattr(render, "COVERED_PATH", covered)
-    prior = {"https://example.com/old": {"date": "2026-01-01"}}
+    # Recent dates so the assertion tests crash-atomicity, not retention pruning.
+    prior = {"https://example.com/old": {"date": _iso_days_ago(1)}}
     render.save_covered(prior)
 
     def boom(_src, _dst):
@@ -511,7 +514,7 @@ def test_save_covered_atomic_keeps_prior_on_crash(tmp_path, monkeypatch):
 
     monkeypatch.setattr(render.os, "replace", boom)
     with pytest.raises(KeyboardInterrupt):
-        render.save_covered({"https://example.com/new": {"date": "2026-02-02"}})
+        render.save_covered({"https://example.com/new": {"date": _iso_days_ago(2)}})
 
     # Prior file intact, new data not promoted, and no temp turds left behind.
     assert json.loads(covered.read_text()) == prior
