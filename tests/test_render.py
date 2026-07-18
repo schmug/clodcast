@@ -8,10 +8,13 @@ save-to-spotify CLI. The audio I/O seam (`mp3_duration_ms`) is monkeypatched.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
+import subprocess
 import sys
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -1736,3 +1739,244 @@ def test_prune_workdirs_flag_runs_before_render(tmp_path, monkeypatch):
     assert render.main() == 0
     rec = json.loads((tmp_path / "runs.jsonl").read_text().splitlines()[-1])
     assert rec["pruned_workdirs"]["count"] == 1
+
+
+# --- episode-cap error diagnostics (#78, part 1) --------------------------
+
+
+def _cap_stdout(message: str = "You've reached the episode limit.") -> str:
+    """The verbatim nested-string shape save-to-spotify 0.1.1 writes to stdout on a
+    cap 429: {"error": "API error (429): {\"error_code\":..., ...}"}."""
+    inner = json.dumps(
+        {"error_code": "RATE_LIMIT_EXCEEDED", "reason": "capacity", "message": message}
+    )
+    return json.dumps({"error": f"API error (429): {inner}"})
+
+
+def test_parse_s2s_error_nested_string_cap_payload():
+    parsed = render.parse_s2s_error(_cap_stdout())
+    assert parsed["error_code"] == "RATE_LIMIT_EXCEEDED"
+    assert parsed["reason"] == "capacity"
+    assert "episode limit" in parsed["message"]
+
+
+def test_parse_s2s_error_survives_trailing_update_nag():
+    # The --json output can carry a trailing non-JSON nag line; json.loads over the
+    # whole stream would raise "Extra data". parse_s2s_error parses the first line.
+    stdout = _cap_stdout() + "\nA newer version of save-to-spotify is available: 0.1.5"
+    parsed = render.parse_s2s_error(stdout)
+    assert parsed["error_code"] == "RATE_LIMIT_EXCEEDED"
+
+
+def test_parse_s2s_error_none_when_no_json_error():
+    assert render.parse_s2s_error("") is None
+    assert render.parse_s2s_error("not json at all") is None
+
+
+def test_run_failure_surfaces_structured_cap_error(monkeypatch, capsys):
+    def fake(cmd, **kw):
+        raise subprocess.CalledProcessError(1, cmd, output=_cap_stdout(), stderr="")
+
+    monkeypatch.setattr(render.subprocess, "run", fake)
+    with pytest.raises(SystemExit):
+        render.run(["save-to-spotify", "--json", "upload", "x"])
+    err = capsys.readouterr().err
+    # The real reason is surfaced, distinguishable from a generic failure — NOT an
+    # empty "stderr:" tail.
+    assert "RATE_LIMIT_EXCEEDED" in err
+    assert "episode limit" in err
+    assert "stderr: \n" not in err
+
+
+def test_run_failure_empty_stdout_falls_back_to_stderr(monkeypatch, capsys):
+    def fake(cmd, **kw):
+        raise subprocess.CalledProcessError(1, cmd, output="", stderr="boom on disk")
+
+    monkeypatch.setattr(render.subprocess, "run", fake)
+    with pytest.raises(SystemExit):
+        render.run(["ffmpeg", "-i", "x"])
+    err = capsys.readouterr().err
+    assert "stderr: boom on disk" in err  # no regression for genuinely-empty stdout
+
+
+# --- episode-cap auto-prune selection (#78, part 2) -----------------------
+
+_NOW = dt.datetime(2026, 7, 18, 12, 0, tzinfo=dt.timezone.utc)
+
+
+def _ep(uri, created_at, status="READY", title="t"):
+    return {"episode_uri": uri, "created_at": created_at, "status": status, "title": title}
+
+
+def test_select_prefers_failed_over_older_ready():
+    eps = [
+        _ep("spotify:episode:old", "2026-01-01T00:00:00Z", status="READY"),
+        _ep("spotify:episode:failed", "2026-07-01T00:00:00Z", status="FAILED"),
+    ]
+    picked = render.select_episodes_to_prune(eps, 1, _NOW)
+    assert [e["episode_uri"] for e in picked] == ["spotify:episode:failed"]
+
+
+def test_select_then_oldest_ready():
+    eps = [
+        _ep("spotify:episode:new", "2026-07-10T00:00:00Z"),
+        _ep("spotify:episode:old", "2026-01-01T00:00:00Z"),
+    ]
+    picked = render.select_episodes_to_prune(eps, 1, _NOW)
+    assert [e["episode_uri"] for e in picked] == ["spotify:episode:old"]
+
+
+def test_select_never_picks_not_ready():
+    eps = [_ep("spotify:episode:inflight", "2026-01-01T00:00:00Z", status="NOT_READY")]
+    assert render.select_episodes_to_prune(eps, 5, _NOW) == []
+
+
+def test_select_skips_unparseable_created_at():
+    eps = [
+        _ep("spotify:episode:bad", None),
+        _ep("spotify:episode:bad2", "not-a-date"),
+        _ep("spotify:episode:good", "2026-02-01T00:00:00Z"),
+    ]
+    picked = render.select_episodes_to_prune(eps, 5, _NOW)
+    assert [e["episode_uri"] for e in picked] == ["spotify:episode:good"]
+
+
+def test_select_excludes_this_run_and_future():
+    eps = [
+        _ep("spotify:episode:justnow", "2026-07-18T11:59:59Z"),  # < now, eligible
+        _ep("spotify:episode:thisrun", "2026-07-18T12:00:01Z"),  # >= now, excluded
+    ]
+    picked = render.select_episodes_to_prune(eps, 5, _NOW)
+    assert [e["episode_uri"] for e in picked] == ["spotify:episode:justnow"]
+
+
+def test_select_bounded_by_max_prune():
+    eps = [_ep(f"spotify:episode:{i}", f"2026-0{i}-01T00:00:00Z") for i in range(1, 6)]
+    assert len(render.select_episodes_to_prune(eps, 2, _NOW)) == 2
+
+
+# --- upload auto-prune wiring (#78, part 2) -------------------------------
+
+
+def _make_fake_s2s(monkeypatch, *, upload_seq, episodes):
+    """Drive every save-to-spotify call through one fake subprocess.run.
+
+    upload_seq: per-upload-call outcome, "cap" (raise cap 429) or "ok" (success).
+    episodes: what the `episodes` list call returns. Returns a recorder tracking
+    upload call count, list call count, and the ids passed to `episodes delete`."""
+    state = {"i": 0}
+    rec = types.SimpleNamespace(upload_calls=0, list_calls=0, deletes=[])
+
+    def fake(cmd, **kw):
+        if cmd[:3] == ["save-to-spotify", "--json", "upload"]:
+            rec.upload_calls += 1
+            outcome = upload_seq[state["i"]]
+            state["i"] += 1
+            if outcome == "cap":
+                raise subprocess.CalledProcessError(1, cmd, output=_cap_stdout(), stderr="")
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps({"episode_uri": "spotify:episode:new"}), stderr=""
+            )
+        if cmd[:3] == ["save-to-spotify", "--json", "episodes"]:
+            rec.list_calls += 1
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps({"episodes": episodes}), stderr=""
+            )
+        if cmd[:3] == ["save-to-spotify", "episodes", "delete"]:
+            rec.deletes.append(cmd[3])
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps({"status": "deleted"}), stderr=""
+            )
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(render.subprocess, "run", fake)
+    return rec
+
+
+def test_upload_cap_without_auto_prune_dies_with_diagnostic(tmp_path, monkeypatch, capsys):
+    rec = _make_fake_s2s(monkeypatch, upload_seq=["cap"], episodes=[])
+    with pytest.raises(SystemExit):
+        render.upload(
+            tmp_path / "e.mp3", "T", "<p>d</p>", tmp_path / "c.jpg", "spotify:show:1", config={}
+        )
+    assert rec.deletes == []  # no deletion when opt-in absent
+    assert rec.list_calls == 0
+    assert "RATE_LIMIT_EXCEEDED" in capsys.readouterr().err
+
+
+def test_upload_cap_with_auto_prune_deletes_and_retries(tmp_path, monkeypatch):
+    eps = [
+        _ep("spotify:episode:old", "2026-01-01T00:00:00Z"),
+        _ep("spotify:episode:new", "2026-07-01T00:00:00Z"),
+    ]
+    rec = _make_fake_s2s(monkeypatch, upload_seq=["cap", "ok"], episodes=eps)
+    record = render._new_run_record()
+    uri = render.upload(
+        tmp_path / "e.mp3",
+        "T",
+        "<p>d</p>",
+        tmp_path / "c.jpg",
+        "spotify:show:1",
+        config={"auto_prune_episodes": True, "max_prune_per_run": 1},
+        record=record,
+    )
+    assert uri == "spotify:episode:new"
+    assert rec.deletes == ["old"]  # exactly max_prune_per_run, oldest first
+    assert rec.upload_calls == 2  # original + one retry
+    assert record["pruned_episodes"][0]["episode_uri"] == "spotify:episode:old"
+
+
+def test_upload_cap_retry_also_429_fails_without_second_prune(tmp_path, monkeypatch, capsys):
+    eps = [_ep("spotify:episode:old", "2026-01-01T00:00:00Z")]
+    rec = _make_fake_s2s(monkeypatch, upload_seq=["cap", "cap"], episodes=eps)
+    with pytest.raises(SystemExit):
+        render.upload(
+            tmp_path / "e.mp3",
+            "T",
+            "<p>d</p>",
+            tmp_path / "c.jpg",
+            "spotify:show:1",
+            config={"auto_prune_episodes": True, "max_prune_per_run": 1},
+        )
+    assert rec.deletes == ["old"]  # pruned once only
+    assert rec.list_calls == 1  # no second prune round
+    assert rec.upload_calls == 2  # original + one retry, then give up
+    assert "RATE_LIMIT_EXCEEDED" in capsys.readouterr().err
+
+
+def test_prune_dry_run_deletes_nothing(tmp_path, monkeypatch, capsys):
+    eps = [_ep("spotify:episode:old", "2026-01-01T00:00:00Z")]
+    rec = _make_fake_s2s(monkeypatch, upload_seq=[], episodes=eps)
+    deleted = render.prune_episodes_for_capacity(
+        "spotify:show:1",
+        {"auto_prune_episodes": True, "max_prune_per_run": 1},
+        dry_run=True,
+        now=_NOW,
+    )
+    assert deleted == 0
+    assert rec.deletes == []
+    assert "would delete" in capsys.readouterr().err
+
+
+def test_prune_refuses_nonpositive_max(tmp_path, monkeypatch, capsys):
+    eps = [_ep("spotify:episode:old", "2026-01-01T00:00:00Z")]
+    rec = _make_fake_s2s(monkeypatch, upload_seq=[], episodes=eps)
+    deleted = render.prune_episodes_for_capacity(
+        "spotify:show:1",
+        {"auto_prune_episodes": True, "max_prune_per_run": 0},
+        dry_run=False,
+        now=_NOW,
+    )
+    assert deleted == 0
+    assert rec.deletes == []
+    assert rec.list_calls == 0  # refused before even listing
+    assert "must be a positive count" in capsys.readouterr().err
+
+
+def test_prune_disabled_is_noop(tmp_path, monkeypatch):
+    rec = _make_fake_s2s(monkeypatch, upload_seq=[], episodes=[])
+    deleted = render.prune_episodes_for_capacity(
+        "spotify:show:1", {"auto_prune_episodes": False}, dry_run=False, now=_NOW
+    )
+    assert deleted == 0
+    assert rec.list_calls == 0
