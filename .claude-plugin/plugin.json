@@ -1,6 +1,6 @@
 {
   "name": "clodcast",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Daily-digest podcast skill — turns a list of saved articles into a fully-produced Spotify episode using Qwen3-TTS, on top of the save-to-spotify CLI.",
   "author": {
     "name": "schmug",
