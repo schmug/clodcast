@@ -137,6 +137,14 @@ Spotify rejects timelines where >3 chapters are under 30 seconds. Qwen3 reads ~4
   "opml_files": ["/path/to/feeds.opml"], // optional; used by prompts/daily.md
   "lookback_hours": 24,                  // optional; default 24
   "target_item_count": 10,               // optional; default 10
+  "auto_prune_episodes": false,          // optional; default false. When true, an upload
+                                         //   that hits the show's episode cap (429
+                                         //   RATE_LIMIT_EXCEEDED / capacity) prunes the
+                                         //   oldest episode(s) and retries the upload once.
+  "max_prune_per_run": 1,                // optional; default 1. Hard ceiling on how many
+                                         //   episodes an auto-prune may delete per run.
+                                         //   <= 0 is refused (no prune). Deleting a
+                                         //   published episode is irreversible.
   "r2_bucket": "clodcast",               // optional; enables the web feed (see below)
   "r2_public_base_url": "https://audio.cortech.online"  // optional; public URL for <slug>.mp3
 }
@@ -153,6 +161,18 @@ Spotify rejects timelines where >3 chapters are under 30 seconds. Qwen3 reads ~4
 ```
 
 `~/.config/daily-podcast/inflight.json` is a transient crash-recovery record (an episode that uploaded but hasn't reached `READY`+dedup yet) — written after `upload()` succeeds and cleared after dedup. It is **not** a second dedup source; `covered.json` stays authoritative. See [Automatic cron recovery](#automatic-cron-recovery-cross-day-workdir-independent) below.
+
+### Episode-cap auto-prune (`auto_prune_episodes`)
+
+A Spotify show has a hard episode cap. When `upload()` hits it, save-to-spotify returns a `429` with `error_code: RATE_LIMIT_EXCEEDED` / `reason: capacity`. By default `render.py` fails with that structured reason (so it's distinguishable from a transient upload flake, which surfaces the same non-zero exit). Set `auto_prune_episodes: true` to have the renderer instead delete the oldest episode(s) and retry the upload **once**. Deleting a published episode is **irreversible**, so the prune is deliberately conservative:
+
+- **Bounded** by `max_prune_per_run` (default 1; `<= 0` is refused).
+- **Tiered** selection: `FAILED` episodes first (they count against the cap but have no playable audio), then oldest by `created_at`. An in-flight `NOT_READY` episode is never selected, and an episode with a missing/malformed `created_at` is skipped rather than assumed oldest.
+- **Scoped** to the configured `show_id`; never touches this run's own or a concurrent run's just-created episode.
+- **`--dry-run` deletes nothing** — it logs what it *would* delete.
+- Every deletion is logged (`episode_uri` + `created_at` + `title`) to stdout and recorded under `pruned_episodes` in `runs.jsonl`.
+
+`covered.json` is intentionally left unchanged when an episode is pruned: its entries would point at a now-dead `episode_uri`, but dedup only needs "don't re-cover this URL", which stays correct.
 
 ### Run log (across-runs observability)
 

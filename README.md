@@ -76,6 +76,8 @@ EOF
 
 Get a `show_id` by running `save-to-spotify --json shows` (creates a default show if you don't have one) and copying the URI.
 
+Optional episode-cap handling: a Spotify show has a hard episode cap, and an upload that hits it fails with a `429` (`RATE_LIMIT_EXCEEDED` / `capacity`). Add `"auto_prune_episodes": true` (with an optional `"max_prune_per_run": 1`) to let a run delete the oldest episode(s) and retry the upload once. Deleting a published episode is irreversible, so it's off by default and bounded — see [SKILL.md → Episode-cap auto-prune](skills/daily-podcast/SKILL.md#episode-cap-auto-prune-auto_prune_episodes).
+
 ### Optional: publish to a web feed (Cloudflare R2)
 
 Beyond Spotify, each finished episode can also be published to a Cloudflare R2 bucket,

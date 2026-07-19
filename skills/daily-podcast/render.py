@@ -143,12 +143,85 @@ def die(msg: str, code: int = 1) -> None:
     sys.exit(code)
 
 
+# save-to-spotify writes its --json error payload to STDOUT (not stderr) and can
+# append a human-readable update-check nag on a trailing line, so json.loads() over
+# the whole stream raises "JSONDecodeError: Extra data". Parse only the first
+# non-empty line to recover the JSON object without tripping on the nag. Returns the
+# decoded value, or None when the first line isn't JSON. Never raises.
+def _first_json_line(text: str) -> Any | None:
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+# The structured error save-to-spotify wraps around an upstream API failure is a
+# NESTED STRING, not an object (verified against 0.1.1, 2026-07-18):
+#   {"error": "API error (429): {\"error_code\":\"RATE_LIMIT_EXCEEDED\",
+#              \"reason\":\"capacity\",\"message\":\"You've reached the episode limit...\"}"}
+# So recovering error_code/reason/message is two stages: parse the outer object, then
+# strip the `API error (<code>): ` prefix off data["error"] and parse the remainder.
+# Writing data["error"]["error_code"] would raise TypeError — always go through here.
+_API_ERROR_PREFIX_RE = re.compile(r"^API error \([^)]*\):\s*")
+
+
+def parse_s2s_error(stdout: str) -> dict[str, Any] | None:
+    """Extract save-to-spotify's structured error from --json stdout, or None.
+
+    Returns a normalized {"error_code", "reason", "message"} dict when stdout carries
+    an error payload (any of the three may be None if only the outer string parsed),
+    or None when stdout has no JSON `error` at all (e.g. an ffmpeg failure whose
+    stdout is empty). Never raises — a parse failure at either stage falls back to a
+    less-structured result rather than an exception, so callers can always branch."""
+    data = _first_json_line(stdout)
+    if not isinstance(data, dict) or "error" not in data:
+        return None
+    err = data["error"]
+    if not isinstance(err, str):
+        # Defensive: a future/object error shape — surface whatever it is as message.
+        return {"error_code": None, "reason": None, "message": str(err)}
+    inner = _API_ERROR_PREFIX_RE.sub("", err, count=1)
+    try:
+        parsed = json.loads(inner)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        return {
+            "error_code": parsed.get("error_code"),
+            "reason": parsed.get("reason"),
+            "message": parsed.get("message") or err,
+        }
+    # Only the outer string parsed — keep the human-readable line as the message.
+    return {"error_code": None, "reason": None, "message": err}
+
+
+def _command_failed_message(cmd: list[str], stdout: str, stderr: str) -> str:
+    """Diagnostic for a failed subprocess. Prefers the structured error save-to-spotify
+    writes to STDOUT (so a cap 429 no longer surfaces as an empty `stderr:`, issue
+    #78); falls back to stderr for commands (ffmpeg, git) that report there."""
+    parsed = parse_s2s_error(stdout)
+    if parsed is not None:
+        code = parsed.get("error_code")
+        reason = parsed.get("reason")
+        detail = parsed.get("message") or ""
+        if code:
+            tag = code if not reason else f"{code}/{reason}"
+            detail = f"[{tag}] {detail}".rstrip()
+        return f"command failed: {' '.join(cmd)}\n{detail}"
+    return f"command failed: {' '.join(cmd)}\nstderr: {stderr}"
+
+
 def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     """Run a command, raising on failure with the command line in the message."""
     try:
         return subprocess.run(cmd, check=True, capture_output=True, text=True, **kw)
     except subprocess.CalledProcessError as e:
-        die(f"command failed: {' '.join(cmd)}\nstderr: {e.stderr}")
+        die(_command_failed_message(cmd, e.stdout or "", e.stderr or ""))
 
 
 def load_config() -> dict[str, Any]:
@@ -256,6 +329,7 @@ RUN_LOG_FIELDS: tuple[str, ...] = (
     "git_sha",  # of render.py (mtime fallback when not a git checkout)
     "loudnorm",  # {input_i, output_i, output_tp, output_lra} or null (#21)
     "pruned_workdirs",  # {count, freed_bytes} when --prune-workdirs ran, else null (#21)
+    "pruned_episodes",  # [{episode_uri, created_at, title, status}] on a cap prune, else null (#78)
     "r2_status",  # "published" | "skipped" | "failed" or null pre-publish (#48)
     "resumed",
 )
@@ -1079,25 +1153,217 @@ def build_timeline_and_description(
 # --- upload + poll ---------------------------------------------------------
 
 
-def upload(episode_mp3: Path, title: str, description: str, cover: Path, show_id: str) -> str:
-    """Return episode_uri."""
-    result = run(
-        [
-            "save-to-spotify",
-            "--json",
-            "upload",
-            str(episode_mp3),
-            "--title",
-            title,
-            "--summary",
-            description,
-            "--show-id",
-            show_id,
-            "--image",
-            str(cover),
-        ]
-    )
-    data = json.loads(result.stdout)
+# --- episode-cap auto-prune (#78) -----------------------------------------
+#
+# When `save-to-spotify upload` fails because the show is at its episode cap, the
+# renderer can prune the oldest episodes and retry the upload ONCE. Deleting a
+# published episode is IRREVERSIBLE (episode metadata is immutable; there is no
+# undelete), so every guard below mirrors the --prune-workdirs invariant and must be
+# preserved: opt-in (default off); only on a confirmed cap 429; bounded by a hard
+# per-run ceiling; scoped to the configured show_id; never touching an in-flight
+# (NOT_READY) or this-run episode; skipping any item with an unparseable created_at;
+# and no deletes at all under --dry-run.
+#
+# Note: a pruned episode's covered.json entries would point at a now-dead episode_uri,
+# but dedup's job is "don't re-cover this URL", which stays correct — so covered.json
+# is deliberately left untouched here (out of scope per #78).
+CAP_ERROR_CODE = "RATE_LIMIT_EXCEEDED"
+CAP_ERROR_REASON = "capacity"
+# Only these two states are ever prune-eligible. Matching FAILED must be EXPLICIT, not
+# "anything != READY": an episode still transcoding is NOT_READY, and a broad match
+# could delete an in-flight episode from a concurrent run.
+PRUNABLE_STATUSES = ("READY", "FAILED")
+
+
+def _is_cap_error(parsed: dict[str, Any] | None) -> bool:
+    """True only for a confirmed episode-cap 429 — gate on the inner structured
+    error_code AND reason, never on a substring of the human-readable message."""
+    if not parsed:
+        return False
+    return parsed.get("error_code") == CAP_ERROR_CODE and parsed.get("reason") == CAP_ERROR_REASON
+
+
+def _prune_config(config: dict[str, Any] | None) -> tuple[bool, int]:
+    """Resolve (enabled, max_prune_per_run) from config. Absent key -> disabled, so a
+    run with the key missing behaves exactly as before (part-1 diagnostic, no prune).
+    max_prune_per_run defaults to 1; a value <= 0 is refused by the caller."""
+    cfg = config or {}
+    enabled = bool(cfg.get("auto_prune_episodes", False))
+    try:
+        max_prune = int(cfg.get("max_prune_per_run", 1))
+    except (TypeError, ValueError):
+        max_prune = 0  # unparseable -> refuse (caller treats <= 0 as "don't prune")
+    return enabled, max_prune
+
+
+def _parse_created_at(s: Any) -> dt.datetime | None:
+    """Strict ISO-8601 -> aware datetime, or None when missing/malformed. Unlike
+    _parse_pubdate (which maps unparseable to datetime.min for sorting), this returns
+    None so an item with no confirmable age is SKIPPED, never guessed to be oldest."""
+    if not isinstance(s, str) or not s:
+        return None
+    try:
+        d = dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=dt.timezone.utc)
+
+
+def select_episodes_to_prune(
+    episodes: list[dict[str, Any]], max_prune: int, now: dt.datetime
+) -> list[dict[str, Any]]:
+    """Choose up to `max_prune` episodes to delete, in deletion order. Pure + total.
+
+    Tiered selection (cheapest first): FAILED episodes — which have no playable audio
+    yet still count against the cap — before oldest-by-created_at READY episodes.
+    An episode is a candidate only if its status is exactly READY or FAILED, its
+    created_at parses, and it was created strictly before `now` (so this run's own
+    upload and any concurrent run's just-created episode are excluded). NOT_READY /
+    unknown statuses and unparseable timestamps are never selected."""
+    if max_prune <= 0:
+        return []
+    candidates: list[tuple[int, dt.datetime, dict[str, Any]]] = []
+    for ep in episodes:
+        if not isinstance(ep, dict):
+            continue
+        status = ep.get("status")
+        if status not in PRUNABLE_STATUSES:
+            continue
+        created = _parse_created_at(ep.get("created_at"))
+        if created is None or created >= now:
+            continue
+        tier = 0 if status == "FAILED" else 1  # FAILED first, then READY
+        candidates.append((tier, created, ep))
+    candidates.sort(key=lambda c: (c[0], c[1]))
+    return [ep for _, _, ep in candidates[:max_prune]]
+
+
+def _list_episodes(show_id: str) -> list[dict[str, Any]]:
+    """Episodes for the configured show, scoped by --show-id (never a last-created-show
+    default). Parses the first JSON line to survive the update-check nag."""
+    result = run(["save-to-spotify", "--json", "episodes", "--show-id", show_id])
+    data = _first_json_line(result.stdout)
+    eps = data.get("episodes") if isinstance(data, dict) else None
+    return eps if isinstance(eps, list) else []
+
+
+def _delete_episode(episode_uri: str) -> None:
+    episode_id = episode_uri.removeprefix("spotify:episode:")
+    run(["save-to-spotify", "episodes", "delete", episode_id])
+
+
+def prune_episodes_for_capacity(
+    show_id: str,
+    config: dict[str, Any] | None,
+    *,
+    dry_run: bool,
+    record: dict[str, Any] | None = None,
+    now: dt.datetime | None = None,
+) -> int:
+    """Free episode-cap slots by deleting the selected episodes. Returns the number
+    actually deleted (0 when disabled, misconfigured, nothing eligible, or --dry-run).
+
+    Guards (all load-bearing — a wrong deletion is unrecoverable):
+      - opt-in: no-op unless auto_prune_episodes is true;
+      - refuses max_prune_per_run <= 0 (mirrors --prune-workdirs N <= 0);
+      - deletes at most max_prune_per_run per run;
+      - scopes the episode list to the configured show_id;
+      - --dry-run logs the plan but deletes nothing;
+      - logs every deletion (uri + created_at + title) to stdout and into the run
+        record so a surprise deletion is always traceable after the fact."""
+    enabled, max_prune = _prune_config(config)
+    if not enabled:
+        return 0
+    if max_prune <= 0:
+        log(f"auto-prune refused: max_prune_per_run {max_prune} must be a positive count")
+        return 0
+    now = now or dt.datetime.now(dt.timezone.utc)
+    episodes = _list_episodes(show_id)
+    victims = select_episodes_to_prune(episodes, max_prune, now)
+    if not victims:
+        log("auto-prune: no eligible episodes to delete (need a READY/FAILED, dated, older one)")
+        return 0
+
+    deleted: list[dict[str, Any]] = []
+    for ep in victims:
+        uri = ep.get("episode_uri") or ""
+        rec = {
+            "episode_uri": uri,
+            "created_at": ep.get("created_at"),
+            "title": ep.get("title"),
+            "status": ep.get("status"),
+        }
+        desc = f"{uri} ({rec['status']}, {rec['created_at']}, {rec['title']!r})"
+        if dry_run:
+            log(f"[auto-prune] dry-run: would delete {desc}")
+            continue
+        if not uri:
+            continue  # can't delete without an episode_uri; skip rather than guess
+        log(f"[auto-prune] deleting {desc} to free a cap slot")
+        _delete_episode(uri)
+        deleted.append(rec)
+
+    if record is not None and deleted:
+        existing = record.get("pruned_episodes") or []
+        record["pruned_episodes"] = existing + deleted
+    return len(deleted)
+
+
+def upload(
+    episode_mp3: Path,
+    title: str,
+    description: str,
+    cover: Path,
+    show_id: str,
+    *,
+    config: dict[str, Any] | None = None,
+    dry_run: bool = False,
+    record: dict[str, Any] | None = None,
+) -> str:
+    """Upload the episode and return its episode_uri.
+
+    On a confirmed cap 429 (RATE_LIMIT_EXCEEDED / capacity) with auto_prune_episodes
+    enabled, prune the oldest episode(s) and retry the upload ONCE (never a loop). Any
+    other failure — or a retry that also 429s — dies with the structured diagnostic
+    from parse_s2s_error (part 1), so a permanent cap is distinguishable from a
+    transient flake."""
+    cmd = [
+        "save-to-spotify",
+        "--json",
+        "upload",
+        str(episode_mp3),
+        "--title",
+        title,
+        "--summary",
+        description,
+        "--show-id",
+        show_id,
+        "--image",
+        str(cover),
+    ]
+    try:
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        parsed = parse_s2s_error(e.stdout or "")
+        enabled, _ = _prune_config(config)
+        if _is_cap_error(parsed) and enabled:
+            pruned = prune_episodes_for_capacity(show_id, config, dry_run=dry_run, record=record)
+            if pruned > 0:
+                log(f"auto-prune freed {pruned} slot(s); retrying upload once")
+                try:
+                    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+                except subprocess.CalledProcessError as e2:
+                    # Retry also failed — fail with the diagnostic, never a second prune.
+                    die(_command_failed_message(cmd, e2.stdout or "", e2.stderr or ""))
+                return _parse_upload_result(result.stdout)
+        die(_command_failed_message(cmd, e.stdout or "", e.stderr or ""))
+    return _parse_upload_result(result.stdout)
+
+
+def _parse_upload_result(stdout: str) -> str:
+    """episode_uri from a successful upload. The success payload is single-line JSON
+    (json.loads over the whole stream has worked since 0.1.1); keep that parse."""
+    data = json.loads(stdout)
     if "error" in data:
         die(f"upload error: {data['error']}")
     return data["episode_uri"]
@@ -2097,7 +2363,16 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
     # 6: upload, then immediately record the upload — BEFORE the failure-prone tail
     # (set_timeline / poll_ready). If either fails, a re-run with the same --workdir
     # resumes from here instead of re-uploading a duplicate episode.
-    episode_uri = upload(episode_mp3, title, description, cover, show_id)
+    episode_uri = upload(
+        episode_mp3,
+        title,
+        description,
+        cover,
+        show_id,
+        config=config,
+        dry_run=args.dry_run,
+        record=record,
+    )
     episode_id = episode_uri.removeprefix("spotify:episode:")
     _atomic_write_text(
         marker,
