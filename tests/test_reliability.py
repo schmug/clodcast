@@ -897,3 +897,22 @@ def test_incident_playbooks_have_the_four_required_sections():
         body = path.read_text()
         for heading in required:
             assert heading in body, f"{path.name} is missing '{heading}'"
+
+
+def test_last_stderr_line_is_the_diagnostic_not_the_incident_path(monkeypatch, tmp_path, capsys):
+    """The scheduled routine reports `FAILED <stderr last line>`. If the incident
+    hook logs after die(), that report surfaces a file path instead of the reason."""
+    _isolate_config(monkeypatch, tmp_path)
+    manifest = tmp_path / "m.json"
+    manifest.write_text(json.dumps({"title": "T", "summary": "s", "segments": []}))
+    monkeypatch.setattr(sys, "argv", ["render.py", "--manifest", str(manifest)])
+
+    with pytest.raises(SystemExit):
+        render.main()
+
+    stderr_lines = [ln for ln in capsys.readouterr().err.splitlines() if ln.strip()]
+    assert "incident report written" in "\n".join(stderr_lines), "hook should still log the path"
+    assert stderr_lines[-1].startswith("error: "), (
+        f"last stderr line must be the diagnostic, got: {stderr_lines[-1]!r}"
+    )
+    assert "incident report written" not in stderr_lines[-1]

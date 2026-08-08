@@ -2893,9 +2893,17 @@ def write_incident(record: dict[str, Any], *, kind: str, message: str) -> Path |
 
 
 def _write_run_incident(record: dict[str, Any]) -> None:
-    """Post-run hook: on any non-clean exit, leave a report behind."""
+    """Post-run hook: on any non-clean exit, leave a report behind.
+
+    The trailing re-emit of the error is load-bearing, not noise. The scheduled
+    Claude routine that drives the daily run reports failures as
+    `FAILED <stderr last line>` — so anything this hook logs after die()'s
+    `error: …` would silently HIJACK that report (it would surface the incident
+    file path instead of the diagnostic). Re-emitting the error last keeps the
+    last stderr line the actual reason, whatever the hook printed."""
     message = record.get("error_message") or "run failed without a diagnostic message"
     write_incident(record, kind=classify_incident(message), message=message)
+    log(f"error: {message}")
 
 
 # --- blocked-source registry -----------------------------------------------
