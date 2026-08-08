@@ -145,10 +145,25 @@ Spotify rejects timelines where >3 chapters are under 30 seconds. Qwen3 reads ~4
                                          //   episodes an auto-prune may delete per run.
                                          //   <= 0 is refused (no prune). Deleting a
                                          //   published episode is irreversible.
+  "episode_cap": 60,                     // optional; default 60. Pre-flight compares the
+                                         //   show's episode count against this and
+                                         //   pre-prunes a slot BEFORE the render, so a
+                                         //   cap 429 never costs a wasted TTS pass.
+  "poll_timeout_s": 1800,                // optional; default 1800. How long to wait for
+                                         //   Spotify processing. The old 600 expired while
+                                         //   an episode was legitimately still PROCESSING.
   "r2_bucket": "clodcast",               // optional; enables the web feed (see below)
   "r2_public_base_url": "https://audio.cortech.online"  // optional; public URL for <slug>.mp3
 }
 ```
+
+Two more append-only logs live beside `covered.json` and `runs.jsonl`:
+
+- **`rejections.jsonl`** — artifacts Spotify rejected server-side, keyed by
+  sha256. The artifact gate refuses to re-upload identical bytes; see
+  [rejected-artifact.md](../../incidents/rejected-artifact.md).
+- **`incidents/new/`** — structured reports written on any non-clean exit
+  (`DAILY_PODCAST_INCIDENT_DIR` overrides the location).
 
 ```jsonc
 // ~/.config/daily-podcast/covered.json — written by render.py on successful upload.
@@ -319,10 +334,71 @@ For testing without uploading, use `--dry-run` — produces the MP3, cover, and 
 
 | Flag | Purpose |
 | --- | --- |
-| `--selftest` | Pre-flight health check (no real run). Mutually exclusive with `--manifest`. |
+| `--selftest` | Standalone health check (no real run). Mutually exclusive with `--manifest`. |
 | `--load-model` | With `--selftest`: also load the TTS model (slow; the most thorough check). |
+| `--skip-preflight` | Skip the built-in pre-flight gate. Escape hatch; you own the outcome. |
 | `--keep-workdir` | Keep the auto-created workdir after a successful run (default: delete it). |
 | `--prune-workdirs N` | Before rendering, delete auto-created workdirs older than `N` days. |
+
+### Pre-flight (automatic, every run)
+
+**Every render runs a pre-flight gate before any expensive work.** This is not the
+same thing as `--selftest`, which is the standalone command you can call yourself;
+the gate runs inside the render, and a failure aborts before a single TTS segment
+is generated:
+
+```
+preflight: verifying dependencies, credentials, and capacity...
+  [PASS] ffmpeg: /usr/local/bin/ffmpeg
+  [PASS] ffprobe: /opt/homebrew/bin/ffprobe
+  [PASS] encoder-profile: 1ch @ 44100Hz 192k libmp3lame
+  [PASS] house-voice: ref wav + transcript present
+  [PASS] tts-module: mlx_audio importable
+  [PASS] show-id: spotify:show:…
+  [FAIL] r2-credentials: R2 partially configured; missing R2_ACCESS_KEY_ID, …
+preflight: FAIL (6/7)
+error: preflight failed (r2-credentials); nothing was rendered or uploaded
+```
+
+| Check | Gates against |
+| --- | --- |
+| `ffmpeg` / `ffprobe` | missing encoder |
+| `encoder-profile` | encoder settings drifting off mono / 44.1 kHz / 192 kbps |
+| `house-voice` | missing ref clip or transcript |
+| `tts-module` | `mlx_audio` not importable (a `find_spec` probe, not a model load) |
+| `show-id` | no show configured |
+| `r2-credentials` | **partially** configured R2 → the silent web-feed miss |
+| `save-to-spotify-auth` | dead or missing credentials *(skipped on `--dry-run`)* |
+| `episode-capacity` | the 60-episode cap — **pre-prunes a slot** *(skipped on `--dry-run`)* |
+
+R2 is three-state: fully configured passes, **fully absent also passes** (the web
+feed is optional), and *partially* configured fails. `--dry-run` runs the local
+subset only — it never calls Spotify and never prunes.
+
+### Artifact gate (automatic, after render, before upload)
+
+Once the mp3 exists, `verify_artifact` runs a local conformance check —
+encoder profile, monotonic chapter starts, sub-30 s chapter count, last chapter
+inside the duration — and refuses to upload an artifact whose sha256 is in
+`rejections.jsonl` (Spotify rejected those exact bytes before; retrying costs a
+pruned episode). It runs under `--dry-run` too, so a rehearsal is a real rehearsal.
+
+### Durable state + resume
+
+The auto workdir is `<tmpdir>/daily-podcast-<date>` — **deterministic**, so an
+interrupted run resumes by re-invoking the same command. `<workdir>/state.json`
+records each completed stage (`preflight`, `segments`, `concat`, `cover`,
+`timeline`, `artifact_gate`, `upload`, `set_timeline`, `poll_ready`, `r2`,
+`dedup`) with its metadata.
+
+### Incident reports
+
+On any non-clean exit the run writes a structured report (markdown + JSON
+sidecar) to `~/.config/daily-podcast/incidents/new/` — override with
+`DAILY_PODCAST_INCIDENT_DIR`. Each is classified against a known failure mode and
+points at the matching playbook in the repo's [`incidents/`](../../incidents/)
+directory. A report tagged `unclassified` means a failure mode nobody has written
+up yet. Writing a report is best-effort and never changes a run's exit code.
 
 **`--selftest`** runs an ordered set of checks (ffmpeg + ffprobe on PATH → `save-to-spotify --json shows` returns valid JSON → `config.json` parses with `show_id` → house-voice ref clip + transcript present), prints a pass/fail line each, then a JSON summary `{"status": "ok"/"failed", "checks": [...]}`. It exits `0` only if every check passes, non-zero otherwise — so a scheduler can gate on it:
 
@@ -332,20 +408,23 @@ python3 <skill-dir>/render.py --selftest || { echo "pre-flight failed" | mail -s
 
 It finishes in under 5 seconds (no model load unless `--load-model`).
 
-**Workdir hygiene.** Each run creates `<tmpdir>/daily-podcast-<random>` (the system temp dir — `$TMPDIR` on macOS, often `/tmp` on Linux). On a successful run with default flags the **auto-created** workdir is deleted (a failed run always keeps it for debugging; an explicit `--workdir` is never auto-deleted, since it backs the resume path). `--prune-workdirs N` separately sweeps any `daily-podcast-*` directory older than `N` days — it never deletes the active workdir, never follows symlinks, and refuses a non-positive `N`.
+**Workdir hygiene.** Each run creates `<tmpdir>/daily-podcast-<date>` (the system temp dir — `$TMPDIR` on macOS, often `/tmp` on Linux). On a successful run with default flags the **auto-created** workdir is deleted (a failed run always keeps it for debugging; an explicit `--workdir` is never auto-deleted, since it backs the resume path). `--prune-workdirs N` separately sweeps any `daily-podcast-*` directory older than `N` days — it never deletes the active workdir, never follows symlinks, and refuses a non-positive `N`.
 
 ### Scheduled runs (cron / launchd)
 
-Recommended unattended recipe: pre-flight with `render.py --selftest`, then run via the orchestrator. Add `render.py --prune-workdirs 7` for automatic disk hygiene.
+The render now gates itself (see [Pre-flight](#pre-flight-automatic-every-run)), so the wrapper no longer has to. `--selftest` remains useful as a *separate* liveness probe — for alerting on a broken host without starting a run at all.
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$HOME/clodcast"
-# Pre-flight: bail loudly if deps/auth are broken BEFORE doing real work.
+# Optional: alert on a broken host without starting a run. The render gates itself
+# regardless, so this is monitoring, not a prerequisite.
 python3 skills/daily-podcast/render.py --selftest || { echo "selftest failed"; exit 1; }
 # Real run: per-item isolated orchestrator (drop-on-block, deterministic curation).
 python3 skills/daily-podcast/orchestrate.py
+# Triage anything the run left behind.
+ls ~/.config/daily-podcast/incidents/new/ 2>/dev/null
 ```
 
 For disk hygiene, `render.py --prune-workdirs N` is still the mechanism — pass it when calling `render.py` directly with `--manifest`. `orchestrate.py` does not accept `--prune-workdirs`; sweep the temp dir separately if needed.
@@ -377,6 +456,27 @@ If that 401s, fix the credential before scheduling the orchestrator; if no durab
 
 ### Recovering from a partial failure
 
+> **Runbook.** Most of what used to be manual here is now automatic. The table
+> below is the current division of labour; each row links to a write-up in the
+> repo's [`incidents/`](../../incidents/) directory with the symptom, root cause,
+> and the test that guards the remedy.
+>
+> | Failure | Now handled by | You do |
+> | --- | --- | --- |
+> | [Processing rejection (`FAILED`)](../../incidents/processing-failed.md) | recovery abandons it, records the artifact, unblocks the run | nothing |
+> | [Episode-cap 429](../../incidents/episode-cap.md) | pre-flight pre-prunes; upload prunes + retries once | nothing (watch `pruned_episodes`) |
+> | [Poll timeout](../../incidents/poll-timeout.md) | 1800 s window, `PROCESSING`-aware, transient-tolerant | nothing |
+> | [Transient upload flake](../../incidents/transient-upload-failure.md) | one automatic retry | nothing |
+> | [Connection drop](../../incidents/connection-drop.md) | deterministic workdir + `state.json` | re-run the same command |
+> | [R2 skip on resume](../../incidents/r2-skip-on-resume.md) | config passed into resume; pre-flight fails a partial R2 | nothing |
+> | [Rejected artifact re-upload](../../incidents/rejected-artifact.md) | artifact gate blocks identical bytes | re-render to change content |
+> | [Blocked source](../../incidents/webfetch-blocked-source.md) | registry ships in the skill | pick the substitute |
+> | [Child `claude -p` 401](../../incidents/auth-failure.md) | detection + fail-fast only | **fix the credential** |
+>
+> **`rm ~/.config/daily-podcast/inflight.json` is no longer the remedy for a
+> stuck pipeline.** Recovery clears a rejected record itself. If you still find a
+> lingering `inflight.json`, the episode is `PROCESSING`, not `FAILED` — leave it.
+
 The upload → `timeline set` → poll-until-`READY` → dedup sequence can fail *after* the episode is already live on Spotify — most commonly a `poll_ready` timeout where processing simply took longer than the window. To make this recoverable, `render.py` writes `<workdir>/uploaded.json` (the episode URI + title) the moment `upload()` succeeds, before the failure-prone steps.
 
 To resume, **re-run the same manifest with the same `--workdir`**:
@@ -387,7 +487,7 @@ python3 <skill-dir>/render.py --manifest manifest.json --workdir /tmp/daily-podc
 
 When `--workdir` is passed and it contains `uploaded.json`, `render.py` skips TTS rendering, the cover, and the upload, reuses the existing `episode.mp3` / `cover.jpg` / `timeline.json`, and re-runs only the idempotent tail (`timeline set` + poll + R2 back-fill + dedup). The final report carries `"resumed": true` and the same 3-state `"r2_status"` as a fresh run (#40). Notes:
 
-- Resume only triggers with an **explicit** `--workdir`; an auto tmpdir cannot be resumed. Keep the workdir around if you want this safety net.
+- Resume triggers on **any** workdir containing `uploaded.json` — including the auto one, which is now deterministic (`daily-podcast-<date>`), so re-running the identical command recovers an interrupted run. A *failed* run always keeps its workdir, which is exactly when this matters.
 - If the workdir has `uploaded.json` but is missing an artifact, `render.py` fails fast (`workdir has uploaded.json but missing …`) rather than re-uploading.
 - `--dry-run` never resumes (it never uploads).
 - After a *fully successful* run, `uploaded.json` stays in the workdir, so re-running the same `--workdir` resumes the existing episode (an idempotent no-op) instead of rendering fresh. To force a fresh render (e.g. you fixed the script and want to re-ship), delete the workdir or its `uploaded.json`.
@@ -409,9 +509,10 @@ To close that gap, the moment `upload()` succeeds `render.py` also writes a long
 
 On startup — before curating/rendering a new episode, on any non-`--dry-run` run — `render.py` reconciles a leftover in-flight log:
 
-1. If the prior workdir + `timeline.json` still exist, it re-runs `timeline set` + poll-until-`READY` for that episode.
-2. It then marks the recorded `source_url`s in `covered.json` (so curation here can't re-select them).
-3. Only then does it clear `inflight.json`.
+1. If the prior workdir + `timeline.json` still exist, it re-runs `timeline set` + polls that episode.
+2. **`READY`** → it marks the recorded `source_url`s in `covered.json` (so curation here can't re-select them), then clears `inflight.json`.
+3. **`FAILED`** → it **abandons** the record: writes an incident, records the artifact's sha256 in `rejections.jsonl`, clears `inflight.json`, and lets today's episode render. `covered.json` is deliberately *not* written — those URLs never shipped, so they return to the pool. Without this, one rejected episode disabled every future run (see [processing-failed.md](../../incidents/processing-failed.md)).
+4. **Timeout** → it leaves `inflight.json` intact and stops; the episode may still be processing.
 
 A crash *during* recovery leaves `inflight.json` intact for the next attempt, and `covered.json` stays the single source of truth — the in-flight log never gates dedup, it only ever *drives* a write into `covered.json`. `--dry-run` skips recovery entirely (it never uploads, calls Spotify, or mutates `covered.json`).
 

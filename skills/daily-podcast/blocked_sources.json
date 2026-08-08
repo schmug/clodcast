@@ -1,0 +1,80 @@
+{
+  "_comment": "Outlets that cannot be fetched for article bodies during curation. Every entry traces to a run where a segment could not be written. `substitute` names a reliably-fetchable outlet covering the same beat; `strategy` names the recovery that worked. Consumed by render.load_blocked_sources()/is_blocked_domain and documented in incidents/webfetch-blocked-source.md.",
+  "domains": {
+    "wired.com": {
+      "reason": "webfetch-blocked",
+      "confirmed": "2026-06-21",
+      "strategy": "alt-outlet",
+      "substitute": "techcrunch.com"
+    },
+    "theverge.com": {
+      "reason": "webfetch-blocked",
+      "confirmed": "2026-06-21",
+      "strategy": "alt-outlet",
+      "substitute": "techcrunch.com"
+    },
+    "arstechnica.com": {
+      "reason": "webfetch-blocked",
+      "confirmed": "2026-07-31",
+      "strategy": "primary-source",
+      "substitute": "the project's own announcement blog"
+    },
+    "vox.com": {
+      "reason": "webfetch-blocked",
+      "confirmed": "2026-06-21",
+      "strategy": "alt-outlet",
+      "substitute": "techcrunch.com"
+    },
+    "darkreading.com": {
+      "reason": "http-403",
+      "confirmed": "2026-06-21",
+      "strategy": "alt-outlet",
+      "substitute": "bleepingcomputer.com"
+    },
+    "databreaches.net": {
+      "reason": "http-403",
+      "confirmed": "2026-06-21",
+      "strategy": "alt-outlet",
+      "substitute": "bleepingcomputer.com"
+    },
+    "thehill.com": {
+      "reason": "http-403",
+      "confirmed": "2026-07-31",
+      "strategy": "alt-outlet",
+      "substitute": "csoonline.com"
+    },
+    "cisa.gov": {
+      "reason": "http-403",
+      "confirmed": "2026-07-31",
+      "strategy": "feed-summary",
+      "substitute": "CISA feed summaries are unusually detailed and usually sufficient"
+    },
+    "hackread.com": {
+      "reason": "http-403",
+      "confirmed": "2026-08-07",
+      "strategy": "alt-outlet",
+      "substitute": "helpnetsecurity.com"
+    },
+    "theregister.com": {
+      "reason": "http-404-on-search-url-shape",
+      "confirmed": "2026-08-07",
+      "strategy": "primary-source",
+      "substitute": "the underlying study or vendor advisory"
+    }
+  },
+  "preferred": [
+    "techcrunch.com",
+    "helpnetsecurity.com",
+    "bleepingcomputer.com",
+    "apple.com",
+    "simonwillison.net",
+    "csoonline.com",
+    "blog.cloudflare.com",
+    "haveibeenpwned.com",
+    "anthropic.com"
+  ],
+  "non_article_hosts": {
+    "_comment": "Feed items linking here are not articles; never attach one as a segment source_url.",
+    "hosts": ["youtube.com", "youtu.be", "reddit.com", "news.ycombinator.com"]
+  }
+}

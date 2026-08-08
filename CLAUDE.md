@@ -43,6 +43,69 @@ Four documents are load-bearing; read all of them before changing behavior:
 
 **Auth failure is systemic, not per-item.** A child `claude -p` authenticates from disk/env, not from the parent's in-memory session login, so under a scheduler the children can start with no usable credential and every item 401s. `classify_output` maps that to a distinct `AUTH` outcome (`AUTH_RE`, anchored to auth strings only so transient rate-limit/overload errors stay `ERROR`). When a run ends with **zero survivors and any `auth` drop**, `main()` fails fast with an actionable single line pointing at SKILL.md *"Unattended runs need durable credentials"* — instead of silently degrading to the generic `no viable items`. Detection is post-fan-out (a 401 returns fast, so there's no happy-path cost and no preflight probe). Keep `AUTH_RE` auth-only and keep the diagnostic gated on `not survivors`.
 
+### The reliability layer (pre-flight, artifact gate, durable state, incidents)
+
+Added after an audit of every failure mode this pipeline hit in production. The
+per-failure write-ups in [incidents/](incidents/) are the source of truth for
+*why* each guard exists — read the relevant one before changing a guard.
+
+- **Pre-flight runs inside `_render`, before TTS.** `preflight()` checks
+  ffmpeg/ffprobe → encoder profile → house voice → `mlx_audio` importable →
+  `show_id` → R2 credentials → (non-dry-run only) Spotify auth → episode
+  capacity. A failure `die()`s before any expensive work. `--dry-run` runs the
+  local subset only: **it must never call Spotify and never prune.** Don't move
+  network checks out of that guard. `--selftest` is the *separate* standalone
+  probe and is still not a run (it writes no run-log record).
+- **R2 credentials are three-state and the asymmetry is load-bearing.**
+  `configured` passes, `absent` passes (the web feed is optional), `partial`
+  **fails**. Making `partial` a warning would re-open the silent web-feed miss.
+- **Capacity is checked before the render, and opt-in stays opt-in.**
+  `preflight_capacity` pre-prunes only when `auto_prune_episodes` is true;
+  with it off, pre-flight *refuses the run* rather than deleting an episode. This
+  is a pre-check, not a replacement — `upload()` keeps its reactive
+  prune-then-retry-once path for a cap hit that appears mid-run.
+- **`verify_artifact` runs after render and BEFORE the dry-run return.** Every
+  check is local (ffprobe + a hash), so a `--dry-run` rehearsal exercises the same
+  gate a real run does. Moving it below the dry-run return would make the
+  rehearsal stop rehearsing. Its rejection blocklist (`rejections.jsonl`,
+  sha256-keyed) is the only guard against re-uploading an artifact Spotify already
+  rejected — which is *destructive*, since each retry prunes a published episode.
+  The conformance checks guard render regressions; be honest that they would not
+  have caught the 2026-08-08 rejection.
+- **The auto workdir is deterministic (`daily-podcast-<date>`), not `mkdtemp`.**
+  That is what makes an interrupted run resumable by re-running the same command.
+  Tests MUST patch `render.TMP_BASE` or they will collide with a real same-day
+  run — `tests/conftest.py` does this globally and asserts it.
+- **`state.json` supersedes nothing.** It is a stage checkpoint for resume and
+  observability. `uploaded.json` is still the authoritative upload marker and
+  `covered.json` is still the sole dedup source of truth. A corrupt state file
+  degrades to "nothing completed", never a hard failure.
+- **In-flight recovery has a give-up path.** On `readiness: FAILED`,
+  `_abandon_inflight` records the artifact, writes an incident, clears
+  `inflight.json`, and lets the run continue. It deliberately does **not** write
+  `covered.json` (those URLs never shipped — they must return to the pool) and
+  deliberately does **not** delete the dead episode (irreversible; human-gated;
+  the prune tier reclaims it anyway). `wait_for_readiness` returns a status so
+  recovery can branch; `poll_ready` keeps the die-on-`FAILED` contract.
+- **RETIRED INVARIANT:** `_resume` used to be forbidden from seeing `config.json`
+  at all. That is exactly what made the R2 web-feed publish silently skip on every
+  recovery. `_render` now resolves config once and passes it in; `_resume` still
+  never calls `load_config` itself. The load on the resume branch is deliberately
+  **tolerant** (missing file → `{}`), so a recovery still works on a box with no
+  config.
+- **Incident reports go to `~/.config/daily-podcast/incidents/new/`, NOT a
+  repo-relative path.** The scheduled run executes from the version-keyed plugin
+  cache, where a repo-relative write is invisible and wiped on the next release.
+  Writing one is best-effort and must never change a run's exit code (same
+  contract as `write_run_log`). Every slug in `_INCIDENT_SIGNATURES` must have a
+  matching `incidents/<slug>.md` — a test enforces it, because the generated
+  report tells the reader to go read that file.
+- **Tests must never touch real user state.** `tests/conftest.py` redirects every
+  writable path (`CONFIG_DIR`, `COVERED_PATH`, `INFLIGHT_PATH`, `RUN_LOG_PATH`,
+  `REJECTIONS_PATH`, `INCIDENT_DIR`, `TMP_BASE`) per-test and asserts none of them
+  point at `~/.config/daily-podcast` afterwards. This exists because a failure-path
+  test scribbled incident files into the real config dir once. Don't remove it.
+
 ### Invariants the renderer enforces
 
 These are subtle and easy to break. Preserve them or the produced episode is rejected by Spotify or sounds wrong.
@@ -55,7 +118,7 @@ These are subtle and easy to break. Preserve them or the produced episode is rej
 - **The HTML description is capped at `SPOTIFY_SUMMARY_MAX_CHARS = 4000`.** `build_timeline_and_description` drops whole trailing chapter `<p>` blocks (longest-suffix-first, never mid-tag) until the summary fits, always preserving the leading summary `<p>`. The timeline JSON is unaffected — every audio chapter still exists; only the show-notes listing shrinks. Don't ellipsize inside a block or cut markup mid-tag.
 - **A successful `upload()` writes `<workdir>/uploaded.json` before the `set_timeline`/`poll_ready` tail.** This is the resume marker: re-running with the same explicit `--workdir` skips re-upload and re-runs only the idempotent tail (`set_timeline`/`poll_ready`/`save_covered`). Don't write it before `upload()` succeeds, and don't gate dedup on it — `covered.json` is still only written after READY. Resume is a manual, same-workdir recovery path; the cron's cross-day duplicate risk (per-date workdirs) is deferred to the in-flight-log work.
 - **MP3 is mono 44.1k throughout.** Every ffmpeg invocation re-asserts this. Concat-protocol is fragile across mismatched sample rates / channels; don't relax it.
-- **The run log (`~/.config/daily-podcast/runs.jsonl`) is append-only and has a stable schema.** `write_run_log` appends one JSON line per run (`status` = `ready`/`dry-run`/`failed`) on every terminal path — fresh success, resume success, dry-run, and `die()` failure. Records are built from `_new_run_record()` so every line carries the FULL `RUN_LOG_FIELDS` key set (`timestamp`, `status`, `episode_uri`, `title`, `voice`, `voice_mode`, `chapter_count`, `duration_s`, `segment_count`, `workdir`, `manifest_path`, `error_message`, `git_sha`, `loudnorm`, `pruned_workdirs`, `pruned_episodes`, `resumed`); missing values are `null`, never absent, so the file parses line-by-line in `jq`/pandas. **Never** route this through `_atomic_write_text` (that replaces the file → clobbers history to one line) and never let a log-write failure sink a run (it's best-effort, `try/except`). Writes are gated on `_RUN_CTX` being non-None (set only by `main()`), so direct `die()`/`run_selftest()` calls don't touch the real log. Loudnorm LUFS lands here via `parse_loudnorm` (non-finite `-inf`/`inf` → `null`, never a non-JSON `Infinity`). `--selftest` is **not** a run and writes no record.
+- **The run log (`~/.config/daily-podcast/runs.jsonl`) is append-only and has a stable schema.** `write_run_log` appends one JSON line per run (`status` = `ready`/`dry-run`/`failed`) on every terminal path — fresh success, resume success, dry-run, and `die()` failure. Records are built from `_new_run_record()` so every line carries the FULL `RUN_LOG_FIELDS` key set (`timestamp`, `status`, `episode_uri`, `title`, `voice`, `voice_mode`, `chapter_count`, `duration_s`, `segment_count`, `workdir`, `manifest_path`, `error_message`, `git_sha`, `loudnorm`, `pruned_workdirs`, `pruned_episodes`, `r2_status`, `resumed`, `preflight`, `abandoned_episodes`); missing values are `null`, never absent, so the file parses line-by-line in `jq`/pandas. **Never** route this through `_atomic_write_text` (that replaces the file → clobbers history to one line) and never let a log-write failure sink a run (it's best-effort, `try/except`). Writes are gated on `_RUN_CTX` being non-None (set only by `main()`), so direct `die()`/`run_selftest()` calls don't touch the real log. Loudnorm LUFS lands here via `parse_loudnorm` (non-finite `-inf`/`inf` → `null`, never a non-JSON `Infinity`). `--selftest` is **not** a run and writes no record.
 - **`--prune-workdirs N` is destructive — its guards are load-bearing.** It deletes directories under `TMP_BASE` (= `tempfile.gettempdir()`, i.e. `$TMPDIR` on macOS, NOT a hardcoded `/tmp`). Every guard exists to make a wrong deletion impossible and must be preserved: name must start with `WORKDIR_PREFIX` (`daily-podcast-`); must be a real directory directly under `TMP_BASE`, **never a symlink** (no following links out of the tree); older than `N` days by mtime; `N <= 0` is refused (so the flag can never mean "delete everything"); and the **active workdir is excluded by resolved path** (a per-date resume can match the glob — never delete the dir the run is using). It's best-effort: a delete error on one dir is logged and skipped. The auto-delete-on-success path (`main()`, gated on `auto_workdir and not --keep-workdir`) only ever removes a *fresh-success* auto workdir — an explicit `--workdir` is always kept (it backs the documented resume/no-op path) and a failed run keeps its workdir for debugging.
 - **Episode-cap auto-prune is destructive and irreversible — its guards mirror `--prune-workdirs`.** When `upload()` hits a confirmed episode-cap 429, and `config.auto_prune_episodes` is true, `render.py` deletes the oldest episode(s) and retries the upload **once**. Deleting a published episode cannot be undone (episode metadata is immutable), so every guard is load-bearing: **opt-in, default off** (key absent → behaves exactly as today, i.e. fail with the improved diagnostic — `parse_s2s_error` surfacing the structured `error_code`/`message` instead of an empty `stderr:`); triggered **only on a confirmed cap 429** gated on the *parsed inner* `error_code == "RATE_LIMIT_EXCEEDED"` **and** `reason == "capacity"` (`_is_cap_error`), never on a substring of a human line — and note save-to-spotify wraps this as a **nested string** `{"error": "API error (429): {...}"}`, so parsing is two stages (see `parse_s2s_error`); **bounded** by `max_prune_per_run` (default 1, `<= 0` refused like `--prune-workdirs N <= 0`) so a misparse can never walk the show; **scoped** to the configured `show_id` (list is `episodes --show-id <id>`, never a last-created-show default); **tiered** selection (`select_episodes_to_prune`) prefers `FAILED` episodes — matched **explicitly**, never "anything != READY", so an in-flight `NOT_READY` episode from a concurrent run is never touched — then oldest-by-`created_at`; **skips unparseable `created_at`** (never guesses age, same no-data-loss posture as `covered.json` pruning) and anything created at/after run start (this run / concurrent runs); **`--dry-run` deletes nothing** (logs the plan); **retries the upload at most once** (a second 429 fails with the diagnostic, never a second prune); and **every deletion is logged** (`episode_uri` + `created_at` + `title`) to stdout and into the run record's `pruned_episodes` so a surprise deletion is always traceable. `covered.json` is deliberately **not** rewritten when an episode is pruned — its entries would point at a dead `episode_uri`, but dedup's job ("don't re-cover this URL") stays correct.
 
