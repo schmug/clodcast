@@ -151,6 +151,28 @@ Hook it up to launchd, cron, or any scheduler.
 > token, or `ANTHROPIC_API_KEY` in the scheduler's own environment — and verify it from
 > inside the scheduled context. See SKILL.md, *"Unattended runs need durable credentials"*.
 
+### Reliability
+
+Every render gates itself before doing expensive work, and recovers from the
+failure modes this pipeline has actually hit in production:
+
+- **Pre-flight** — ffmpeg/ffprobe, encoder profile, house voice, TTS module,
+  `show_id`, R2 credentials, Spotify auth, and **episode capacity** (pre-pruning a
+  slot at the 60-episode cap so a 429 never costs a wasted render). A failure
+  aborts before a single TTS segment. `--skip-preflight` bypasses it.
+- **Artifact gate** — after render, before upload: local conformance checks plus a
+  refusal to re-upload bytes Spotify already rejected.
+- **Durable state** — a deterministic per-date workdir plus `state.json`, so an
+  interrupted run resumes by re-running the same command.
+- **Self-healing recovery** — a server-side processing rejection no longer wedges
+  every future run; a transient upload flake retries once; the readiness poll
+  waits 30 minutes and distinguishes `PROCESSING` from `FAILED`.
+- **Incident reports** — any non-clean exit writes a structured report to
+  `~/.config/daily-podcast/incidents/new/`.
+
+Each failure mode has a write-up in [`incidents/`](incidents/) with its symptom,
+root cause, automated remedy, and the test that guards it.
+
 ### Scheduled runs (pre-flight + disk hygiene)
 
 For unattended runs, pre-flight with `render.py --selftest` so a broken dependency or an

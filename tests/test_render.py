@@ -624,6 +624,22 @@ def _seed_uploaded_workdir(wd: Path, *, with_artifacts: bool = True) -> None:
         )
 
 
+def _reject_load_config_inside(real_resume):
+    """Wrap `_resume` so `load_config` is poisoned only for the duration of that
+    call. `_render` is allowed (and now required) to resolve the config once; the
+    resume tail itself must stay a pure function of its arguments."""
+
+    def wrapper(*args, **kwargs):
+        original = render.load_config
+        render.load_config = lambda: pytest.fail("load_config must not run inside _resume")
+        try:
+            return real_resume(*args, **kwargs)
+        finally:
+            render.load_config = original
+
+    return wrapper
+
+
 def test_resume_skips_upload_and_runs_idempotent_tail(tmp_path, monkeypatch, capsys):
     wd = tmp_path / "wd"
     _seed_uploaded_workdir(wd)
@@ -638,16 +654,21 @@ def test_resume_skips_upload_and_runs_idempotent_tail(tmp_path, monkeypatch, cap
         )
     )
 
-    # Prove the upload + config are never touched on resume; record the tail.
+    # Prove the upload is never touched on resume; record the tail.
     monkeypatch.setattr(
         render, "upload", lambda *a, **k: pytest.fail("upload must not run on resume")
     )
-    monkeypatch.setattr(
-        render, "load_config", lambda: pytest.fail("load_config must not run on resume")
-    )
+    # `_resume` itself must still never call load_config — it stays a pure function
+    # of its arguments. The config it uses is resolved once by `_render` and passed
+    # in, which is what stopped the R2 back-fill silently skipping on every recovery
+    # (2026-07-28). The previous version of this test asserted load_config was never
+    # called AT ALL on the resume path; that assertion was the bug's guardrail.
+    monkeypatch.setattr(render, "_resume", _reject_load_config_inside(render._resume))
     calls = []
     monkeypatch.setattr(render, "set_timeline", lambda eid, tp: calls.append(("set_timeline", eid)))
-    monkeypatch.setattr(render, "poll_ready", lambda eid: calls.append(("poll_ready", eid)))
+    monkeypatch.setattr(
+        render, "poll_ready", lambda eid, *a, **k: calls.append(("poll_ready", eid))
+    )
     monkeypatch.setattr(render, "mp3_duration_ms", lambda p: 60_000)
     covered_path = tmp_path / "covered.json"
     monkeypatch.setattr(render, "COVERED_PATH", covered_path)
@@ -1126,7 +1147,13 @@ def test_recover_inflight_reruns_tail_when_workdir_present(tmp_path, monkeypatch
     )
     calls = []
     monkeypatch.setattr(render, "set_timeline", lambda eid, tp: calls.append(("set", eid)))
-    monkeypatch.setattr(render, "poll_ready", lambda eid: calls.append(("poll", eid)))
+    # Recovery polls via wait_for_readiness (not poll_ready): it must survive a
+    # terminal FAILED rather than exiting the process, so it branches on the result.
+    monkeypatch.setattr(
+        render,
+        "wait_for_readiness",
+        lambda eid, timeout_s, **k: (calls.append(("poll", eid)), "READY")[1],
+    )
 
     render._recover_inflight()
 
@@ -1157,10 +1184,10 @@ def test_recover_inflight_keeps_log_when_recovery_crashes(tmp_path, monkeypatch)
     inflight.write_text(json.dumps(payload))
     monkeypatch.setattr(render, "set_timeline", lambda eid, tp: None)
 
-    def boom(eid):
+    def boom(eid, timeout_s, **kwargs):
         raise RuntimeError("spotify down")
 
-    monkeypatch.setattr(render, "poll_ready", boom)
+    monkeypatch.setattr(render, "wait_for_readiness", boom)
 
     with pytest.raises(RuntimeError):
         render._recover_inflight()
@@ -1226,6 +1253,11 @@ def test_main_recovers_inflight_before_fresh_render(tmp_path, monkeypatch):
     monkeypatch.setattr(render, "poll_ready", lambda *a, **k: None)
     monkeypatch.setattr(render, "maybe_publish_r2", lambda *a, **k: render.R2_SKIPPED)
     monkeypatch.setattr(render, "mp3_duration_ms", lambda p: 60_000)
+    # Pre-flight + artifact gate are external seams (save-to-spotify, ffprobe);
+    # exercised in test_reliability.py, stubbed here.
+    monkeypatch.setattr(render, "preflight", lambda *a, **k: (True, []))
+    monkeypatch.setattr(render, "verify_artifact", lambda *a, **k: [])
+    monkeypatch.setattr(render, "probe_audio_profile", lambda p: {})
     monkeypatch.setattr(
         sys,
         "argv",
@@ -1550,6 +1582,12 @@ def _stub_full_render(monkeypatch, tmp_path, *, loudnorm=None):
     """Stub the heavy render+upload seams so a main() run exercises only the
     orchestration + run-log plumbing."""
     monkeypatch.setattr(render, "load_config", lambda: {"show_id": "spotify:show:1"})
+    # Pre-flight and the artifact gate are external seams like upload/poll_ready:
+    # they shell out to save-to-spotify and ffprobe. Tests that exercise the gates
+    # themselves live in test_reliability.py and patch these deliberately.
+    monkeypatch.setattr(render, "preflight", lambda *a, **k: (True, []))
+    monkeypatch.setattr(render, "verify_artifact", lambda *a, **k: [])
+    monkeypatch.setattr(render, "probe_audio_profile", lambda p: {})
     monkeypatch.setattr(render, "render_segments", lambda *a, **k: [tmp_path / "seg_01.mp3"])
     monkeypatch.setattr(render, "plan_silences", lambda paths: [0])
     monkeypatch.setattr(
@@ -1618,6 +1656,7 @@ def test_failed_run_appends_failed_record_with_error(tmp_path, monkeypatch):
     monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(render, "RUN_LOG_PATH", log_path)
     monkeypatch.setattr(render, "load_config", lambda: {"show_id": "spotify:show:1"})
+    monkeypatch.setattr(render, "preflight", lambda *a, **k: (True, []))
     monkeypatch.setattr(render, "render_segments", lambda *a, **k: [tmp_path / "seg_01.mp3"])
     monkeypatch.setattr(render, "plan_silences", lambda paths: [0])
     # Blow up inside the render with a die() so the failure path captures the message.
@@ -1660,22 +1699,15 @@ def test_successful_auto_workdir_is_deleted(tmp_path, monkeypatch):
     monkeypatch.setattr(render, "COVERED_PATH", tmp_path / "covered.json")
     monkeypatch.setattr(render, "INFLIGHT_PATH", tmp_path / "inflight.json")
 
-    created: list[Path] = []
-    real_mkdtemp = render.tempfile.mkdtemp
-
-    def tracking_mkdtemp(*a, **k):
-        k.setdefault("dir", str(tmp_path))
-        d = real_mkdtemp(*a, **k)
-        created.append(Path(d))
-        return d
-
-    monkeypatch.setattr(render.tempfile, "mkdtemp", tracking_mkdtemp)
+    # The auto workdir is deterministic per-date now (not mkdtemp), which is what
+    # makes an interrupted run resumable by a bare re-invocation.
+    auto_workdir = render.default_workdir()
     _stub_full_render(monkeypatch, tmp_path)
     manifest = _full_render_manifest(tmp_path)
     monkeypatch.setattr(sys, "argv", ["render.py", "--manifest", str(manifest)])
 
     assert render.main() == 0
-    assert created and not created[0].exists()  # auto workdir deleted on success
+    assert not auto_workdir.exists()  # auto workdir deleted on success
 
 
 def test_keep_workdir_preserves_auto_workdir(tmp_path, monkeypatch):
@@ -1684,22 +1716,15 @@ def test_keep_workdir_preserves_auto_workdir(tmp_path, monkeypatch):
     monkeypatch.setattr(render, "COVERED_PATH", tmp_path / "covered.json")
     monkeypatch.setattr(render, "INFLIGHT_PATH", tmp_path / "inflight.json")
 
-    created: list[Path] = []
-    real_mkdtemp = render.tempfile.mkdtemp
-
-    def tracking_mkdtemp(*a, **k):
-        k.setdefault("dir", str(tmp_path))
-        d = real_mkdtemp(*a, **k)
-        created.append(Path(d))
-        return d
-
-    monkeypatch.setattr(render.tempfile, "mkdtemp", tracking_mkdtemp)
+    # The auto workdir is deterministic per-date now (not mkdtemp), which is what
+    # makes an interrupted run resumable by a bare re-invocation.
+    auto_workdir = render.default_workdir()
     _stub_full_render(monkeypatch, tmp_path)
     manifest = _full_render_manifest(tmp_path)
     monkeypatch.setattr(sys, "argv", ["render.py", "--manifest", str(manifest), "--keep-workdir"])
 
     assert render.main() == 0
-    assert created and created[0].exists()  # --keep-workdir retains it
+    assert auto_workdir.exists()  # --keep-workdir retains it
 
 
 def test_explicit_workdir_never_auto_deleted(tmp_path, monkeypatch):

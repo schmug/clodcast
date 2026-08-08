@@ -1,0 +1,3 @@
+Runtime incident reports are written to ~/.config/daily-podcast/incidents/new/
+(override with DAILY_PODCAST_INCIDENT_DIR), NOT here — see ../README.md.
+This directory exists so codified reports have somewhere to land in the repo.

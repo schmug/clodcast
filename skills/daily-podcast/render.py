@@ -3,6 +3,8 @@
 daily-podcast/render.py — dumb manifest -> episode driver.
 
 Consumes a manifest.json that already contains the written segments, then:
+  0. PRE-FLIGHT: deps, credentials, encoder profile, and episode capacity — before
+     any expensive work, so a broken host or a full show costs seconds, not a render
   1. Picks a voice (random from preset list, unless overridden)
   2. Renders each segment via Qwen3-TTS (mlx-audio)
   3. Concatenates with auto-padded silences to satisfy Spotify's
@@ -11,11 +13,18 @@ Consumes a manifest.json that already contains the written segments, then:
   5. Builds a date-stamped Pillow cover
   6. Builds timeline.json (chapter per segment + link companion when present)
   7. Builds HTML description (summary + timestamped chapters + source links)
+  7b. ARTIFACT GATE: local conformance + refusal to re-upload bytes Spotify already
+     rejected (runs under --dry-run too, so a rehearsal is a real rehearsal)
   8. Uploads via save-to-spotify CLI, sets timeline, polls until READY
   9. Optionally publishes the mp3 + a manifest entry to Cloudflare R2 (for the
      cortech.online web feed) — additive, never blocks the run
  10. Updates ~/.config/daily-podcast/covered.json dedup log
  11. Appends one record to ~/.config/daily-podcast/runs.jsonl (across-runs observability)
+
+Progress is checkpointed to <workdir>/state.json and the auto workdir is
+deterministic (daily-podcast-<date>), so an interrupted run resumes by re-running the
+same command. Any non-clean exit writes a structured incident report to
+~/.config/daily-podcast/incidents/new/ (see the repo's incidents/ directory).
 
 Use --dry-run to skip upload/timeline/R2 calls (still writes mp3, cover, timeline.json,
 and a "dry-run" run-log record).
@@ -30,6 +39,7 @@ import argparse
 import datetime as dt
 import hashlib
 import html
+import importlib.util
 import json
 import math
 import os
@@ -40,6 +50,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -119,6 +130,80 @@ USER_HOUSE_TEXT = VOICES_DIR / "house.txt"
 # throwaway tree instead of the real temp dir.
 WORKDIR_PREFIX = "daily-podcast-"
 TMP_BASE = Path(tempfile.gettempdir())
+
+# --- reliability layer -----------------------------------------------------
+#
+# Every constant below traces to a failure that actually happened in production;
+# see incidents/ for the one-file-per-failure-mode write-ups.
+
+# The encoder profile every ffmpeg invocation re-asserts. Named (rather than
+# repeated as literals) so preflight can check the *actual* settings the encoder
+# uses instead of a doc comment that could drift away from the code.
+AUDIO_SAMPLE_RATE = 44100
+AUDIO_CHANNELS = 1  # mono; concat-protocol is fragile across mismatched layouts
+AUDIO_BITRATE = "192k"
+AUDIO_CODEC = "libmp3lame"
+# What ffprobe must report back for a finished episode. Keyed by ffprobe's own
+# field names so verify_artifact can compare a probe dict directly.
+ENCODER_PROFILE = {
+    "codec_name": "mp3",
+    "channels": AUDIO_CHANNELS,
+    "sample_rate": AUDIO_SAMPLE_RATE,
+}
+
+# Durable per-stage checkpoint inside the workdir. Combined with a deterministic
+# per-date auto workdir, this is what makes a dropped connection resumable rather
+# than a lost render: the next invocation re-enters at the first incomplete stage.
+# uploaded.json remains the authoritative upload marker (state.json supersedes
+# nothing) — this is additive observability + resume metadata.
+STATE_FILENAME = "state.json"
+STAGES: tuple[str, ...] = (
+    "preflight",
+    "segments",
+    "concat",
+    "cover",
+    "timeline",
+    "upload",
+    "set_timeline",
+    "artifact_gate",
+    "poll_ready",
+    "r2",
+    "dedup",
+)
+
+# Spotify's per-show episode cap. Confirmed hard at 60 (2026-07-17/18): the upload
+# 429s with RATE_LIMIT_EXCEEDED/capacity. Overridable per-show via config
+# `episode_cap` in case the limit ever moves.
+EPISODE_CAP_DEFAULT = 60
+
+# poll_ready's window. The original 600s expired while Spotify was legitimately
+# still PROCESSING — the observed settle time was ~16 minutes (2026-07-28) — which
+# turned a healthy episode into a "failed" run needing a manual resume.
+DEFAULT_POLL_TIMEOUT_S = 1800
+POLL_INTERVAL_S = 15
+
+# One automatic retry for a transient upload flake (2026-06-07: failed once with
+# empty stderr, succeeded on an immediate re-run). Strictly one — never a loop,
+# and never compounded with the cap-429 prune-then-retry path.
+UPLOAD_RETRY_DELAY_S = 10
+
+# Append-only log of artifacts Spotify rejected server-side, keyed by sha256.
+# The 2026-08-08 incident proved the rejection is tied to the *artifact*: two
+# independent uploads of one byte-identical mp3 both went NOT_READY -> FAILED.
+# Since auto-prune is on, each attempt permanently deletes a published episode to
+# free a cap slot, so re-uploading known-dead bytes is destructive, not merely futile.
+REJECTIONS_PATH = CONFIG_DIR / "rejections.jsonl"
+
+# Structured incident reports written on any non-clean exit. Deliberately NOT a
+# repo-relative incidents/new/: the scheduled run executes from the version-keyed
+# plugin cache (~/.claude/plugins/cache/clodcast/clodcast/<version>/), where a
+# repo-relative write would be invisible to the operator and wiped by the next
+# release. Lives beside runs.jsonl instead; DAILY_PODCAST_INCIDENT_DIR overrides.
+INCIDENT_DIR = CONFIG_DIR / "incidents" / "new"
+
+# Registry of feeds/outlets that can't be fetched for article bodies, moved out of
+# operator memory and into the shipped skill so curation can consult it.
+BLOCKED_SOURCES_PATH = SCRIPT_DIR / "blocked_sources.json"
 
 # --- helpers ---------------------------------------------------------------
 
@@ -332,6 +417,8 @@ RUN_LOG_FIELDS: tuple[str, ...] = (
     "pruned_episodes",  # [{episode_uri, created_at, title, status}] on a cap prune, else null (#78)
     "r2_status",  # "published" | "skipped" | "failed" or null pre-publish (#48)
     "resumed",
+    "preflight",  # {ok, checks:[{name, ok, detail}]} or null when skipped
+    "abandoned_episodes",  # [{episode_uri, title, source_urls}] on a poison-pill give-up
 )
 
 
@@ -757,13 +844,13 @@ def render_segments(
                 "-i",
                 str(wav),
                 "-ar",
-                "44100",
+                str(AUDIO_SAMPLE_RATE),
                 "-ac",
-                "1",
+                str(AUDIO_CHANNELS),
                 "-c:a",
-                "libmp3lame",
+                AUDIO_CODEC,
                 "-b:a",
-                "192k",
+                AUDIO_BITRATE,
                 str(mp3),
             ]
         )
@@ -924,13 +1011,13 @@ def concat_and_normalize(
             "-i",
             str(concat_list),
             "-ar",
-            "44100",
+            str(AUDIO_SAMPLE_RATE),
             "-ac",
-            "1",
+            str(AUDIO_CHANNELS),
             "-c:a",
-            "libmp3lame",
+            AUDIO_CODEC,
             "-b:a",
-            "192k",
+            AUDIO_BITRATE,
             str(raw),
         ]
     )
@@ -943,13 +1030,13 @@ def concat_and_normalize(
             "-af",
             "loudnorm=print_format=json",
             "-ar",
-            "44100",
+            str(AUDIO_SAMPLE_RATE),
             "-ac",
-            "1",
+            str(AUDIO_CHANNELS),
             "-c:a",
-            "libmp3lame",
+            AUDIO_CODEC,
             "-b:a",
-            "192k",
+            AUDIO_BITRATE,
             str(final),
         ]
     )
@@ -1346,17 +1433,33 @@ def upload(
     except subprocess.CalledProcessError as e:
         parsed = parse_s2s_error(e.stdout or "")
         enabled, _ = _prune_config(config)
-        if _is_cap_error(parsed) and enabled:
-            pruned = prune_episodes_for_capacity(show_id, config, dry_run=dry_run, record=record)
-            if pruned > 0:
-                log(f"auto-prune freed {pruned} slot(s); retrying upload once")
-                try:
-                    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-                except subprocess.CalledProcessError as e2:
-                    # Retry also failed — fail with the diagnostic, never a second prune.
-                    die(_command_failed_message(cmd, e2.stdout or "", e2.stderr or ""))
-                return _parse_upload_result(result.stdout)
-        die(_command_failed_message(cmd, e.stdout or "", e.stderr or ""))
+        if _is_cap_error(parsed):
+            # Confirmed cap 429. Retrying without freeing a slot is useless, so this
+            # branch never falls through to the transient retry below.
+            if enabled:
+                pruned = prune_episodes_for_capacity(
+                    show_id, config, dry_run=dry_run, record=record
+                )
+                if pruned > 0:
+                    log(f"auto-prune freed {pruned} slot(s); retrying upload once")
+                    try:
+                        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+                    except subprocess.CalledProcessError as e2:
+                        # Retry also failed — fail with the diagnostic, never a second prune.
+                        die(_command_failed_message(cmd, e2.stdout or "", e2.stderr or ""))
+                    return _parse_upload_result(result.stdout)
+            die(_command_failed_message(cmd, e.stdout or "", e.stderr or ""))
+
+        # Not a cap error: the 2026-06-07 transient case, which failed once with an
+        # empty stderr and succeeded on an immediate re-run. Retry exactly ONCE —
+        # a loop here would hammer a genuinely broken upload path.
+        log(f"upload failed (not a capacity error); retrying once in {UPLOAD_RETRY_DELAY_S}s")
+        time.sleep(UPLOAD_RETRY_DELAY_S)
+        try:
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e2:
+            die(_command_failed_message(cmd, e2.stdout or "", e2.stderr or ""))
+        log("upload succeeded on retry (transient failure)")
     return _parse_upload_result(result.stdout)
 
 
@@ -1387,27 +1490,30 @@ def set_timeline(episode_id: str, timeline_path: Path) -> None:
         die(f"timeline set error: {data['error']}")
 
 
-def poll_ready(episode_id: str, timeout_s: int = 600) -> None:
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        result = run(
-            [
-                "save-to-spotify",
-                "--json",
-                "episodes",
-                "status",
-                episode_id,
-            ]
-        )
-        data = json.loads(result.stdout)
-        r = data.get("readiness", "")
-        log(f"  status: {r}")
-        if r == "READY":
-            return
-        if r == "FAILED":
-            die("episode processing FAILED")
-        time.sleep(15)
-    die(f"episode not READY after {timeout_s}s")
+def poll_ready(
+    episode_id: str,
+    timeout_s: int | None = None,
+    *,
+    show_id: str | None = None,
+    config: dict[str, Any] | None = None,
+) -> str:
+    """Block until the episode is READY, or die.
+
+    The window defaults to DEFAULT_POLL_TIMEOUT_S (30 min), not the original 10:
+    Spotify legitimately took ~16 minutes to settle on 2026-07-28, and the short
+    window turned a healthy episode into a failed run that needed a manual resume.
+    A transient unknown status is waited through, never treated as terminal."""
+    timeout_s = timeout_s if timeout_s is not None else resolve_poll_timeout(config)
+    outcome = wait_for_readiness(episode_id, timeout_s, show_id=show_id)
+    if outcome == "READY":
+        return "READY"
+    if outcome == "FAILED":
+        die("episode processing FAILED")
+    die(
+        f"episode not READY after {timeout_s}s — it may still be PROCESSING; "
+        "check the show listing and resume with the same --workdir before re-rendering"
+    )
+    return outcome  # unreachable: die() exits
 
 
 def _save_dedup(segments: list[dict], episode_uri: str) -> None:
@@ -1503,7 +1609,17 @@ def _recover_inflight() -> None:
         episode_id = episode_uri.removeprefix("spotify:episode:")
         log(f"in-flight recovery: re-running timeline set + poll for {episode_uri}")
         set_timeline(episode_id, timeline_path)
-        poll_ready(episode_id)
+        outcome = wait_for_readiness(episode_id, resolve_poll_timeout(None))
+        if outcome == "FAILED":
+            _abandon_inflight(rec, wd)
+            return
+        if outcome == "TIMEOUT":
+            # Still plausibly PROCESSING. Leave the log intact so the next run
+            # retries — the crash-safety guarantee this whole path is built on.
+            die(
+                f"in-flight episode {episode_uri} not READY yet; leaving the in-flight "
+                "log in place for the next run"
+            )
     else:
         log("in-flight recovery: prior workdir/timeline gone; marking URLs covered only")
 
@@ -1517,6 +1633,56 @@ def _recover_inflight() -> None:
     log("in-flight recovery: complete")
 
 
+def _abandon_inflight(rec: dict[str, Any], workdir: Path | None) -> None:
+    """Give up on an in-flight episode Spotify rejected, and let today's run proceed.
+
+    This is the poison pill (2026-06-29, 2026-08-08). A FAILED leftover used to make
+    `_recover_inflight` die on EVERY subsequent run — before today's episode rendered
+    — and because the crash left inflight.json in place, it re-poisoned the next run
+    too. One bad episode disabled the pipeline until a human deleted the file.
+
+    Two things are deliberately NOT done here:
+      - `covered.json` is not written. Those URLs never shipped, so they must return
+        to the pool for the next run to re-cover; that is why the documented manual
+        remedy is safe.
+      - The dead episode is not deleted from Spotify. Deleting a published episode is
+        irreversible and stays human-gated; the cap prune already prefers FAILED
+        episodes, so it gets reclaimed on the next capacity prune anyway."""
+    episode_uri = rec.get("episode_uri", "")
+    log(f"in-flight recovery: {episode_uri} is FAILED server-side; abandoning it")
+
+    # Record the artifact so a later run cannot re-upload the same cursed bytes.
+    # With auto-prune on, each retry permanently deletes a published episode.
+    mp3 = (workdir / "episode.mp3") if workdir else None
+    profile: dict[str, Any] = {}
+    if mp3 and mp3.exists():
+        profile = probe_audio_profile(mp3)
+        record_rejection(mp3, episode_uri=episode_uri, profile=profile, reason="processing FAILED")
+
+    record = _RUN_CTX if _RUN_CTX is not None else _new_run_record()
+    abandoned = {
+        "episode_uri": episode_uri,
+        "title": rec.get("title"),
+        "source_urls": rec.get("source_urls", []),
+        "artifact_profile": profile,
+    }
+    if _RUN_CTX is not None:
+        existing = _RUN_CTX.get("abandoned_episodes") or []
+        _RUN_CTX["abandoned_episodes"] = existing + [abandoned]
+    write_incident(
+        {**record, "episode_uri": episode_uri},
+        kind="processing-failed",
+        message=(
+            f"episode processing FAILED for {episode_uri}; abandoned the in-flight record "
+            f"so the pipeline is not blocked. {len(rec.get('source_urls', []))} source URL(s) "
+            "returned to the curation pool (deliberately NOT marked covered). The dead "
+            "episode still occupies a cap slot and will be reclaimed by the next prune."
+        ),
+    )
+    _clear_inflight()
+    log("in-flight recovery: abandoned; today's run continues")
+
+
 def _resume(
     workdir: Path,
     marker: Path,
@@ -1524,6 +1690,8 @@ def _resume(
     title: str,
     manifest: dict[str, Any],
     record: dict[str, Any] | None = None,
+    *,
+    config: dict[str, Any] | None = None,
 ) -> int:
     """
     Resume a run whose upload already succeeded (uploaded.json present). Skip TTS,
@@ -1532,13 +1700,19 @@ def _resume(
     failure — a poll_ready timeout where the episode is actually live and Spotify was
     just slow — without re-uploading a duplicate.
 
-    R2 back-fill (#40): the resume tail now also publishes to R2, mirroring the fresh
+    R2 back-fill (#40): the resume tail also publishes to R2, mirroring the fresh
     path, so an episode that first failed at poll_ready and was later recovered still
-    lands on the web feed. It MUST preserve the resume invariant that `_resume` never
-    calls `load_config` (pinned by test_resume_skips_upload_and_runs_idempotent_tail):
-    R2 config is resolved env-only via `maybe_publish_r2({}, ...)`. The publish is
-    additive + non-fatal exactly as on the fresh path — it cannot block the dedup
-    write below or change the exit code.
+    lands on the web feed. The publish is additive + non-fatal exactly as on the fresh
+    path — it cannot block the dedup write below or change the exit code.
+
+    INVARIANT CHANGE: this path used to be deliberately config-free, resolving R2
+    from env only. That is precisely what made the web-feed publish silently skip on
+    every recovery (2026-07-28) — `r2_bucket` / `r2_public_base_url` live in
+    config.json, so an operator who had configured R2 correctly still got
+    `r2_status: "skipped"` and a missing episode on the website, discovered days
+    later. `_render` now resolves the config once and passes it in; `_resume` still
+    never calls `load_config` itself, so it stays a pure function of its arguments
+    and remains callable with `config=None` (env-only) for a bare recovery.
 
     `record`, when given, is the shared run-log record (#18) populated as the resume
     succeeds so the JSONL log captures resumed runs identically to fresh ones.
@@ -1565,7 +1739,8 @@ def _resume(
 
     set_timeline(episode_id, timeline_path)
     log("timeline set; polling for READY...")
-    poll_ready(episode_id)
+    poll_ready(episode_id, config=config)
+    mark_stage(workdir, "poll_ready", readiness="READY", resumed=True)
 
     timeline = json.loads(timeline_path.read_text())
 
@@ -1579,7 +1754,7 @@ def _resume(
     desc_path = workdir / "description.html"
     if desc_path.exists():
         r2_status = maybe_publish_r2(
-            {},
+            config or {},
             episode_mp3=episode_mp3,
             cover=cover,
             timeline=timeline,
@@ -1592,6 +1767,7 @@ def _resume(
         r2_status = R2_SKIPPED
 
     _save_dedup(segments, episode_uri)
+    mark_stage(workdir, "dedup", urls=len(_segment_urls(segments)), resumed=True)
     # This episode reached READY+dedup, so any in-flight record for it is now stale.
     _clear_inflight()
 
@@ -2145,6 +2321,627 @@ def run_selftest(load_model: bool = False) -> int:
     return 0 if all_ok else 1
 
 
+# --- durable run state -----------------------------------------------------
+#
+# A dropped connection used to cost a whole render: the auto workdir was a random
+# mkdtemp(), so there was nothing to resume into. state.json + a deterministic
+# per-date workdir make every run resumable, not just the ones where someone
+# remembered to pass --workdir.
+
+
+def default_workdir(today: dt.date | None = None) -> Path:
+    """The auto workdir for a given day. Deterministic (not mkdtemp) so a crashed
+    run can be resumed by re-invoking with no arguments at all: the second run
+    lands in the same directory and reuses its TTS cache, artifacts, and state."""
+    day = (today or dt.date.today()).isoformat()
+    return TMP_BASE / f"{WORKDIR_PREFIX}{day}"
+
+
+def _state_path(workdir: Path) -> Path:
+    return Path(workdir) / STATE_FILENAME
+
+
+def load_state(workdir: Path) -> dict[str, Any]:
+    """The workdir's stage checkpoints, or an empty state. Best-effort by contract:
+    a corrupt state file degrades to "nothing completed" (the run simply redoes
+    work) rather than wedging every future run — same posture as load_covered."""
+    path = _state_path(workdir)
+    if not path.exists():
+        return {"stages": {}}
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        log(f"warn: {path} unreadable/malformed, treating as no completed stages")
+        return {"stages": {}}
+    if not isinstance(data, dict) or not isinstance(data.get("stages"), dict):
+        return {"stages": {}}
+    return data
+
+
+def save_state(workdir: Path, state: dict[str, Any]) -> None:
+    try:
+        _atomic_write_text(_state_path(workdir), json.dumps(state, indent=2))
+    except OSError as e:
+        # Checkpointing is observability + a resume hint, never a gate. Losing it
+        # costs redone work on the next attempt; it must not sink a live run.
+        log(f"warn: could not write {_state_path(workdir)}: {e}")
+
+
+def mark_stage(workdir: Path, stage: str, **data: Any) -> dict[str, Any]:
+    """Checkpoint `stage` as complete, carrying whatever metadata the caller knows."""
+    state = load_state(workdir)
+    state.setdefault("stages", {})[stage] = {
+        **data,
+        "completed_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    save_state(workdir, state)
+    return state
+
+
+def stage_done(state: dict[str, Any], stage: str) -> bool:
+    stages = state.get("stages")
+    return isinstance(stages, dict) and stage in stages
+
+
+# --- artifact gate ---------------------------------------------------------
+
+
+def artifact_fingerprint(path: Path) -> str:
+    """sha256 of the rendered episode. Content-addressed on purpose: the 2026-08-08
+    incident showed Spotify's rejection follows the *bytes*, so identity — not the
+    episode URI or the title — is what a blocklist has to key on."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def probe_audio_profile(path: Path) -> dict[str, Any]:
+    """ffprobe's view of the first audio stream: codec, channels, sample rate.
+    Returns {} when ffprobe is unavailable or the probe fails — an unprobeable file
+    yields no *evidence of a defect*, and verify_artifact must not invent one."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=codec_name,channels,sample_rate",
+                "-of",
+                "json",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        streams = json.loads(result.stdout).get("streams") or []
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError, json.JSONDecodeError) as e:
+        log(f"warn: could not probe {path}: {e}")
+        return {}
+    return streams[0] if streams else {}
+
+
+def load_rejected_fingerprints() -> set[str]:
+    """Every artifact sha256 Spotify has rejected. Corrupt lines are skipped, not
+    fatal — a malformed log must never block a legitimate ship."""
+    if not REJECTIONS_PATH.exists():
+        return set()
+    out: set[str] = set()
+    try:
+        text = REJECTIONS_PATH.read_text()
+    except OSError as e:
+        log(f"warn: could not read {REJECTIONS_PATH}: {e}")
+        return set()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        sha = rec.get("sha256") if isinstance(rec, dict) else None
+        if isinstance(sha, str) and sha:
+            out.add(sha)
+    return out
+
+
+def record_rejection(mp3: Path, *, episode_uri: str, profile: dict[str, Any], reason: str) -> None:
+    """Append one rejected artifact to rejections.jsonl. Append-only like runs.jsonl
+    (never _atomic_write_text, which would clobber the history to a single line)."""
+    try:
+        rec = {
+            "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "sha256": artifact_fingerprint(mp3),
+            "episode_uri": episode_uri,
+            "profile": profile,
+            "reason": reason,
+        }
+        REJECTIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(REJECTIONS_PATH, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+        log(f"recorded rejected artifact {rec['sha256'][:12]}… ({reason})")
+    except OSError as e:
+        log(f"warn: could not append {REJECTIONS_PATH}: {e}")
+
+
+def verify_artifact(
+    mp3: Path, timeline: dict[str, Any], *, duration_ms: int, profile: dict[str, Any]
+) -> list[str]:
+    """Local conformance gate, run after render and before upload. Returns a list of
+    human-readable problems (empty == good).
+
+    Scope note, because it is easy to over-claim: the 2026-08-08 rejected artifact
+    passed every check here. This gate does NOT diagnose server-side processing
+    rejection — nothing local does. It catches render regressions, and it refuses a
+    byte-identical retry of an artifact Spotify already rejected, which is the one
+    thing the incident actually proved (and which is destructive now that a retry
+    prunes a published episode to free a cap slot)."""
+    errors: list[str] = []
+
+    try:
+        fingerprint = artifact_fingerprint(mp3)
+    except OSError as e:
+        return [f"cannot read artifact {mp3}: {e}"]
+    if fingerprint in load_rejected_fingerprints():
+        errors.append(
+            f"artifact was previously rejected by Spotify (sha256 {fingerprint[:12]}…); "
+            "re-uploading identical bytes reproduces the failure and costs a pruned episode"
+        )
+
+    for key, expected in ENCODER_PROFILE.items():
+        if key not in profile:
+            continue  # unprobeable: no evidence of a defect, so don't invent one
+        if str(profile[key]) != str(expected):
+            errors.append(f"encoder {key} is {profile[key]!r}, expected {expected!r}")
+
+    starts = [
+        item["chapter"].get("start_ms")
+        for item in timeline.get("items", [])
+        if isinstance(item, dict) and isinstance(item.get("chapter"), dict)
+    ]
+    starts = [s for s in starts if isinstance(s, int)]
+    if starts != sorted(starts) or len(set(starts)) != len(starts):
+        errors.append("chapter starts must be strictly monotonic")
+    elif starts:
+        if starts[-1] >= duration_ms:
+            errors.append(
+                f"last chapter starts at {starts[-1]}ms, at or past the "
+                f"{duration_ms}ms episode duration"
+            )
+        bounds = starts[1:] + [duration_ms]
+        short = sum(1 for start, end in zip(starts, bounds, strict=True) if end - start < 30_000)
+        if short > MAX_SHORT_CHAPTERS:
+            errors.append(
+                f"{short} short chapter(s) under 30s (Spotify rejects more than "
+                f"{MAX_SHORT_CHAPTERS}); the script needs rewriting, not more padding"
+            )
+    return errors
+
+
+# --- readiness polling -----------------------------------------------------
+
+
+def resolve_poll_timeout(config: dict[str, Any] | None) -> int:
+    """Seconds to wait for Spotify processing. Config `poll_timeout_s` wins; an
+    unparseable or non-positive value falls back to the default rather than
+    turning the poll into an instant failure."""
+    raw = (config or {}).get("poll_timeout_s", DEFAULT_POLL_TIMEOUT_S)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_POLL_TIMEOUT_S
+    return value if value > 0 else DEFAULT_POLL_TIMEOUT_S
+
+
+def episode_status(episode_id: str, show_id: str | None = None) -> str | None:
+    """Readiness for one episode: READY / FAILED / PROCESSING / NOT_READY, or None
+    when it cannot be determined *right now*.
+
+    None means "unknown, ask again" — never "gone". The show listing intermittently
+    omits a just-uploaded episode (2026-07-28), and a caller that treats that as
+    terminal reports a phantom disappearance for an episode that is present and
+    PROCESSING on the very next query."""
+    try:
+        result = run(["save-to-spotify", "--json", "episodes", "status", episode_id])
+        data = _first_json_line(result.stdout)
+        if isinstance(data, dict) and data.get("readiness"):
+            return str(data["readiness"])
+    except (SystemExit, subprocess.CalledProcessError, json.JSONDecodeError, OSError):
+        pass  # fall through to the listing form
+
+    if not show_id:
+        return None
+    # Documented fallback: `episodes status <id> --show-id <show>` rejects the flag,
+    # so the listing form is the only other way to read server state.
+    try:
+        for ep in _list_episodes(show_id):
+            uri = ep.get("episode_uri") or ""
+            if uri.removeprefix("spotify:episode:") == episode_id:
+                return str(ep.get("status")) if ep.get("status") else None
+    except (SystemExit, subprocess.CalledProcessError, json.JSONDecodeError, OSError):
+        return None
+    return None
+
+
+def wait_for_readiness(
+    episode_id: str,
+    timeout_s: int,
+    *,
+    show_id: str | None = None,
+) -> str:
+    """Poll until the episode settles. Returns "READY", "FAILED", or "TIMEOUT".
+
+    Unlike poll_ready this never exits the process, so callers that must survive a
+    terminal failure (in-flight recovery, which has to unblock today's episode) can
+    branch on the result instead of dying."""
+    deadline = time.time() + timeout_s
+    while True:
+        status = episode_status(episode_id, show_id=show_id)
+        log(f"  status: {status or 'unknown (transient)'}")
+        if status == "READY":
+            return "READY"
+        if status == "FAILED":
+            return "FAILED"
+        if time.time() >= deadline:
+            return "TIMEOUT"
+        time.sleep(POLL_INTERVAL_S)
+
+
+# --- pre-flight ------------------------------------------------------------
+
+
+def check_r2_credentials(config: dict[str, Any]) -> dict[str, Any]:
+    """Three-state R2 readiness: configured / absent / partial.
+
+    `absent` is a PASS — the web feed is optional and a show without one must still
+    ship. `partial` is a FAIL, and that asymmetry is the whole point: a half-configured
+    R2 is exactly the 2026-07-28 shape where the episode ships to Spotify and silently
+    never reaches the website, which is only noticed days later."""
+    secrets = _load_r2_secrets()
+    fields = {
+        "R2_ACCOUNT_ID": secrets.get("R2_ACCOUNT_ID"),
+        "R2_ACCESS_KEY_ID": secrets.get("R2_ACCESS_KEY_ID"),
+        "R2_SECRET_ACCESS_KEY": secrets.get("R2_SECRET_ACCESS_KEY"),
+        "R2_BUCKET": os.environ.get("R2_BUCKET") or config.get("r2_bucket"),
+        "R2_PUBLIC_BASE_URL": (
+            os.environ.get("R2_PUBLIC_BASE_URL") or config.get("r2_public_base_url")
+        ),
+    }
+    missing = sorted(k for k, v in fields.items() if not v)
+    if not missing:
+        return {"ok": True, "state": "configured", "detail": "all R2 settings resolved"}
+    if len(missing) == len(fields):
+        return {"ok": True, "state": "absent", "detail": "R2 not configured (web feed disabled)"}
+    return {
+        "ok": False,
+        "state": "partial",
+        "detail": f"R2 partially configured; missing {', '.join(missing)}",
+    }
+
+
+def _episode_cap(config: dict[str, Any]) -> int:
+    try:
+        cap = int(config.get("episode_cap", EPISODE_CAP_DEFAULT))
+    except (TypeError, ValueError):
+        return EPISODE_CAP_DEFAULT
+    return cap if cap > 0 else EPISODE_CAP_DEFAULT
+
+
+def preflight_capacity(
+    show_id: str,
+    config: dict[str, Any],
+    *,
+    dry_run: bool,
+    record: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Compare the show's episode count against the cap and reclaim a slot *before*
+    the render, not after.
+
+    The cap-429 auto-prune already self-heals, but only reactively: it fires after a
+    full ~5-minute TTS render has been spent on an upload that was always going to
+    fail. Checking first makes the cap cost nothing."""
+    cap = _episode_cap(config)
+    episodes = _list_episodes(show_id)
+    count = len(episodes)
+    if count < cap:
+        return {"ok": True, "count": count, "pruned": 0, "detail": f"{count}/{cap} episodes"}
+
+    if dry_run:
+        return {
+            "ok": True,
+            "count": count,
+            "pruned": 0,
+            "detail": f"{count}/{cap} at cap (dry-run: no prune)",
+        }
+
+    enabled, _ = _prune_config(config)
+    if not enabled:
+        return {
+            "ok": False,
+            "count": count,
+            "pruned": 0,
+            "detail": (
+                f"{count}/{cap} at the episode cap and auto_prune_episodes is disabled; "
+                "enable it in config.json or delete an episode manually"
+            ),
+        }
+
+    pruned = prune_episodes_for_capacity(show_id, config, dry_run=dry_run, record=record)
+    return {
+        "ok": pruned > 0,
+        "count": count,
+        "pruned": pruned,
+        "detail": (
+            f"{count}/{cap} at cap; pruned {pruned} to free a slot"
+            if pruned
+            else f"{count}/{cap} at cap and nothing was eligible to prune"
+        ),
+    }
+
+
+def preflight(
+    config: dict[str, Any],
+    *,
+    show_id: str | None,
+    dry_run: bool,
+    record: dict[str, Any] | None = None,
+) -> tuple[bool, list[dict[str, Any]]]:
+    """Verify everything the run depends on BEFORE spending a render on it.
+
+    Ordered so the cheap local checks fail fast and the network ones only run when
+    they can matter. `--dry-run` runs the local subset only: by contract a dry run
+    never calls Spotify and never prunes."""
+    checks: list[dict[str, Any]] = []
+    log("preflight: verifying dependencies, credentials, and capacity...")
+
+    for tool in ("ffmpeg", "ffprobe"):
+        path = shutil.which(tool)
+        checks.append(_check(tool, path is not None, path or "not found on PATH"))
+
+    profile_ok = ENCODER_PROFILE == {
+        "codec_name": "mp3",
+        "channels": AUDIO_CHANNELS,
+        "sample_rate": AUDIO_SAMPLE_RATE,
+    }
+    checks.append(
+        _check(
+            "encoder-profile",
+            profile_ok,
+            f"{AUDIO_CHANNELS}ch @ {AUDIO_SAMPLE_RATE}Hz {AUDIO_BITRATE} {AUDIO_CODEC}",
+        )
+    )
+
+    audio_ok = USER_HOUSE_AUDIO.exists() or BUNDLED_HOUSE_AUDIO.exists()
+    text_ok = USER_HOUSE_TEXT.exists() or BUNDLED_HOUSE_TEXT.exists()
+    checks.append(
+        _check(
+            "house-voice",
+            audio_ok and text_ok,
+            "ref wav + transcript present"
+            if audio_ok and text_ok
+            else "ref wav/transcript missing",
+        )
+    )
+
+    checks.append(_tts_module_check())
+
+    checks.append(
+        _check("show-id", bool(show_id), show_id or "no show_id in manifest or config.json")
+    )
+
+    r2 = check_r2_credentials(config)
+    checks.append(_check("r2-credentials", r2["ok"], r2["detail"]))
+
+    if not dry_run:
+        checks.append(_spotify_auth_check())
+        if show_id:
+            cap = preflight_capacity(show_id, config, dry_run=dry_run, record=record)
+            checks.append(_check("episode-capacity", cap["ok"], cap["detail"]))
+
+    ok = all(c["ok"] for c in checks)
+    if record is not None:
+        record["preflight"] = {"ok": ok, "checks": checks}
+    log(f"preflight: {'PASS' if ok else 'FAIL'} ({sum(c['ok'] for c in checks)}/{len(checks)})")
+    return ok, checks
+
+
+def _tts_module_check() -> dict[str, Any]:
+    """Is the TTS backend importable?
+
+    A `find_spec` probe, not a real import — importing mlx_audio pulls in MLX and
+    costs seconds, which a gate that runs on every render cannot afford. Gating
+    (not advisory), and it runs under --dry-run too, because a dry run still
+    renders audio. This check exists because a rehearsal got all the way to
+    "loading mlx-community/Qwen3-TTS..." before discovering the module was absent."""
+    try:
+        spec = importlib.util.find_spec("mlx_audio")
+    except (ImportError, ValueError):
+        spec = None
+    return _check(
+        "tts-module",
+        spec is not None,
+        "mlx_audio importable" if spec else "mlx_audio not installed (see requirements.txt)",
+    )
+
+
+def _spotify_auth_check() -> dict[str, Any]:
+    """`save-to-spotify --json shows` as an auth liveness probe. Deliberately not
+    routed through run() — a failing check must be recorded, not exit the process."""
+    try:
+        proc = subprocess.run(
+            ["save-to-spotify", "--json", "shows"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except FileNotFoundError:
+        return _check("save-to-spotify-auth", False, "save-to-spotify not on PATH")
+    except subprocess.TimeoutExpired:
+        return _check("save-to-spotify-auth", False, "shows timed out (auth/network?)")
+    if proc.returncode != 0:
+        return _check(
+            "save-to-spotify-auth",
+            False,
+            f"`shows` exited {proc.returncode}: {(proc.stderr or '').strip()[:200]}",
+        )
+    try:
+        json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return _check("save-to-spotify-auth", False, "shows did not return valid JSON")
+    return _check("save-to-spotify-auth", True, "shows returned valid JSON")
+
+
+# --- incident capture ------------------------------------------------------
+
+
+def incident_dir() -> Path:
+    """Where runtime incident reports land. Env override first so an operator (or a
+    test) can redirect them without touching config."""
+    env = os.environ.get("DAILY_PODCAST_INCIDENT_DIR")
+    return Path(env) if env else INCIDENT_DIR
+
+
+# Signature -> incident slug. Each maps to a file in the repo's incidents/ directory,
+# so a report names the playbook that already covers it.
+_INCIDENT_SIGNATURES: tuple[tuple[str, str], ...] = (
+    ("RATE_LIMIT_EXCEEDED", "episode-cap"),
+    ("processing FAILED", "processing-failed"),
+    ("not READY after", "poll-timeout"),
+    ("cannot resume", "resume-blocked"),
+    ("401", "auth-failure"),
+    ("authentication", "auth-failure"),
+    ("preflight failed", "preflight-failed"),
+    ("previously rejected", "rejected-artifact"),
+    ("manifest", "manifest-invalid"),
+)
+
+
+def classify_incident(message: str) -> str:
+    """Map an error string to a known failure mode, or "unclassified" — which is the
+    interesting bucket: it means a new failure mode nobody has written up yet."""
+    text = message or ""
+    lowered = text.lower()
+    for needle, slug in _INCIDENT_SIGNATURES:
+        if needle in text or needle.lower() in lowered:
+            return slug
+    return "unclassified"
+
+
+def _incident_markdown(record: dict[str, Any], kind: str, message: str, when: str) -> str:
+    lines = [
+        f"# Incident: {kind}",
+        "",
+        f"- **When:** {when}",
+        f"- **Kind:** `{kind}`",
+        f"- **Status:** `{record.get('status')}`",
+        f"- **Episode:** `{record.get('episode_uri')}`",
+        f"- **Workdir:** `{record.get('workdir')}`",
+        f"- **Manifest:** `{record.get('manifest_path')}`",
+        f"- **render.py:** `{record.get('git_sha')}`",
+        "",
+        "## Message",
+        "",
+        "```",
+        message,
+        "```",
+        "",
+        "## Next step",
+        "",
+        (
+            f"See `incidents/{kind}.md` for the playbook and the test that guards it."
+            if kind != "unclassified"
+            else "No playbook covers this yet — this is a NEW failure mode. "
+            "Write it up in `incidents/` and add a guarding test."
+        ),
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def write_incident(record: dict[str, Any], *, kind: str, message: str) -> Path | None:
+    """Write a structured incident report (markdown + json sidecar) for a future run
+    — or a human — to pick up and codify. Returns the markdown path, or None.
+
+    Best-effort by contract, exactly like write_run_log: a failure to write an
+    incident must never change the exit code of the run that produced it."""
+    try:
+        target = incident_dir()
+        target.mkdir(parents=True, exist_ok=True)
+        now = dt.datetime.now(dt.timezone.utc)
+        stem = f"{now.strftime('%Y%m%dT%H%M%SZ')}-{kind}"
+        path = target / f"{stem}.md"
+        path.write_text(_incident_markdown(record, kind, message, now.isoformat()))
+        (target / f"{stem}.json").write_text(
+            json.dumps(
+                {"kind": kind, "message": message, "timestamp": now.isoformat(), "run": record},
+                indent=2,
+                default=str,
+            )
+        )
+        log(f"incident report written: {path}")
+        return path
+    except (OSError, TypeError, ValueError) as e:
+        log(f"warn: could not write incident report: {e}")
+        return None
+
+
+def _write_run_incident(record: dict[str, Any]) -> None:
+    """Post-run hook: on any non-clean exit, leave a report behind.
+
+    The trailing re-emit of the error is load-bearing, not noise. The scheduled
+    Claude routine that drives the daily run reports failures as
+    `FAILED <stderr last line>` — so anything this hook logs after die()'s
+    `error: …` would silently HIJACK that report (it would surface the incident
+    file path instead of the diagnostic). Re-emitting the error last keeps the
+    last stderr line the actual reason, whatever the hook printed."""
+    message = record.get("error_message") or "run failed without a diagnostic message"
+    write_incident(record, kind=classify_incident(message), message=message)
+    log(f"error: {message}")
+
+
+# --- blocked-source registry -----------------------------------------------
+
+
+def load_blocked_sources() -> dict[str, Any]:
+    """Outlets that cannot be fetched for article bodies. Shipped with the skill so
+    curation consults data instead of operator recall. A missing/corrupt registry
+    degrades to "nothing is known to be blocked" — never a hard failure."""
+    if not BLOCKED_SOURCES_PATH.exists():
+        return {}
+    try:
+        data = json.loads(BLOCKED_SOURCES_PATH.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        log(f"warn: {BLOCKED_SOURCES_PATH} unreadable ({e}); treating as empty")
+        return {}
+    domains = data.get("domains") if isinstance(data, dict) else None
+    return domains if isinstance(domains, dict) else {}
+
+
+def is_blocked_domain(url: str, blocked: dict[str, Any]) -> str | None:
+    """The registry key matching `url`'s host, or None.
+
+    Host-based, never substring: `notwired.com` must not match `wired.com`, and a
+    path containing a blocked domain is not itself blocked."""
+    try:
+        host = (urllib.parse.urlparse(url).hostname or "").lower()
+    except ValueError:
+        return None
+    if not host:
+        return None
+    for domain in blocked:
+        d = str(domain).lower()
+        if host == d or host.endswith(f".{d}"):
+            return domain
+    return None
+
+
 # --- main ------------------------------------------------------------------
 
 
@@ -2180,6 +2977,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "a failed run always keeps it for debugging)",
     )
     ap.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="skip the pre-flight gate (deps, auth, capacity, R2). Escape hatch for "
+        "when a check is wrong and you need to ship anyway; you own the outcome.",
+    )
+    ap.add_argument(
         "--prune-workdirs",
         type=int,
         default=0,
@@ -2213,6 +3016,17 @@ def main() -> int:
         if code != 0:
             record["status"] = "failed"
             write_run_log(record)
+            _write_run_incident(record)
+        raise
+    except BaseException as e:  # noqa: BLE001 — post-run hook must cover every non-clean exit
+        # An unexpected crash (or a KeyboardInterrupt / SIGTERM-driven unwind) is
+        # exactly the case that used to leave nothing behind but a scrollback buffer.
+        # Record it, then re-raise unchanged — this hook never swallows anything.
+        record["status"] = "failed"
+        if not record.get("error_message"):
+            record["error_message"] = f"{type(e).__name__}: {e}"
+        write_run_log(record)
+        _write_run_incident(record)
         raise
     finally:
         _RUN_CTX = None
@@ -2243,17 +3057,25 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
     record["segment_count"] = len(segments)
 
     auto_workdir = args.workdir is None
-    workdir = args.workdir or Path(tempfile.mkdtemp(prefix=WORKDIR_PREFIX))
+    # The auto workdir is deterministic per-date rather than a random mkdtemp(): a
+    # dropped connection used to be unrecoverable simply because nobody could name
+    # the directory the work landed in. Now a bare re-invocation resumes it.
+    workdir = args.workdir or default_workdir()
     workdir.mkdir(parents=True, exist_ok=True)
     record["workdir"] = str(workdir)
     marker = workdir / "uploaded.json"
 
     # Resume: a prior run already uploaded into this workdir, so skip render + upload
-    # and re-run only the idempotent tail. Only when --workdir was given explicitly
-    # (an auto tmpdir can't be resumed) and never for --dry-run (which never uploads).
-    if args.workdir is not None and marker.exists() and not args.dry_run:
+    # and re-run only the idempotent tail. Never for --dry-run (which never uploads).
+    if marker.exists() and not args.dry_run:
         log(f"workdir: {workdir}")
-        rc = _resume(workdir, marker, segments, title, manifest, record)
+        # Config is resolved HERE (not inside _resume) so the R2 back-fill can see
+        # r2_bucket / r2_public_base_url and stop silently skipping the web feed on
+        # every recovery (2026-07-28). Deliberately tolerant: a recovery must still
+        # work on a box with no config.json, so a missing file degrades to {} —
+        # env-only, the old behaviour — instead of dying mid-recovery.
+        resume_config = load_config() if CONFIG_PATH.exists() else {}
+        rc = _resume(workdir, marker, segments, title, manifest, record, config=resume_config)
         if rc == 0:
             write_run_log(record)
         return rc
@@ -2271,6 +3093,18 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
     if not show_id:
         die("show_id required (in manifest or ~/.config/daily-podcast/config.json)")
     show_name = config.get("show_name") or "Daily Digest"
+
+    # PRE-FLIGHT: verify everything the run depends on before spending a render on
+    # it. Capacity is the headline — the cap-429 auto-prune only ever fired *after*
+    # a full TTS render had already been paid for.
+    if args.skip_preflight:
+        log("preflight: skipped (--skip-preflight)")
+    else:
+        ok, checks = preflight(config, show_id=show_id, dry_run=args.dry_run, record=record)
+        if not ok:
+            failed = ", ".join(c["name"] for c in checks if not c["ok"])
+            die(f"preflight failed ({failed}); nothing was rendered or uploaded")
+        mark_stage(workdir, "preflight", checks=len(checks))
 
     voice, voice_instruct, ref_audio, ref_text = resolve_voice(manifest)
     voice_mode = resolve_voice_mode(voice_instruct, ref_audio)
@@ -2298,13 +3132,16 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
         ref_text=ref_text,
         raw_text=manifest.get("raw_text", False),
     )
+    mark_stage(workdir, "segments", count=len(seg_paths))
     silences_ms = plan_silences(seg_paths)
     episode_mp3, loudnorm = concat_and_normalize(seg_paths, silences_ms, workdir)
     record["loudnorm"] = loudnorm
+    mark_stage(workdir, "concat", loudnorm=loudnorm)
 
     # 4: cover
     cover = workdir / "cover.jpg"
     build_cover(cover, show_name, cover_date, title)
+    mark_stage(workdir, "cover")
 
     # 5: timeline + description
     timeline, description = build_timeline_and_description(
@@ -2313,6 +3150,23 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
     timeline_path = workdir / "timeline.json"
     timeline_path.write_text(json.dumps(timeline, indent=2))
     (workdir / "description.html").write_text(description)
+    mark_stage(workdir, "timeline", chapters=sum(1 for it in timeline["items"] if "chapter" in it))
+
+    # 5b: artifact gate. Pre-flight runs before the mp3 exists, so the checks that
+    # need the finished bytes land here. Deliberately BEFORE the --dry-run return:
+    # every check is local (ffprobe + a hash), so a dry run should exercise the same
+    # gate the real run does — that is the whole point of rehearsing with --dry-run.
+    episode_duration_ms = mp3_duration_ms(episode_mp3)
+    artifact_errors = verify_artifact(
+        episode_mp3,
+        timeline,
+        duration_ms=episode_duration_ms,
+        profile=probe_audio_profile(episode_mp3),
+    )
+    if artifact_errors:
+        die("artifact gate failed: " + "; ".join(artifact_errors))
+    log("artifact gate: PASS")
+    mark_stage(workdir, "artifact_gate")
 
     log(f"\nartifacts in {workdir}:")
     for f in sorted(workdir.iterdir()):
@@ -2332,7 +3186,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
             r2_would_publish = None
             log("[r2] dry-run: not configured, would skip")
         chapter_count = sum(1 for it in timeline["items"] if "chapter" in it)
-        duration_s = mp3_duration_ms(episode_mp3) / 1000
+        duration_s = episode_duration_ms / 1000
         record.update(
             status="dry-run",
             chapter_count=chapter_count,
@@ -2397,9 +3251,12 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
         source_urls=_segment_urls(segments),
     )
     log(f"uploaded: {episode_uri}")
+    mark_stage(workdir, "upload", episode_uri=episode_uri)
     set_timeline(episode_id, timeline_path)
+    mark_stage(workdir, "set_timeline")
     log("timeline set; polling for READY...")
-    poll_ready(episode_id)
+    poll_ready(episode_id, show_id=show_id, config=config)
+    mark_stage(workdir, "poll_ready", readiness="READY")
 
     # 7: R2 publish — additive, after READY. Never blocks the dedup write below or
     # fails the run; the 3-state result (published/skipped/failed, #48) surfaces in
@@ -2414,14 +3271,17 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
         episode_uri=episode_uri,
     )
 
+    mark_stage(workdir, "r2", status=r2_status)
+
     # 8: dedup log update (only after READY, regardless of R2 outcome)
     _save_dedup(segments, episode_uri)
+    mark_stage(workdir, "dedup", urls=len(_segment_urls(segments)))
     # URLs are durably covered now, so the in-flight log has done its job — clear it
     # LAST, after dedup, so a crash anywhere above leaves it for the next run.
     _clear_inflight()
 
     chapter_count = sum(1 for it in timeline["items"] if "chapter" in it)
-    duration_s = mp3_duration_ms(episode_mp3) / 1000
+    duration_s = episode_duration_ms / 1000
     record.update(
         status="ready",
         episode_uri=episode_uri,
