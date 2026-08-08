@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 This file is generated from conventional commits by [git-cliff](https://git-cliff.org).
 
+## [0.1.3](https://github.com/schmug/clodcast/compare/v0.1.2...v0.1.3) (2026-08-08)
+
+
+### Features
+
+* **reliability:** pre-flight gate, artifact gate, durable state, incident capture ([#84](https://github.com/schmug/clodcast/issues/84)) ([55333e7](https://github.com/schmug/clodcast/commit/55333e7baccb7853fbf9168d549e3cc47bb66318))
+
 ## [0.1.2](https://github.com/schmug/clodcast/compare/v0.1.1...v0.1.2) (2026-07-19)
 
 
