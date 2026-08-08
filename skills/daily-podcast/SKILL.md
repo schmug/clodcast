@@ -19,7 +19,8 @@ This skill ships an executable `render.py` and a headless prompt. References in 
 
 - `./render.py` — the manifest → episode driver (audio render, cover, upload, timeline, polling)
 - `./orchestrate.py` — the unattended entry point for scheduled runs (deterministic metadata-only curation + one isolated `claude -p` per item)
-- `./prompts/daily.md` — **deprecated** reference for the segment/voice rules and manifest shape; no longer the cron entry point (use `./orchestrate.py`)
+- `./prompts/daily.md` — a stub pointing back here; the unattended procedure lives in [Unattended daily run](#unattended-daily-run)
+- `./blocked_sources.json` — outlets that can't be fetched for article bodies, with recovery strategies
 
 ## Input
 
@@ -95,7 +96,7 @@ Already-written segments. Skip straight to rendering.
 - "CLAUDE dot md" not "CLAUDE.md"
 - No em dashes — TTS encoding flakes; use hyphens
 - Use 1-2 transition phrases between segments ("Next up", "Moving on", "Also today")
-- This is a news digest. Cover security, breach, and research stories at a reporting altitude — what was disclosed, who is affected, the response. Reporting on a disclosed vulnerability or breach is ordinary tech journalism; cover it confidently. Never write exploit steps, payloads, working commands, or attacker how-to; if an item can't be made substantive without them, it doesn't belong in the episode. (The `prompts/daily.md` curation and fetch steps keep coverage at this altitude; this is the writing-side backstop.)
+- This is a news digest. Cover security, breach, and research stories at a reporting altitude — what was disclosed, who is affected, the response. Reporting on a disclosed vulnerability or breach is ordinary tech journalism; cover it confidently. Never write exploit steps, payloads, working commands, or attacker how-to; if an item can't be made substantive without them, it doesn't belong in the episode. (The [Unattended daily run](#unattended-daily-run) curation and fetch steps keep coverage at this altitude; this is the writing-side backstop.)
 
 > **Defense in depth:** `render.py` validates the manifest structure (failing fast with a per-field message before the model loads) and re-strips TTS-hostile characters from every segment — em/en dashes, smart quotes, code fences + backticks, leading markdown headings, and bare URLs — regardless of what the caller wrote. It does *not* do the stylistic rules above (numbers-to-words, abbreviation spacing, "CLAUDE dot md") — those stay the writer's job. Set `"raw_text": true` in the manifest to skip normalization (e.g. text pre-formatted for a different TTS).
 
@@ -134,7 +135,7 @@ Spotify rejects timelines where >3 chapters are under 30 seconds. Qwen3 reads ~4
   "show_id": "spotify:show:...",       // required; one-time setup
   "show_name": "Daily Digest",
   "host_name": "Cory",
-  "opml_files": ["/path/to/feeds.opml"], // optional; used by prompts/daily.md
+  "opml_files": ["/path/to/feeds.opml"], // optional; used by the unattended run
   "lookback_hours": 24,                  // optional; default 24
   "target_item_count": 10,               // optional; default 10
   "auto_prune_episodes": false,          // optional; default false. When true, an upload
@@ -282,6 +283,88 @@ first-non-empty-wins across three homes: env → `secrets.json`
 > exactly as on the fresh path. (An older workdir from before this change that lacks
 > `description.html` degrades to a skipped back-fill rather than aborting the resume.)
 
+## Unattended daily run
+
+**This section is the canonical procedure for shipping an episode with no human in the loop** — a scheduled Claude routine, a cron `claude -p`, or any headless invocation. It is the single source of truth: a scheduler should invoke this skill and follow this section rather than carrying its own copy of these steps, which drift.
+
+You are an unattended invocation. Ship today's episode and exit. Be decisive, don't ask clarifying questions, and if you genuinely cannot proceed, exit with a single-line error on stdout.
+
+1. **Read config**
+   - `~/.config/daily-podcast/config.json` — `show_id`, `opml_files`, `lookback_hours`, `target_item_count`
+   - `~/.config/daily-podcast/covered.json` — URLs already covered; treat as "do not repeat". Absent or malformed → `{}`, never a failed run.
+
+2. **Gather candidates from OPML.** For each path in `opml_files`:
+   - Parse the OPML XML (a `<body>` of nested `<outline>` elements; leaves with `type="rss"` carry the feed URL in `xmlUrl`)
+   - Fetch entries newer than `lookback_hours` ago; skip feeds that 404/timeout after one retry and move on
+   - Capture `title`, `link`, `published`, `summary` (or first 1000 chars of content), `feed_name`
+   - Use Python with `feedparser` (declared in `pyproject.toml`); fall back to `pip install --user feedparser`
+   - Drop items whose `link` is already in `covered.json`
+
+3. **Curate down to `target_item_count`** (default 10). This is a **news digest** — cover stories the way a tech-and-security *news* show would: what happened, who is affected, why it matters, and the response.
+
+   First, **drop any item you could only summarize by reproducing attack methodology** — exploit proof-of-concept or how-to walkthroughs, step-by-step intrusion write-ups, payloads / working commands, or raw breach-and-leak dumps. Judge this from the `title`, `feed_name`, and `summary` captured in step 2 — **before** any `WebFetch` in step 4 — so you never fetch a source you would then have to refuse.
+
+   A security story is in scope when it can be told at a reporting altitude (a vulnerability was disclosed, a breach occurred, a patch shipped); out of scope when the item *is* the technique. Reporting on a disclosed vulnerability, a breach, or published security research is ordinary tech journalism — the line is operational how-to, not the security topic. Apply the keep/drop test to **the specific item, not its feed's reputation**: a mainstream security-news feed can still carry one write-up built around exploit detail, and that one gets dropped — while a clean disclosure / impact / response story from any feed is kept. When an item is borderline (newsworthy core wrapped around some operational detail), keep it and pull only the reporting-level summary in step 4; don't drop a whole feed to avoid one item.
+
+   Then rank what remains, in order:
+   1. Original reporting and analysis (e.g. Anthropic blog, Simon Willison) over aggregators
+   2. Items naming specific products, releases, papers, findings, or numbers (concrete > abstract)
+   3. Items from feeds not used in the past 3 days (variety across episodes)
+   4. Newer over older within the lookback window
+
+   If you cannot find at least 5 items meeting the bar, ship a shorter episode rather than padding. Dropping out-of-scope items is normal and counts toward this — never pad to hit a count.
+
+4. **Fetch full content** for each selected item via `WebFetch`, at a **reporting altitude** — the who / what / impact / response. `WebFetch` is a summarizing fetch, so ask it for the news summary, not a verbatim dump. If an article embeds operational detail, **leave it out of what you save**. Extract the article body, not the homepage. Save to `/tmp/daily-podcast-<date>/item_NN.md`.
+
+   Several outlets cannot be fetched at all. Consult [`blocked_sources.json`](blocked_sources.json) *before* spending a fetch: it lists each blocked domain with the reason, a recovery `strategy` (`primary-source`, `alt-outlet`, `feed-summary`), and a `substitute`. It also lists `preferred` outlets that fetch clean, and `non_article_hosts` (YouTube, Reddit, HN permalinks) that must never be a segment `source_url`. When you recover a story from a different outlet, use **that** URL as `source_url` — it is what you actually read.
+
+5. **Write segments** per the [script template](#script-template) above. Intro (~400 chars), one segment per item (≥600, aim 700–900), outro (~300). **Strict 1:1**: `segment[i]` ↔ `source[i]`, no merging, no reordering. **Report, don't instruct**: never include exploit steps, payloads, working commands, or any procedure an attacker could follow; if a kept item can't be substantive without them, drop it rather than sanitize it.
+
+6. **Self-critique pass** (silent): tighten segments over 900 chars or repetitive. Never reorder, never drop a segment.
+
+7. **Build the manifest** at `/tmp/daily-podcast-<date>/manifest.json` per the [manifest schema](#form-2--pre-built-manifest-manifestjson). Do **not** set `voice_instruct` (`"voice": "house"` resolves to the locked house voice) and do **not** set `show_id` (let `render.py` read it from config).
+
+8. **Run the renderer** at the pinned plugin path. `${CLAUDE_PLUGIN_ROOT}` is set when this runs under a Claude Code plugin; if it is somehow unset, exit immediately with `FAILED CLAUDE_PLUGIN_ROOT unset` — do **not** search the filesystem for `render.py`.
+
+   ```bash
+   python3 "${CLAUDE_PLUGIN_ROOT}/skills/daily-podcast/render.py" \
+     --manifest /tmp/daily-podcast-<date>/manifest.json \
+     --workdir /tmp/daily-podcast-<date>
+   ```
+
+   Always pass a stable per-date `--workdir` — it is what makes a failed run resumable. Never pass `--dry-run` (this is a real episode) and never pass `--skip-preflight`: a pre-flight failure is a real problem reported cheaply, and skipping the gate turns a five-second diagnostic into a wasted render or a destructive prune.
+
+   `render.py` prints a final JSON line on stdout with `status`, `episode_uri`, `voice`, `voice_mode`, `chapter_count`, `duration_s`, `r2_status`, and `resumed`. It updates `covered.json` only on success.
+
+9. **Report once and exit.** Single-line stdout, with the R2 outcome as a trailing `r2=` field (`published`→`ok`, `skipped`→`skipped`, `failed`→`FAILED`):
+
+   ```
+   SHIPPED <episode_uri> - <title> - <chapter_count> chapters - <duration_s>s - r2=ok
+   ```
+
+   `r2=skipped` means R2 isn't configured (benign). `r2=FAILED` means the episode is **live on Spotify** but the web-feed publish errored — still a successful run (exit 0, `covered.json` written). **Never** turn `r2=FAILED` into a `FAILED` line; the run did not fail. On genuine failure:
+
+   ```
+   FAILED <reason>
+   ```
+
+### Unattended failure handling
+
+| Situation | Do |
+| --- | --- |
+| Feed unreachable | skip, note, continue |
+| Fewer than 5 viable items | ship shorter; do not pad |
+| `render.py` non-zero exit | print `FAILED <stderr last line>` — the last stderr line is always the diagnostic |
+| Pre-flight failure | report it; **do not** retry with `--skip-preflight`. The named check is the real problem |
+| Spotify readiness `FAILED` | print `FAILED processing failed for <episode_uri>` — the upload happened, processing didn't |
+| Failure *after* upload (e.g. poll timeout) | re-run the same `--manifest` + `--workdir`. It resumes: skips re-upload, re-runs `timeline set` + poll + dedup, reports `"resumed": true`. Prefer this over re-shipping, which duplicates the episode |
+| `covered.json` malformed | treat as `{}` rather than failing the run |
+| A leftover `inflight.json` | **leave it alone.** Recovery reconciles it automatically and abandons a rejected episode on its own; deleting it by hand is no longer the remedy |
+
+After the run, any non-clean exit leaves a structured report in `~/.config/daily-podcast/incidents/new/`. Mention its path in the `FAILED` line's context if one was written — a report tagged `unclassified` is a failure mode nobody has documented yet.
+
+**Today's date:** resolve via the system, never hardcode. Long form ("May 22, 2026") in the intro, short form ("2026-05-22") in workdir paths.
+
 ## Running the pipeline
 
 Two entry points:
@@ -297,7 +380,7 @@ python3 <skill-dir>/orchestrate.py
 ```
 Final stdout is a single line: `SHIPPED <episode_uri> ...` or `FAILED <reason>`.
 
-`prompts/daily.md` is kept as a deprecated reference for the segment/voice rules and the manifest shape, but is no longer the cron entry point.
+`prompts/daily.md` is a stub: the unattended procedure lives in [Unattended daily run](#unattended-daily-run) so a scheduler has exactly one source of truth to follow.
 
 ### Orchestrator (unattended)
 

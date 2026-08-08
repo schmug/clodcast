@@ -30,7 +30,7 @@ assignees: ""
 <!--
 Boundaries the change must respect. Common ones for this repo:
 - render.py stays single-file; script-shaped logic lives in the skill prose / headless prompt.
-- Keep SKILL.md and prompts/daily.md in sync when the manifest schema or template changes.
+- The unattended run procedure lives only in SKILL.md; prompts/daily.md is a stub.
 - Don't relax the renderer invariants (see CLAUDE.md).
 -->
 

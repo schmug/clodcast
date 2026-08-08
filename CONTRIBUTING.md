@@ -59,7 +59,10 @@ episode is produced:
 
 Two rules that trip people up:
 
-- **Keep SKILL.md and `prompts/daily.md` in sync.** The headless prompt repeats the
+- **Never re-inline the unattended procedure.** It lives only in SKILL.md's
+  "Unattended daily run" section; `prompts/daily.md` is a stub. (Historical note: the
+  old guidance below asked you to keep two copies in sync. They drifted instead.)
+- <!-- superseded --> The headless prompt used to repeat the
   script template inline because it runs without re-reading the skill, but SKILL.md is
   the source of truth — any divergence is a bug.
 - **Don't relax the renderer invariants.** They're subtle (1:1 segment↔source mapping,
