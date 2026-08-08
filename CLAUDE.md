@@ -24,7 +24,7 @@ To exercise the unattended path, run the orchestrator:
 python3 skills/daily-podcast/orchestrate.py --dry-run
 ```
 
-The orchestrator's final stdout is a single line — `SHIPPED <uri> ...` or `FAILED <reason>`. Don't change that contract; schedulers parse it. (`daily.md` is a deprecated reference; the `claude -p "$(cat daily.md)"` form still works but is no longer the cron path.)
+The orchestrator's final stdout is a single line — `SHIPPED <uri> ...` or `FAILED <reason>`. Don't change that contract; schedulers parse it, and SKILL.md's *"Unattended daily run"* section promises the same shape.
 
 ## Architecture: the big picture
 
@@ -32,8 +32,8 @@ Four documents are load-bearing; read all of them before changing behavior:
 
 1. **[skills/daily-podcast/SKILL.md](skills/daily-podcast/SKILL.md)** — the script template, voice rules, chapter-duration guardrail, manifest schema. This is what Claude reads when the skill activates.
 2. **[skills/daily-podcast/render.py](skills/daily-podcast/render.py)** — the manifest → episode driver. Single file, ~590 lines, no internal modules.
-3. **[skills/daily-podcast/orchestrate.py](skills/daily-podcast/orchestrate.py)** — the **unattended entry point** (replaces `claude -p "$(cat daily.md)"`). Pure-Python gather → deterministic metadata-only ranking → one isolated `claude -p` per item → assemble manifest → invoke `render.py`.
-4. **[skills/daily-podcast/prompts/daily.md](skills/daily-podcast/prompts/daily.md)** — **deprecated reference**. Still describes the segment/voice rules and manifest shape, but is no longer the cron entry point. Use `orchestrate.py` for scheduled runs.
+3. **[skills/daily-podcast/orchestrate.py](skills/daily-podcast/orchestrate.py)** — the **self-contained shell entry point**. Pure-Python gather → deterministic metadata-only ranking → one isolated `claude -p` per item → assemble manifest → invoke `render.py`. **Not universally the unattended path:** its child `claude -p` subprocesses need a durable on-disk/env credential, which a Claude-routine scheduler does not provide (see [incidents/auth-failure.md](incidents/auth-failure.md)). Under a Claude routine, the unattended path is the skill itself — SKILL.md's *"Unattended daily run"* section.
+4. **[skills/daily-podcast/prompts/daily.md](skills/daily-podcast/prompts/daily.md)** — a **stub**. The unattended procedure was folded into SKILL.md's *"Unattended daily run"* section so there is exactly one copy; this file only points there.
 
 `render.py` is intentionally "dumb": it consumes a manifest that already has the segments written and only handles TTS, concat, cover, upload, timeline, poll, and dedup-log update. Anything script-shaped (curation, fetching, segment writing, self-critique) lives in the skill prose / headless prompt — i.e., is Claude's job, not the renderer's.
 
@@ -167,4 +167,4 @@ These are diagnostic gotchas, not runtime issues — `render.py` itself works co
 
 - **Keep `render.py` single-file.** It's deliberately not split into a package — the skill ships as a flat directory and the prompt at `prompts/daily.md` resolves its path via `${CLAUDE_PLUGIN_ROOT}/skills/daily-podcast/render.py`. Don't introduce sibling modules without also updating that resolution path.
 - **Comments in `render.py` should explain the *why*, not the *what*.** The existing comments on `HOUSE_VOICE_INSTRUCT`, `TARGET_CHAPTER_MS`, and `LAST_SILENCE_MS` are the model: each captures a constraint or a piece of history that's not obvious from the code.
-- **When you change the manifest schema or the script template, update both [SKILL.md](skills/daily-podcast/SKILL.md) and [prompts/daily.md](skills/daily-podcast/prompts/daily.md).** The headless prompt repeats the template inline because it runs without re-reading the skill — but the skill is still source of truth, so any divergence is a bug.
+- **The unattended run procedure has exactly ONE home: SKILL.md's *"Unattended daily run"* section.** `prompts/daily.md` is a stub that points there, and a scheduler's prompt must be a *trigger* ("invoke the skill, follow that section"), never a copy of the steps. This rule exists because three copies drifted and production silently ran a months-old fork missing the content-policy guidance, the `${CLAUDE_PLUGIN_ROOT}` pinning, and the `r2=` reporting field. A test (`test_daily_prompt_stays_a_stub`) fails if the stub starts re-inlining the procedure. Never "helpfully" re-inline it for self-containment.

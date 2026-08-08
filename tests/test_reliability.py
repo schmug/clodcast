@@ -916,3 +916,39 @@ def test_last_stderr_line_is_the_diagnostic_not_the_incident_path(monkeypatch, t
         f"last stderr line must be the diagnostic, got: {stderr_lines[-1]!r}"
     )
     assert "incident report written" not in stderr_lines[-1]
+
+
+# --- prompt deduplication --------------------------------------------------
+#
+# Three copies of the unattended run procedure drifted, and production silently
+# ran a months-old fork missing the content-policy guidance. These tests make the
+# procedure's single home structural rather than a convention nobody can see.
+
+
+def _repo_root() -> Path:
+    return Path(render.__file__).resolve().parent.parent.parent
+
+
+def test_unattended_procedure_lives_in_skill_md():
+    skill = (_repo_root() / "skills" / "daily-podcast" / "SKILL.md").read_text()
+
+    assert "## Unattended daily run" in skill
+    # The load-bearing pieces the stale production fork was missing.
+    assert "reproducing attack methodology" in skill, "content-policy guidance"
+    assert "CLAUDE_PLUGIN_ROOT unset" in skill, "fail-fast instead of filesystem search"
+    assert "r2=" in skill, "R2 reporting field"
+    assert "resumed" in skill, "resume-after-upload-failure guidance"
+
+
+def test_daily_prompt_stays_a_stub():
+    """prompts/daily.md must point at SKILL.md, never re-inline the procedure.
+
+    Re-inlining is how the fork happened the first time, and it is the kind of
+    'helpful' edit that looks like an improvement in isolation."""
+    stub = (_repo_root() / "skills" / "daily-podcast" / "prompts" / "daily.md").read_text()
+
+    assert "SKILL.md" in stub, "the stub must point at the canonical home"
+    # Signatures of the full procedure. Their presence means it got re-inlined.
+    for marker in ("Gather candidate items from OPML", "Build manifest at", "Self-critique pass"):
+        assert marker not in stub, f"prompts/daily.md re-inlined the procedure: {marker!r}"
+    assert len(stub.splitlines()) < 80, "stub grew back into a full prompt"

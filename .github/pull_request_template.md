@@ -45,4 +45,4 @@ last-chapter math, mono 44.1k). Note "none — pure new files / docs only" if so
 <!-- Check if the manifest schema or script template changed. -->
 
 - [ ] N/A — no schema/template change
-- [ ] Updated `skills/daily-podcast/SKILL.md` and `skills/daily-podcast/prompts/daily.md` together
+- [ ] Updated `skills/daily-podcast/SKILL.md` (the unattended procedure lives there only — do not re-inline it into `prompts/daily.md` or a scheduler prompt)
