@@ -4,6 +4,18 @@ name: release-please
 # single "release PR" with the next version (derived from conventional commits)
 # + the CHANGELOG entry. Merging that PR cuts the vX.Y.Z tag + GitHub Release.
 # This replaces the old manual release.yml — never push to main directly.
+#
+# KNOWN LIMITATION (#76): the default GITHUB_TOKEN below cannot trigger other
+# workflows, so the pull_request-triggered CI checks that main's protection
+# requires never start on a fresh release PR — it sits BLOCKED with the
+# lint-and-test checks stuck at "Expected".
+# MANUAL FALLBACK (verified on PR #86, 2026-08-08): close and reopen the
+# release PR. The reopen re-fires `pull_request` as the person who clicked,
+# CI runs, and once green the PR merges through the gate normally. ("Re-run
+# all jobs" in the Actions tab also works when a CI run already exists.)
+# This fallback needs no admin bypass, so it keeps working after the gate
+# binds admins (#87). Never bypass or weaken branch protection to unblock a
+# release — the durable fix (a token that can trigger workflows) is #76.
 on:
   push:
     branches: [main]
