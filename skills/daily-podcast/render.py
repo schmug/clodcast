@@ -46,6 +46,7 @@ import os
 import random
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -90,6 +91,21 @@ TARGET_CHAPTER_MS = 30_500  # 30s + buffer; Spotify rejects <30s strict
 MAX_SHORT_CHAPTERS = 3
 DEFAULT_SILENCE_MS = 800
 LAST_SILENCE_MS = 0  # no silence after the final segment
+# TTS speech-rate outlier gate. render.py samples Qwen3-TTS with mlx-audio's
+# defaults (no seed, temperature, or repetition penalty), and it occasionally
+# degenerates mid-segment into looping babble: on 2026-08-17 segment 6 of
+# spotify:episode:3Vtw1gRMf33G0QetyjyFl8 read 1017 chars in 92.16s instead of
+# ~55s, leaving 55% of that chapter's script unspoken. Degeneration only ever
+# makes a segment SLOWER (extra audio for the same text), so the check is
+# one-sided — a high-side bound would just false-positive on terse writing.
+# On that episode the clean body segments measured 0.94-1.06x the median rate
+# and the failure 0.59x, so 0.75 separates them with wide margin either way.
+MIN_SPEECH_RATE_RATIO = 0.75
+# A median needs a population. With only a handful of body segments one bad
+# render *is* the median (or half of it), so below this floor the check is
+# skipped rather than guessed at — same no-data-loss posture as the covered.json
+# date pruning. The daily episode carries ~10 body segments, well clear of this.
+MIN_RATE_SAMPLE_SEGMENTS = 5
 # Spotify caps an episode description at 4000 characters (Spotify Web API
 # `description`/`html_description` field; same limit surfaces in Spotify for
 # Podcasters episode show notes). Past the cap the upload silently truncates or
@@ -2470,8 +2486,53 @@ def record_rejection(mp3: Path, *, episode_uri: str, profile: dict[str, Any], re
         log(f"warn: could not append {REJECTIONS_PATH}: {e}")
 
 
+def speech_rate_problems(segments: list[dict], seg_paths: list[Path]) -> list[str]:
+    """Flag body segments whose speech rate is a low outlier against the median.
+
+    Only segments with a `source_url` count: the intro and sign-off are short and
+    legitimately slower (16.5 / 16.9 c/s against an 18.4 median on 2026-08-17), so
+    they neither join the population nor get judged by it. The median — not the
+    mean — is the reference precisely because the outlier being detected drags a
+    mean down toward itself.
+
+    Durations come from mp3_duration_ms, the same per-segment measurement
+    plan_silences and build_timeline_and_description already use, so this adds no
+    second measurement path, no network call, and no model load."""
+    rates: list[tuple[int, float]] = []
+    for i, seg in enumerate(segments[: len(seg_paths)]):
+        if not seg.get("source_url"):
+            continue
+        chars = len(seg.get("text") or "")
+        duration_ms = mp3_duration_ms(seg_paths[i])
+        if chars <= 0 or duration_ms <= 0:
+            continue  # unmeasurable: no evidence of a defect, so don't invent one
+        rates.append((i + 1, chars / (duration_ms / 1000)))
+
+    if len(rates) < MIN_RATE_SAMPLE_SEGMENTS:
+        return []
+    median = statistics.median(rate for _, rate in rates)
+    if median <= 0:
+        return []
+
+    floor = median * MIN_SPEECH_RATE_RATIO
+    return [
+        f"segment {number} speech rate {rate:.1f} chars/sec is {rate / median:.2f}x the "
+        f"{median:.1f} chars/sec median (floor {MIN_SPEECH_RATE_RATIO:.2f}x) — the TTS "
+        "model likely degenerated mid-segment and left part of the script unspoken; "
+        "re-render it (delete that seg_NN.mp3 from the workdir and re-run) before shipping"
+        for number, rate in rates
+        if rate < floor
+    ]
+
+
 def verify_artifact(
-    mp3: Path, timeline: dict[str, Any], *, duration_ms: int, profile: dict[str, Any]
+    mp3: Path,
+    timeline: dict[str, Any],
+    *,
+    duration_ms: int,
+    profile: dict[str, Any],
+    segments: list[dict] | None = None,
+    seg_paths: list[Path] | None = None,
 ) -> list[str]:
     """Local conformance gate, run after render and before upload. Returns a list of
     human-readable problems (empty == good).
@@ -2481,7 +2542,14 @@ def verify_artifact(
     rejection — nothing local does. It catches render regressions, and it refuses a
     byte-identical retry of an artifact Spotify already rejected, which is the one
     thing the incident actually proved (and which is destructive now that a retry
-    prunes a published episode to free a cap slot)."""
+    prunes a published episode to free a cap slot).
+
+    Since 2026-08-17 it also catches one *content* defect: a segment the TTS model
+    garbled into looping babble, spotted as a speech-rate outlier. That is a
+    statistical smell, not a transcript check — it catches the gross derailment that
+    shipped, and would miss a short mangled phrase that barely moves the rate.
+    `segments`/`seg_paths` stay optional so a caller with no per-segment view still
+    gets everything above."""
     errors: list[str] = []
 
     try:
@@ -2521,6 +2589,9 @@ def verify_artifact(
                 f"{short} short chapter(s) under 30s (Spotify rejects more than "
                 f"{MAX_SHORT_CHAPTERS}); the script needs rewriting, not more padding"
             )
+
+    if segments is not None and seg_paths is not None:
+        errors.extend(speech_rate_problems(segments, seg_paths))
     return errors
 
 
@@ -2819,6 +2890,7 @@ _INCIDENT_SIGNATURES: tuple[tuple[str, str], ...] = (
     ("authentication", "auth-failure"),
     ("preflight failed", "preflight-failed"),
     ("previously rejected", "rejected-artifact"),
+    ("speech rate", "tts-degeneration"),
     ("manifest", "manifest-invalid"),
 )
 
@@ -3162,6 +3234,8 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
         timeline,
         duration_ms=episode_duration_ms,
         profile=probe_audio_profile(episode_mp3),
+        segments=segments,
+        seg_paths=seg_paths,
     )
     if artifact_errors:
         die("artifact gate failed: " + "; ".join(artifact_errors))

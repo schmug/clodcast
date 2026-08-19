@@ -21,6 +21,7 @@ Everything here traces to a real run. Nothing is hypothetical.
 | [connection-drop.md](connection-drop.md) | Run dies mid-flight (SIGTERM, dropped connection, crash) | ✅ resumable |
 | [r2-skip-on-resume.md](r2-skip-on-resume.md) | Recovered episode silently misses the web feed | ✅ prevented |
 | [rejected-artifact.md](rejected-artifact.md) | A known-bad mp3 is re-uploaded and rejected again | ✅ blocked |
+| [tts-degeneration.md](tts-degeneration.md) | A segment derails into looping babble; most of its script is never spoken | ⚠️ blocked pre-upload |
 | [webfetch-blocked-source.md](webfetch-blocked-source.md) | An outlet can't be fetched for an article body | ⚠️ surfaced |
 | [auth-failure.md](auth-failure.md) | Child `claude -p` has no credential under a scheduler | ❌ human |
 

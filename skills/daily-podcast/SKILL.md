@@ -466,6 +466,18 @@ inside the duration — and refuses to upload an artifact whose sha256 is in
 `rejections.jsonl` (Spotify rejected those exact bytes before; retrying costs a
 pruned episode). It runs under `--dry-run` too, so a rehearsal is a real rehearsal.
 
+It also rejects a **TTS-degenerated segment**: each body segment's chars/sec is
+compared against the median across body segments, and anything under
+`MIN_SPEECH_RATE_RATIO` (0.75x) fails the gate. Qwen3-TTS occasionally derails
+into looping babble mid-segment, which leaves most of that chapter's script
+unspoken while every structural check still passes (see
+[incidents/tts-degeneration.md](../../incidents/tts-degeneration.md)). Intro and
+sign-off are excluded — they are short and legitimately slower — and the check is
+skipped below `MIN_RATE_SAMPLE_SEGMENTS` body segments, where a median means
+nothing. Fix by deleting the flagged `seg_NN.mp3` and re-running: the per-segment
+cache re-renders only that one, and the failure is stochastic, so a retry
+normally comes back clean.
+
 ### Durable state + resume
 
 The auto workdir is `<tmpdir>/daily-podcast-<date>` — **deterministic**, so an
