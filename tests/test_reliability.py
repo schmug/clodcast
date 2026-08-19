@@ -821,8 +821,11 @@ def test_dry_run_exercises_the_artifact_gate(monkeypatch, tmp_path):
     _isolate_config(monkeypatch, tmp_path)
     called = {}
 
-    def fake_verify(mp3, timeline, *, duration_ms, profile):
+    def fake_verify(mp3, timeline, *, duration_ms, profile, segments=None, seg_paths=None):
         called["ran"] = True
+        # The speech-rate check needs the per-segment view; a rehearsal that
+        # withheld it would silently skip that half of the gate.
+        called["saw_segments"] = segments is not None and seg_paths is not None
         return ["synthetic gate failure"]
 
     monkeypatch.setattr(render, "verify_artifact", fake_verify)
@@ -855,6 +858,7 @@ def test_dry_run_exercises_the_artifact_gate(monkeypatch, tmp_path):
         render.main()
 
     assert called.get("ran") is True
+    assert called.get("saw_segments") is True
     assert e.value.code != 0
 
 
@@ -952,3 +956,130 @@ def test_daily_prompt_stays_a_stub():
     for marker in ("Gather candidate items from OPML", "Build manifest at", "Self-critique pass"):
         assert marker not in stub, f"prompts/daily.md re-inlined the procedure: {marker!r}"
     assert len(stub.splitlines()) < 80, "stub grew back into a full prompt"
+
+
+# --- TTS speech-rate outlier gate (2026-08-17 degeneration) -----------------
+#
+# Measured chars/sec on the body segments of the shipped episode
+# spotify:episode:3Vtw1gRMf33G0QetyjyFl8. Segment 6 degenerated into looping
+# babble: 1017 chars rendered to 92.16s instead of ~55s, and 55% of its script
+# was never spoken. Everything else in the run was clean.
+_INCIDENT_BODY_RATES = [18.2, 17.3, 18.1, 19.5, 10.9, 18.6, 18.5, 18.8, 18.5, 18.4]
+_INCIDENT_BODY_RATES_FIXED = list(_INCIDENT_BODY_RATES)
+_INCIDENT_BODY_RATES_FIXED[4] = 18.5  # segment 6 after a clean re-render
+
+
+def _rate_fixture(
+    tmp_path: Path,
+    monkeypatch,
+    body_rates: list[float],
+    *,
+    intro_rate: float = 16.5,
+    signoff_rate: float = 16.9,
+    chars: int = 1000,
+) -> tuple[list[dict], list[Path]]:
+    """Build (segments, seg_paths) whose measured chars/sec match `body_rates`.
+
+    Intro and sign-off carry `source_url: None` — that is what marks a segment as
+    non-body, exactly as a real manifest does.
+    """
+    segments: list[dict] = []
+    paths: list[Path] = []
+    durations: dict[Path, int] = {}
+
+    def add(rate: float, url: str | None) -> None:
+        path = _mp3(tmp_path / f"seg_{len(segments) + 1:02d}.mp3")
+        durations[path] = int(round(chars / rate * 1000))
+        segments.append({"text": "x" * chars, "source_url": url})
+        paths.append(path)
+
+    add(intro_rate, None)
+    for i, rate in enumerate(body_rates):
+        add(rate, f"https://example.com/{i}")
+    add(signoff_rate, None)
+
+    monkeypatch.setattr(render, "mp3_duration_ms", lambda p: durations[Path(p)])
+    return segments, paths
+
+
+def _rate_errors(monkeypatch, tmp_path, segments, seg_paths) -> list[str]:
+    _isolate_config(monkeypatch, tmp_path)
+    return render.verify_artifact(
+        _mp3(tmp_path / "episode.mp3"),
+        _timeline([0]),
+        duration_ms=600_000,
+        profile={"codec_name": "mp3", "channels": 1, "sample_rate": 44100},
+        segments=segments,
+        seg_paths=seg_paths,
+    )
+
+
+def test_verify_artifact_rejects_a_tts_degenerated_segment(monkeypatch, tmp_path):
+    """The 08-17 incident: segment 6 read at 0.59x the median rate because the
+    model derailed into babble, and the gate shipped it anyway."""
+    segments, seg_paths = _rate_fixture(tmp_path, monkeypatch, _INCIDENT_BODY_RATES)
+
+    errors = _rate_errors(monkeypatch, tmp_path, segments, seg_paths)
+
+    rate_errors = [e for e in errors if "speech rate" in e]
+    assert len(rate_errors) == 1, errors
+    message = rate_errors[0]
+    assert "segment 6" in message, message  # 1-based, matching the render log
+    assert "10.9" in message, message  # its measured chars/sec
+    assert "18.4" in message, message  # the median it is compared against
+
+
+def test_verify_artifact_accepts_the_re_rendered_episode(monkeypatch, tmp_path):
+    """After the clean re-render segment 6 measured 18.5 c/s (ratio 1.00); every
+    other segment is unchanged and none of them may be flagged either."""
+    segments, seg_paths = _rate_fixture(tmp_path, monkeypatch, _INCIDENT_BODY_RATES_FIXED)
+
+    assert _rate_errors(monkeypatch, tmp_path, segments, seg_paths) == []
+
+
+def test_speech_rate_check_excludes_intro_and_signoff(monkeypatch, tmp_path):
+    """Intro and sign-off are short and legitimately slower, so they neither join
+    the median population nor get flagged by it."""
+    segments, seg_paths = _rate_fixture(
+        tmp_path,
+        monkeypatch,
+        _INCIDENT_BODY_RATES_FIXED,
+        intro_rate=11.0,  # would be a 0.60 outlier if it were a body segment
+        signoff_rate=11.0,
+    )
+
+    assert _rate_errors(monkeypatch, tmp_path, segments, seg_paths) == []
+
+
+def test_speech_rate_check_is_skipped_on_too_few_body_segments(monkeypatch, tmp_path):
+    """Below the floor a single bad render *is* the median, so guessing is worse
+    than not checking — skip, never fail."""
+    rates = [18.5] * (render.MIN_RATE_SAMPLE_SEGMENTS - 1)
+    rates[0] = 5.0  # blatant outlier, but there is no population to judge it against
+    segments, seg_paths = _rate_fixture(tmp_path, monkeypatch, rates)
+
+    assert _rate_errors(monkeypatch, tmp_path, segments, seg_paths) == []
+
+
+def test_speech_rate_check_is_skipped_when_segments_are_not_supplied(monkeypatch, tmp_path):
+    """The existing callers (and the existing tests) pass no segments; the gate
+    must keep its old behaviour rather than blow up."""
+    _isolate_config(monkeypatch, tmp_path)
+
+    errors = render.verify_artifact(
+        _mp3(tmp_path / "episode.mp3"),
+        _timeline([0, 40_000]),
+        duration_ms=80_000,
+        profile={"codec_name": "mp3", "channels": 1, "sample_rate": 44100},
+    )
+
+    assert errors == []
+
+
+def test_speech_rate_failure_classifies_as_a_tts_degeneration_incident():
+    assert (
+        render.classify_incident(
+            "artifact gate failed: segment 6 speech rate 10.9 chars/sec is 0.59x the median"
+        )
+        == "tts-degeneration"
+    )
