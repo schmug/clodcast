@@ -265,6 +265,11 @@ def _first_json_line(text: str) -> Any | None:
 # NESTED STRING, not an object (verified against 0.1.1, 2026-07-18):
 #   {"error": "API error (429): {\"error_code\":\"RATE_LIMIT_EXCEEDED\",
 #              \"reason\":\"capacity\",\"message\":\"You've reached the episode limit...\"}"}
+# The `API error (<code>): <body>` wrapper is unchanged on 0.2.0 (re-confirmed
+# 2026-08-22 against a live 401, which yields the body-less `{"error":"API error
+# (401): "}` and correctly falls through to the outer-string branch below). The cap
+# 429's inner payload was NOT re-observed on 0.2.0 — provoking one needs a real
+# upload against a full show, which prunes a published episode.
 # So recovering error_code/reason/message is two stages: parse the outer object, then
 # strip the `API error (<code>): ` prefix off data["error"] and parse the remainder.
 # Writing data["error"]["error_code"] would raise TypeError — always go through here.
@@ -315,6 +320,18 @@ def _command_failed_message(cmd: list[str], stdout: str, stderr: str) -> str:
             detail = f"[{tag}] {detail}".rstrip()
         return f"command failed: {' '.join(cmd)}\n{detail}"
     return f"command failed: {' '.join(cmd)}\nstderr: {stderr}"
+
+
+# Detail line for a failed `save-to-spotify --json shows` auth probe. Prefers the
+# structured error on STDOUT because since 0.2.0 the CLI writes a
+# `<claude-code-hint .../>` plugin advert to STDERR on EVERY invocation, failures
+# included — reporting stderr verbatim turned an expired-token pre-flight into an
+# advert with no 401 anywhere in it. stderr is still the fallback for a crash that
+# dies before the JSON payload is written.
+def _shows_failure_detail(proc: subprocess.CompletedProcess) -> str:
+    parsed = parse_s2s_error(proc.stdout or "")
+    detail = (parsed or {}).get("message") or (proc.stderr or "").strip()
+    return f"`shows` exited {proc.returncode}: {detail[:200]}"
 
 
 def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
@@ -1481,7 +1498,8 @@ def upload(
 
 def _parse_upload_result(stdout: str) -> str:
     """episode_uri from a successful upload. The success payload is single-line JSON
-    (json.loads over the whole stream has worked since 0.1.1); keep that parse."""
+    (json.loads over the whole stream has worked from 0.1.1 through 0.2.0, the latter
+    re-checked 2026-08-22 against a throwaway show); keep that parse."""
     data = json.loads(stdout)
     if "error" in data:
         die(f"upload error: {data['error']}")
@@ -2274,13 +2292,7 @@ def run_selftest(load_model: bool = False) -> int:
             timeout=30,
         )
         if proc.returncode != 0:
-            checks.append(
-                _check(
-                    "save-to-spotify-auth",
-                    False,
-                    f"`shows` exited {proc.returncode}: {(proc.stderr or '').strip()[:200]}",
-                )
-            )
+            checks.append(_check("save-to-spotify-auth", False, _shows_failure_detail(proc)))
         else:
             try:
                 json.loads(proc.stdout)
@@ -2857,11 +2869,7 @@ def _spotify_auth_check() -> dict[str, Any]:
     except subprocess.TimeoutExpired:
         return _check("save-to-spotify-auth", False, "shows timed out (auth/network?)")
     if proc.returncode != 0:
-        return _check(
-            "save-to-spotify-auth",
-            False,
-            f"`shows` exited {proc.returncode}: {(proc.stderr or '').strip()[:200]}",
-        )
+        return _check("save-to-spotify-auth", False, _shows_failure_detail(proc))
     try:
         json.loads(proc.stdout)
     except json.JSONDecodeError:

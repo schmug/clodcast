@@ -155,13 +155,14 @@ Hard requirements that must be present on the host (not pip-installable workarou
 - Apple Silicon Mac (the cover uses `/System/Library/Fonts/Supplemental/Futura.ttc` directly; Qwen3-TTS via MLX needs Metal). The Futura path is a portability hazard — if you ever move this off macOS, change `build_cover`'s font resolution before anything else.
 - Python 3.10+ with `mlx-audio`, `soundfile`, `mutagen`, `Pillow`. The headless prompt additionally needs `feedparser` (it self-installs if missing).
 
-### `save-to-spotify` 0.1.1 quirks (verified 2026-05-23)
+### `save-to-spotify` 0.2.0 quirks (verified 2026-08-22)
 
-These are diagnostic gotchas, not runtime issues — `render.py` itself works correctly against this CLI. They mainly affect humans verifying server state.
+Diagnostic gotchas, not runtime issues — `render.py` works correctly against this CLI. They mainly cost time when a human or agent is verifying server state by hand. Upgrade in place with `save-to-spotify update` (the binary lives at `~/.local/bin/save-to-spotify`, installed by the upstream curl-bash script; it self-downloads the darwin-arm64 zip and checksum-verifies).
 
-- **`timeline get --episode-id <id>` returns a spurious `RESOURCE_NOT_FOUND` 404** even when the timeline exists. Use the positional form to inspect server state: `save-to-spotify --json timeline get <episode_id> --show-id <show_id>`. The positional form returns the full timeline including `link` companions.
+- **`timeline get` takes the episode id POSITIONALLY and has no `--episode-id` flag** — unlike `timeline set`, which requires one. Passing `--episode-id` to `get` makes the CLI swallow the flag token as the id and look up an episode literally named `--episode-id`, so you get a misleading `API error (404): RESOURCE_NOT_FOUND / "The specified episode was not found"` (exit 1) against an episode that exists. Without `--show-id` the same mistake surfaces honestly as `episode --episode-id not found in any of your shows`. Correct form: `save-to-spotify --json timeline get <episode_id> --show-id <show_id>`.
+- **`timeline get` no longer echoes link URLs.** Since 0.1.2 (upstream #9) a `link` item comes back as `{"companion_uri": "time-synced:companion-external-link:<sha256>", "start_time_ms", "duration_ms"}` — the `url` you set is gone. You can confirm a link exists and when it fires, but you cannot read its destination back off the server; compare against the `timeline.json` in the run's workdir instead. This is the constraint to work around when debugging #25.
 - **`--json timeline set` returns `{"items":[]}` even on success.** The items aren't echoed back; verify via `timeline get` (positional form) instead. `render.py` only checks for the `error` key, so this doesn't break the pipeline.
-- **The passive update check advertises a sentinel `9.9.9` release that doesn't exist.** `save-to-spotify update` correctly reports "Already up to date (0.1.1)". Set `SAVE_TO_SPOTIFY_NO_UPDATE_CHECK=1` to silence the nag.
+- **Every invocation writes a `<claude-code-hint v="1" type="plugin" .../>` line to STDERR**, on success and on failure alike. Errors still go to STDOUT as JSON, so stderr is now boilerplate rather than a diagnostic: never report a save-to-spotify stderr verbatim as the cause of a failure. `_shows_failure_detail` and `_command_failed_message` both prefer the stdout payload for this reason — an expired token surfaces as `` `shows` exited 1: API error (401): ``, not as the plugin advert. This also retires the "transient upload failure has EMPTY stderr" tell: stderr is never empty any more.
 
 ## Editing conventions specific to this repo
 

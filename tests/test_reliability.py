@@ -329,6 +329,25 @@ def test_preflight_dry_run_skips_spotify_calls(monkeypatch, tmp_path):
 # --- artifact gate (failure mode 1) ----------------------------------------
 
 
+def test_preflight_auth_check_reports_the_api_error_not_the_stderr_hint(monkeypatch):
+    """Same v0.2.0 stderr-hint trap as the selftest probe, on the pre-flight seam:
+    the 401 lives on stdout, so preferring stderr hides the only useful detail."""
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd,
+            1,
+            stdout='{"error":"API error (401): "}',
+            stderr='<claude-code-hint v="1" type="plugin" value="save-to-spotify@x" />',
+        )
+
+    monkeypatch.setattr(render.subprocess, "run", fake_run)
+    check = render._spotify_auth_check()
+    assert check["ok"] is False
+    assert "API error (401)" in check["detail"]
+    assert "claude-code-hint" not in check["detail"]
+
+
 def test_artifact_fingerprint_is_content_addressed(tmp_path):
     a = _mp3(tmp_path / "a.mp3", b"same-bytes")
     b = _mp3(tmp_path / "b.mp3", b"same-bytes")

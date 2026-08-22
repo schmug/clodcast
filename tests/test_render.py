@@ -1421,14 +1421,22 @@ def test_prune_workdirs_noop_when_base_missing(tmp_path, monkeypatch):
 # --- run_selftest (#21) ---------------------------------------------------
 
 
-def _selftest_env(monkeypatch, tmp_path, *, shows_rc=0, shows_out='{"shows":[]}', config=True):
+def _selftest_env(
+    monkeypatch,
+    tmp_path,
+    *,
+    shows_rc=0,
+    shows_out='{"shows":[]}',
+    shows_err="",
+    config=True,
+):
     """Wire selftest's external seams to a healthy default; callers flip one to fail."""
     monkeypatch.setattr(render.shutil, "which", lambda tool: f"/usr/bin/{tool}")
 
     def fake_subprocess_run(cmd, **kwargs):
         import subprocess as _sp
 
-        return _sp.CompletedProcess(cmd, shows_rc, stdout=shows_out, stderr="")
+        return _sp.CompletedProcess(cmd, shows_rc, stdout=shows_out, stderr=shows_err)
 
     monkeypatch.setattr(render.subprocess, "run", fake_subprocess_run)
 
@@ -1469,6 +1477,40 @@ def test_selftest_fails_when_auth_expired(tmp_path, monkeypatch, capsys):
     auth = next(c for c in summary["checks"] if c["name"] == "save-to-spotify-auth")
     assert auth["ok"] is False
     assert "exited 1" in auth["detail"]
+
+
+def test_selftest_auth_failure_reports_the_api_error_not_the_stderr_hint(
+    tmp_path, monkeypatch, capsys
+):
+    """save-to-spotify 0.2.0 writes a `<claude-code-hint .../>` line to stderr on EVERY
+    invocation, including failures, while the real cause stays on stdout. Reporting
+    stderr verbatim turned an expired-token selftest into a plugin advert with no 401
+    in it — the diagnostic must prefer the structured stdout error."""
+    _selftest_env(
+        monkeypatch,
+        tmp_path,
+        shows_rc=1,
+        shows_out='{"error":"API error (401): "}',
+        shows_err='<claude-code-hint v="1" type="plugin" value="save-to-spotify@x" />',
+    )
+    assert render.run_selftest() == 1
+    checks = json.loads(capsys.readouterr().out)["checks"]
+    detail = next(c for c in checks if c["name"] == "save-to-spotify-auth")["detail"]
+    assert "API error (401)" in detail
+    assert "claude-code-hint" not in detail
+
+
+def test_selftest_auth_failure_falls_back_to_stderr_when_stdout_has_no_json(
+    tmp_path, monkeypatch, capsys
+):
+    """A crash before the CLI emits its JSON payload has nothing on stdout to prefer,
+    so stderr is still the best available detail."""
+    _selftest_env(monkeypatch, tmp_path, shows_rc=2, shows_out="", shows_err="segfault")
+    assert render.run_selftest() == 1
+    checks = json.loads(capsys.readouterr().out)["checks"]
+    detail = next(c for c in checks if c["name"] == "save-to-spotify-auth")["detail"]
+    assert "exited 2" in detail
+    assert "segfault" in detail
 
 
 def test_selftest_fails_when_config_missing_show_id(tmp_path, monkeypatch, capsys):
