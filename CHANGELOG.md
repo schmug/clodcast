@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 This file is generated from conventional commits by [git-cliff](https://git-cliff.org).
 
+## [0.1.4](https://github.com/schmug/clodcast/compare/v0.1.3...v0.1.4) (2026-08-22)
+
+
+### Features
+
+* **gate:** reject TTS-degenerated segments via speech-rate outlier check ([#90](https://github.com/schmug/clodcast/issues/90)) ([cf7b50e](https://github.com/schmug/clodcast/commit/cf7b50e82ba63c3b95d57fb2e1e1ac65b0d535ba))
+
+
+### Bug Fixes
+
+* **render:** drop the obsolete sub-30s chapter cap and its silence padding ([#101](https://github.com/schmug/clodcast/issues/101)) ([0abfce0](https://github.com/schmug/clodcast/commit/0abfce08abc2e4606eabccf23591c0f54dabaef2)), closes [#99](https://github.com/schmug/clodcast/issues/99)
+
 ## [0.1.3](https://github.com/schmug/clodcast/compare/v0.1.2...v0.1.3) (2026-08-08)
 
 
