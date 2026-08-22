@@ -52,8 +52,10 @@ PER_FEED_CAP = 3  # at most this many items from one feed in the ranked set
 VARIETY_DAYS = 3  # penalize feeds used within this many days (daily.md priority 3)
 CONCURRENCY_DEFAULT = 3  # parallel claude -p calls (wide fan-out trips a rate-limit nag)
 SUMMARIZE_TIMEOUT_S = 150  # per-item claude -p wall clock
-# Below this a chapter risks render's "max 3 chapters under 30s" limit; drop the one
-# item (REFUSED) instead of letting a short segment fail the whole episode.
+# Editorial floor, not a platform one: Spotify's sub-30s chapter cap was removed
+# upstream (save-to-spotify PR #44, verified 2026-08-22), so a short segment no
+# longer endangers the episode. A sub-500-char item still reads as filler next to
+# its neighbours, so drop the one item (REFUSED) rather than ship a stub chapter.
 MIN_SEGMENT_CHARS = 500
 
 # Source tiers (daily.md priority 1: original reporting/analysis > aggregators).
@@ -316,8 +318,8 @@ def classify_output(stdout: str, stderr: str, returncode: int) -> dict:
     if isinstance(obj, dict) and obj.get("ok") is True and str(obj.get("segment", "")).strip():
         seg = obj["segment"].strip()
         if len(seg) < MIN_SEGMENT_CHARS:
-            # A short segment becomes a <30s chapter and can trip render's short-chapter
-            # limit, failing the whole episode. Drop this one item instead.
+            # Too thin to be worth a chapter of its own (see MIN_SEGMENT_CHARS).
+            # Drop this one item; the rest of the episode still ships.
             return {
                 "outcome": "REFUSED",
                 "segment": None,

@@ -219,8 +219,8 @@ def test_classify_ok():
 
 
 def test_classify_short_segment_is_refused():
-    # Too-short (sub-MIN_SEGMENT_CHARS) segment drops the one item instead of risking
-    # render's "max 3 chapters under 30s" limit failing the whole episode.
+    # Too-short (sub-MIN_SEGMENT_CHARS) segment drops the one item rather than
+    # shipping a stub chapter. Editorial floor, not a platform limit.
     out = json.dumps({"ok": True, "segment": "x" * 200})
     r = orchestrate.classify_output(out, "", 0)
     assert r["outcome"] == "REFUSED" and "too short" in r["detail"]

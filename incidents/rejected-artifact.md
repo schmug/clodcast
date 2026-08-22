@@ -42,7 +42,10 @@ The log is append-only and tolerates corrupt lines (a malformed entry is skipped
 never blocks a legitimate ship).
 
 The gate also runs a **local conformance check** — encoder profile, monotonic
-chapter starts, sub-30 s chapter count, last chapter inside the duration. To be
+chapter starts, the 5 s minimum gap between consecutive chapter starts, last
+chapter inside the duration. (Until 2026-08-22 it also counted sub-30 s chapters
+against a max of 3; upstream removed that platform rule, so the gate no longer
+checks it.) To be
 explicit about scope: none of those would have caught the 2026-08-08 artifact.
 They guard render regressions; only the fingerprint blocklist addresses this
 incident, and only by refusing the retry.

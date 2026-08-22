@@ -455,11 +455,16 @@ def test_verify_artifact_rejects_non_monotonic_chapters(monkeypatch, tmp_path):
     assert any("monotonic" in e for e in errors)
 
 
-def test_verify_artifact_rejects_too_many_short_chapters(monkeypatch, tmp_path):
-    """Spotify rejects timelines with more than MAX_SHORT_CHAPTERS sub-30s chapters."""
+def test_verify_artifact_accepts_many_short_chapters(monkeypatch, tmp_path):
+    """Sub-30 s chapters are no longer a rejection reason.
+
+    Verified 2026-08-22 against save-to-spotify 0.2.0: an episode whose timeline
+    carried 11 of 12 chapters under 30 s was accepted by `timeline set` and
+    processed to READY (upstream PR #44 dropped the cap).
+    """
     _isolate_config(monkeypatch, tmp_path)
     mp3 = _mp3(tmp_path / "episode.mp3")
-    starts = [0, 5_000, 10_000, 15_000, 20_000, 100_000]
+    starts = [0, 6_000, 12_000, 18_000, 24_000, 100_000]
 
     errors = render.verify_artifact(
         mp3,
@@ -468,7 +473,43 @@ def test_verify_artifact_rejects_too_many_short_chapters(monkeypatch, tmp_path):
         profile={"codec_name": "mp3", "channels": 1, "sample_rate": 44100},
     )
 
-    assert any("short chapter" in e for e in errors)
+    assert errors == []
+
+
+def test_verify_artifact_rejects_chapters_closer_than_five_seconds(monkeypatch, tmp_path):
+    """The surviving platform rule: consecutive chapter starts >= 5 s apart.
+
+    Control, same CLI and episode: a 3 s gap returned
+    "chapter at index 0 must be at least 5s long (found 3000ms between start times)".
+    """
+    _isolate_config(monkeypatch, tmp_path)
+    mp3 = _mp3(tmp_path / "episode.mp3")
+    starts = [0, 3_000, 30_000, 60_000]
+
+    errors = render.verify_artifact(
+        mp3,
+        _timeline(starts),
+        duration_ms=130_000,
+        profile={"codec_name": "mp3", "channels": 1, "sample_rate": 44100},
+    )
+
+    assert any("5" in e and "apart" in e for e in errors)
+
+
+def test_verify_artifact_exempts_the_final_chapter_from_the_gap_rule(monkeypatch, tmp_path):
+    """Upstream checks gaps between chapter *starts*, so a final chapter running
+    less than 5 s to the end of the episode is legal (v0.2.0 cmd/timeline.go:436)."""
+    _isolate_config(monkeypatch, tmp_path)
+    mp3 = _mp3(tmp_path / "episode.mp3")
+
+    errors = render.verify_artifact(
+        mp3,
+        _timeline([0, 30_000, 60_000]),
+        duration_ms=62_000,
+        profile={"codec_name": "mp3", "channels": 1, "sample_rate": 44100},
+    )
+
+    assert errors == []
 
 
 # --- poll policy (failure mode 4) ------------------------------------------
