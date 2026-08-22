@@ -7,8 +7,8 @@ Consumes a manifest.json that already contains the written segments, then:
      any expensive work, so a broken host or a full show costs seconds, not a render
   1. Picks a voice (random from preset list, unless overridden)
   2. Renders each segment via Qwen3-TTS (mlx-audio)
-  3. Concatenates with auto-padded silences to satisfy Spotify's
-     "max 3 chapters <30s" rule
+  3. Concatenates with fixed inter-segment silences, padded only when a segment
+     is short enough to put two chapter starts under Spotify's 5s minimum gap
   4. Loudnorm via ffmpeg
   5. Builds a date-stamped Pillow cover
   6. Builds timeline.json (chapter per segment + link companion when present)
@@ -87,8 +87,16 @@ HOUSE_VOICE_INSTRUCT = (
     "no dramatic emphasis. Bright but human, unobtrusive, not performative. "
     "Clear and natural. Resonant lower register."
 )
-TARGET_CHAPTER_MS = 30_500  # 30s + buffer; Spotify rejects <30s strict
-MAX_SHORT_CHAPTERS = 3
+# Consecutive chapter starts must be >= 5s apart; the final chapter is exempt.
+# This is the ONLY chapter-duration rule the platform still has. save-to-spotify
+# used to also cap sub-30s chapters at ceil(N*0.15+1), and render.py padded
+# trailing silence toward a 30.5s target to satisfy it. Upstream PR #44 (v0.1.4)
+# dropped that cap. Verified empirically 2026-08-22 against CLI 0.2.0 on a
+# throwaway show: an episode whose timeline had 11 of 12 chapters under 30s was
+# accepted by `timeline set` and processed to READY, while a 3s gap was still
+# refused ("chapter at index 0 must be at least 5s long"). Don't reintroduce a
+# 30s target — it bought nothing and cost up to 12s of dead air per chapter.
+MIN_CHAPTER_GAP_MS = 5_000
 DEFAULT_SILENCE_MS = 800
 LAST_SILENCE_MS = 0  # no silence after the final segment
 # TTS speech-rate outlier gate. render.py samples Qwen3-TTS with mlx-audio's
@@ -902,46 +910,29 @@ def plan_silences(seg_paths: list[Path]) -> list[int]:
     """
     Return silence_ms[i] = silence AFTER segment i. Last entry is LAST_SILENCE_MS.
 
-    Strategy:
-      - Start with DEFAULT_SILENCE_MS between every pair, 0 after last.
-      - Compute provisional chapter durations (seg + trailing silence).
-      - Last chapter has no trailing silence; if short, count it as short.
-      - While more than MAX_SHORT_CHAPTERS are short, find the shortest
-        non-last chapter and bump its trailing silence to hit TARGET_CHAPTER_MS.
-      - Give up if all non-last chapters have already been padded and we're
-        still over budget (means too many tiny segments — script needs work).
+    Every chapter starts where the previous segment's audio ended plus that
+    segment's trailing silence, so silence[i] is what separates chapter i's start
+    from chapter i+1's. The only platform constraint on that spacing is
+    MIN_CHAPTER_GAP_MS; the final segment has no successor, so it keeps
+    LAST_SILENCE_MS (padding the tail breaks chapter math).
+
+    In practice no segment is anywhere near 5s, so this returns the flat default.
+    The guard exists so a degenerate short segment can never build a timeline the
+    CLI will refuse.
     """
     n = len(seg_paths)
     seg_ms = [mp3_duration_ms(p) for p in seg_paths]
     silence = [DEFAULT_SILENCE_MS] * n
     silence[-1] = LAST_SILENCE_MS
 
-    def chapter_ms() -> list[int]:
-        return [seg_ms[i] + silence[i] for i in range(n)]
+    for i in range(n - 1):
+        silence[i] = max(silence[i], MIN_CHAPTER_GAP_MS - seg_ms[i])
 
-    def short_indices() -> list[int]:
-        return [i for i, c in enumerate(chapter_ms()) if c < 30_000]
-
-    # Cap on silence padding; refuse to insert >12s gaps (would sound broken)
-    MAX_SILENCE_MS = 12_000
-
-    while len(short_indices()) > MAX_SHORT_CHAPTERS:
-        candidates = [i for i in short_indices() if i < n - 1 and silence[i] < MAX_SILENCE_MS]
-        if not candidates:
-            die(
-                f"can't satisfy chapter rule: {len(short_indices())} short chapters, "
-                f"max {MAX_SHORT_CHAPTERS}, and no more padding room. "
-                "Rewrite short segments to be ≥600 chars."
-            )
-        # Pick the chapter that needs the least padding to clear the bar
-        candidates.sort(key=lambda i: (silence[i] - (TARGET_CHAPTER_MS - seg_ms[i])))
-        i = candidates[0]
-        needed = TARGET_CHAPTER_MS - seg_ms[i]
-        silence[i] = min(max(needed, silence[i] + 500), MAX_SILENCE_MS)
-
-    log(f"chapter ms: {chapter_ms()}")
+    chapter_ms = [seg_ms[i] + silence[i] for i in range(n)]
+    padded = [i for i in range(n - 1) if silence[i] > DEFAULT_SILENCE_MS]
+    log(f"chapter ms: {chapter_ms}")
     log(f"silence ms: {silence}")
-    log(f"short chapters: {short_indices()} (limit {MAX_SHORT_CHAPTERS})")
+    log(f"padded to the {MIN_CHAPTER_GAP_MS}ms minimum gap: {padded}")
     return silence
 
 
@@ -2594,12 +2585,16 @@ def verify_artifact(
                 f"last chapter starts at {starts[-1]}ms, at or past the "
                 f"{duration_ms}ms episode duration"
             )
-        bounds = starts[1:] + [duration_ms]
-        short = sum(1 for start, end in zip(starts, bounds, strict=True) if end - start < 30_000)
-        if short > MAX_SHORT_CHAPTERS:
+        # Sub-30s chapters are fine (upstream PR #44). The live rule is the gap
+        # between consecutive chapter *starts*; the final chapter is exempt
+        # because it has no successor start to measure against.
+        gaps = [b - a for a, b in zip(starts, starts[1:], strict=False)]
+        tight = [g for g in gaps if g < MIN_CHAPTER_GAP_MS]
+        if tight:
             errors.append(
-                f"{short} short chapter(s) under 30s (Spotify rejects more than "
-                f"{MAX_SHORT_CHAPTERS}); the script needs rewriting, not more padding"
+                f"{len(tight)} chapter(s) start less than {MIN_CHAPTER_GAP_MS}ms apart "
+                f"(smallest gap {min(tight)}ms); Spotify requires consecutive chapter "
+                f"starts to be at least {MIN_CHAPTER_GAP_MS // 1000}s apart"
             )
 
     if segments is not None and seg_paths is not None:

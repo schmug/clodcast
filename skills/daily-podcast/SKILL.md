@@ -125,7 +125,9 @@ Report the voice in the final summary so the user knows which one ran.
 
 ## Chapter-duration guardrail
 
-Spotify rejects timelines where >3 chapters are under 30 seconds. Qwen3 reads ~4.6x realtime — segments under 600 chars routinely land below 30s. `render.py` auto-pads silence after short segments to satisfy the constraint. Aim for 600+ chars per segment to avoid awkward gaps.
+Spotify requires consecutive chapter starts to be at least 5 seconds apart (the final chapter is exempt). That is the only platform rule on chapter length, and no real segment comes close to violating it — `render.py` pads trailing silence only if a segment is short enough to breach the 5s floor.
+
+Chapters under 30 seconds used to be capped at 3 per episode, and `render.py` padded up to 12s of silence to comply. Upstream dropped that cap (save-to-spotify PR #44), verified 2026-08-22 against CLI 0.2.0. Short segments no longer risk the episode, so the 600+ chars-per-segment target is now editorial pacing, not a platform constraint.
 
 ## Show + dedup config
 
@@ -461,8 +463,8 @@ subset only — it never calls Spotify and never prunes.
 ### Artifact gate (automatic, after render, before upload)
 
 Once the mp3 exists, `verify_artifact` runs a local conformance check —
-encoder profile, monotonic chapter starts, sub-30 s chapter count, last chapter
-inside the duration — and refuses to upload an artifact whose sha256 is in
+encoder profile, monotonic chapter starts, the 5 s minimum gap between
+consecutive chapter starts, last chapter inside the duration — and refuses to upload an artifact whose sha256 is in
 `rejections.jsonl` (Spotify rejected those exact bytes before; retrying costs a
 pruned episode). It runs under `--dry-run` too, so a rehearsal is a real rehearsal.
 

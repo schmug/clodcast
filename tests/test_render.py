@@ -32,7 +32,7 @@ def _paths(tmp_path: Path, n: int) -> list[Path]:
     return [tmp_path / f"seg_{i:02d}.mp3" for i in range(1, n + 1)]
 
 
-def test_plan_silences_no_padding_when_all_chapters_long(tmp_path, monkeypatch):
+def test_plan_silences_leaves_long_segments_at_the_default(tmp_path, monkeypatch):
     paths = _paths(tmp_path, 3)
     _patch_durations(monkeypatch, {p: 35_000 for p in paths})
 
@@ -45,49 +45,48 @@ def test_plan_silences_no_padding_when_all_chapters_long(tmp_path, monkeypatch):
     ]
 
 
-def test_plan_silences_exactly_three_shorts_no_padding(tmp_path, monkeypatch):
-    # Three short chapters is exactly at the cap; the last one counts as short
-    # per plan_silences's docstring. No padding should happen.
+def test_plan_silences_does_not_pad_short_chapters(tmp_path, monkeypatch):
+    """Six 20 s chapters: five of them under 30 s, far past the old max of 3.
+
+    Verified 2026-08-22 against save-to-spotify 0.2.0 that Spotify accepts this
+    (see the MIN_CHAPTER_GAP_MS comment in render.py), so no padding is due.
+    """
+    paths = _paths(tmp_path, 6)
+    _patch_durations(monkeypatch, {p: 20_000 for p in paths})
+
+    silences = render.plan_silences(paths)
+
+    assert silences == [render.DEFAULT_SILENCE_MS] * 5 + [render.LAST_SILENCE_MS]
+
+
+def test_plan_silences_pads_only_up_to_the_five_second_minimum(tmp_path, monkeypatch):
+    """A 2 s segment would put two chapter starts 2.8 s apart, which the CLI
+    rejects. Pad exactly to the 5 s floor — not to a 30 s target."""
     paths = _paths(tmp_path, 3)
-    _patch_durations(monkeypatch, {p: 20_000 for p in paths})
+    _patch_durations(monkeypatch, {p: 2_000 for p in paths})
 
     silences = render.plan_silences(paths)
 
-    assert silences == [
-        render.DEFAULT_SILENCE_MS,
-        render.DEFAULT_SILENCE_MS,
-        render.LAST_SILENCE_MS,
-    ]
-
-
-def test_plan_silences_pads_when_over_budget_with_room(tmp_path, monkeypatch):
-    # Four short chapters, each long enough that a single pad clears it to
-    # TARGET_CHAPTER_MS (30_500). Loop should pad exactly one chapter.
-    paths = _paths(tmp_path, 4)
-    _patch_durations(monkeypatch, {p: 20_000 for p in paths})
-
-    silences = render.plan_silences(paths)
-
-    # Last segment never gets trailing silence.
     assert silences[-1] == render.LAST_SILENCE_MS
-    # Exactly one of the non-last silences was bumped past the default.
-    padded = [i for i in range(3) if silences[i] > render.DEFAULT_SILENCE_MS]
-    assert len(padded) == 1
-    i = padded[0]
-    # The padded chapter clears the 30s short threshold.
-    assert 20_000 + silences[i] >= 30_000
-    # And the chapter doesn't exceed the silence cap.
-    assert silences[i] <= 12_000
+    for i in range(2):
+        assert 2_000 + silences[i] == render.MIN_CHAPTER_GAP_MS
 
 
-def test_plan_silences_dies_when_no_room_to_pad(tmp_path, monkeypatch):
-    # Four chapters so tiny that even MAX_SILENCE_MS (12_000) can't clear them.
-    # All non-last slots will max out, then candidates becomes empty → die.
-    paths = _paths(tmp_path, 4)
-    _patch_durations(monkeypatch, {p: 5_000 for p in paths})
+def test_plan_silences_never_dies_on_many_tiny_segments(tmp_path, monkeypatch):
+    """The old padding loop gave up (SystemExit) once every non-last slot hit the
+    12 s cap. With the short-chapter rule gone there is no unsatisfiable case."""
+    paths = _paths(tmp_path, 8)
+    _patch_durations(monkeypatch, {p: 1_000 for p in paths})
 
-    with pytest.raises(SystemExit):
-        render.plan_silences(paths)
+    silences = render.plan_silences(paths)
+
+    assert silences[-1] == render.LAST_SILENCE_MS
+    starts, t = [], 0
+    for i in range(8):
+        starts.append(t)
+        t += 1_000 + silences[i]
+    gaps = [b - a for a, b in zip(starts, starts[1:], strict=False)]
+    assert min(gaps) >= render.MIN_CHAPTER_GAP_MS
 
 
 # --- resolve_voice --------------------------------------------------------
