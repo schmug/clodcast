@@ -140,6 +140,22 @@ Don't replace the table with arithmetic. The first version of this used a stride
 - Never read URLs aloud
 - One source per segment — strict 1:1 mapping
 
+### Segues
+
+A segue names the **relationship** between two adjacent stories. The old fixed list ("Next up", "Moving on", "Also today") was interchangeable filler — nothing about it could differ from one episode to the next, which is the same failure the shape rotation exists to fix.
+
+The story at position `i` takes the move at column `i - 1` of row `(day + 2) % 5` in the same table above. The **lead story gets no segue** — it follows the cold open, which already set the episode up. The row offset keeps segues off the shapes' row, so a given shape doesn't carry the same segue forever.
+
+| # | Move | Do |
+| --- | --- | --- |
+| 0 | `cold` | *No connective at all. Hard cut straight into the story.* |
+| 1 | `pivot` | Name the change of subject in a few words, then go. |
+| 2 | `contrast` | Set this story against the one before it - they point different ways. |
+| 3 | `escalate` | Mark that this story raises the stakes on the theme just covered. |
+| 4 | `echo` | Mark that this story rhymes with the previous one: same pattern, new actor. |
+
+**Never manufacture a connection.** A digest's adjacent items are often genuinely unrelated. If the assigned move needs a relationship the two stories don't have, write a plain topic change instead — a false link between unrelated news items is worse than a blunt hand-off. One short clause each; these are bridges, not summaries.
+
 ### Sign-off (~250-300 chars)
 
 Bank of three, indexed `day % 3`:
@@ -158,7 +174,7 @@ No new facts in any of them, and the same rule as segments: don't tell listeners
 - Numbers under 10 in words; abbreviations expanded ("D R I" not "DRI")
 - "CLAUDE dot md" not "CLAUDE.md"
 - No em dashes — TTS encoding flakes; use hyphens
-- Transitions: vary the connective tissue, and never reuse one within an episode. Not every segment needs a transition; two or three across the whole episode is enough. A fixed rotation of "Next up / Moving on / Also today" is what made twelve segments sound like one.
+- Segues are assigned too — see [Segues](#segues) below. Don't fall back to "Next up / Moving on / Also today"
 - Vary sentence rhythm inside a segment too: don't open every sentence with its subject, and don't close on a summarizing "ultimately" / "in short" clause
 - This is a news digest. Cover security, breach, and research stories at a reporting altitude — what was disclosed, who is affected, the response. Reporting on a disclosed vulnerability or breach is ordinary tech journalism; cover it confidently. Never write exploit steps, payloads, working commands, or attacker how-to; if an item can't be made substantive without them, it doesn't belong in the episode. (The [Unattended daily run](#unattended-daily-run) curation and fetch steps keep coverage at this altitude; this is the writing-side backstop.)
 
