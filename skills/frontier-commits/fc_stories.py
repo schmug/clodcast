@@ -165,15 +165,27 @@ def org_views(snap: dict) -> dict:
 
 
 def _appeared(org: str, name: str, r: dict, base: dict | None, cutoff_date: str) -> bool:
-    """When a baseline exists, "appeared" is SET MEMBERSHIP — present in cur,
-    absent from the baseline's repo set for that org — never date arithmetic.
-    A created_at cutoff would permanently silence a repo created ON the
-    baseline date but AFTER that day's snapshot was taken (absent from base,
-    yet excluded by the date gate — and the cutoff only moves forward). The
-    date cutoff applies only in the no-baseline fallback, where there is
-    nothing to compare against."""
-    if base is not None:
-        return name not in base.get(org, {})
+    """When the baseline actually SAW the org, "appeared" is SET MEMBERSHIP —
+    present in cur, absent from the baseline's repo set for that org — never
+    date arithmetic. A created_at cutoff would permanently silence a repo
+    created ON the baseline date but AFTER that day's snapshot was taken
+    (absent from base, yet excluded by the date gate — and the cutoff only
+    moves forward).
+
+    But an org with no usable baseline view is UNKNOWN, not empty.
+    build_snapshot OMITS a failed org from snap["orgs"] entirely (it lands in
+    snap["errors"]), and an org newly added to config has no baseline entry
+    at all — treating either as an empty set would announce the org's ENTIRE
+    catalog as "new" (ancient repos at top NEW_REPO priority, filling
+    per_org_story_cap and permanently burning their mention-once keys). A
+    present-but-EMPTY org view is ambiguous the same way: the "ai" name
+    filter can legitimately strip an org to zero repos while its real repos
+    are years old. Both cases fall back to the date-cutoff arm, same as the
+    no-baseline path. The asymmetry is deliberately conservative: the
+    fallback can delay announcing a genuinely-new repo by at most the
+    lookback window, but it can never flood ancient repos into an episode."""
+    if base is not None and base.get(org):
+        return name not in base[org]
     return _date_only(r.get("created_at", "")) > cutoff_date
 
 
@@ -350,7 +362,14 @@ def detect_releases(snap: dict, cutoff_date: str, cur: dict, config: dict) -> li
             # ever be mentioned. Skip rather than collide.
             if not _safe_name(name) or not isinstance(tag, str) or not tag:
                 continue
-            if _date_only(rel.get("published_at", "")) <= cutoff_date:
+            # Strictly-before, not at-or-before: a release published late on
+            # the baseline day (after that day's snapshot was taken) would
+            # otherwise be PERMANENTLY missed at weekly cadence. A boundary-day
+            # release may be nominated in two consecutive runs pre-mark;
+            # reported.json (stage=tag) makes the mention exactly-once —
+            # permanently missing a release is the failure mode, a duplicate
+            # candidate is not.
+            if _date_only(rel.get("published_at", "")) < cutoff_date:
                 continue
             rec = cur.get(org, {}).get(name, {})
             if rec.get("stars", 0) < config["release_min_stars"] and name not in allow:

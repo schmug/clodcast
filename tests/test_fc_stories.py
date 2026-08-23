@@ -193,6 +193,64 @@ def test_notable_fork_novelty_is_set_membership_when_baseline_exists():
     assert [s["repo"] for s in got] == ["late-fork"]
 
 
+def test_org_absent_from_baseline_falls_back_to_date_cutoff():
+    # build_snapshot OMITS a failed org from snap["orgs"] (it lands in
+    # snap["errors"]), and a newly-configured org has no baseline entry at
+    # all. Either way the org's baseline is UNKNOWN, not empty — set
+    # membership would announce the org's entire catalog as new. The date
+    # cutoff governs instead: ancient repos stay silent, repos created inside
+    # the window are still announced.
+    base = {"other": {"x": _repo()}}  # acme errored or was just added: absent
+    cur = {
+        "acme": {
+            "ancient": _repo(created_at="2020-01-01T00:00:00Z"),
+            "fresh": _repo(created_at="2026-08-22T00:00:00Z"),
+        }
+    }
+    got = fc_stories.detect_new_repos(cur, "2026-08-18", base)
+    assert [s["key"] for s in got] == ["NEW_REPO:acme/fresh:new"]
+    forks = {
+        "acme": {
+            "ancient-fork": _repo(
+                fork=True, created_at="2020-01-01T00:00:00Z", pushed_at="2026-08-24T00:00:00Z"
+            )
+        }
+    }
+    assert fc_stories.detect_notable_forks(forks, "2026-08-18", "2026-08-25", base) == []
+
+
+def test_newly_added_org_announces_fresh_forks_via_date_cutoff():
+    # The positive half of the fork fallback: an org absent from the baseline
+    # still announces a fork created inside the window (date arm), so the
+    # fallback delays nothing that is genuinely recent.
+    base = {"other": {"x": _repo()}}
+    forks = {
+        "acme": {
+            "fresh-fork": _repo(
+                fork=True, created_at="2026-08-22T00:00:00Z", pushed_at="2026-08-24T00:00:00Z"
+            )
+        }
+    }
+    got = fc_stories.detect_notable_forks(forks, "2026-08-18", "2026-08-25", base)
+    assert [s["key"] for s in got] == ["NOTABLE_FORK:acme/fresh-fork:new"]
+
+
+def test_empty_baseline_org_view_falls_back_to_date_cutoff():
+    # A present-but-EMPTY baseline org view is ambiguous the same way: the
+    # "ai" name filter can legitimately strip an org to zero repos while its
+    # real repos are years old. Treat it as unknown too — date cutoff, never
+    # "everything is new".
+    base = {"acme": {}}
+    cur = {
+        "acme": {
+            "ancient": _repo(created_at="2020-01-01T00:00:00Z"),
+            "fresh": _repo(created_at="2026-08-22T00:00:00Z"),
+        }
+    }
+    got = fc_stories.detect_new_repos(cur, "2026-08-18", base)
+    assert [s["key"] for s in got] == ["NEW_REPO:acme/fresh:new"]
+
+
 def test_detect_archived_needs_a_flip_and_a_baseline():
     base = {"acme": {"gym": _repo(archived=False)}}
     cur = {"acme": {"gym": _repo(archived=True), "born-dead": _repo(archived=True)}}
@@ -256,6 +314,53 @@ def test_release_detection_respects_stars_bar_and_allowlist():
     cfg = _cfg(allowlist={"acme": ["listed"]})
     got = fc_stories.detect_releases(snap, "2026-08-18", cur, cfg)
     assert {s["key"] for s in got} == {"RELEASE:acme/big:v2", "RELEASE:acme/listed:v3"}
+
+
+def test_release_published_on_the_baseline_date_is_not_permanently_missed():
+    # Same class as the created_at boundary fix: a release published late on
+    # the baseline day — AFTER that day's snapshot was taken — was skipped by
+    # an at-or-before gate on EVERY subsequent run, so at weekly cadence it
+    # was never mentioned at all. On the boundary date it must emit; strictly
+    # before the cutoff it must still be skipped; and reported.json keeps the
+    # mention exactly-once, so the duplicate candidate a boundary day can
+    # produce pre-mark never re-emits after marking.
+    snap = {
+        "orgs": {
+            "acme": {
+                "repos": {},
+                "releases": [
+                    {"repo": "big", "tag": "v9", "published_at": "2026-08-18T22:00:00Z"},
+                    {"repo": "big", "tag": "v0", "published_at": "2026-08-17T23:59:00Z"},
+                ],
+            }
+        }
+    }
+    cur = {"acme": {"big": _repo(stars=900)}}
+    got = fc_stories.detect_releases(snap, "2026-08-18", cur, _cfg())
+    assert [s["key"] for s in got] == ["RELEASE:acme/big:v9"]
+    # after marking, the boundary-day release does not re-emit next run
+    fc_stories.mark_reported([got[0]["key"]], "2026-08-25", "spotify:episode:e1")
+    assert fc_stories.filter_new(got, fc_stories.load_reported()) == []
+
+
+def test_release_with_malformed_published_at_is_still_skipped():
+    # The strict-before gate must not admit garbage: _date_only maps a
+    # missing/unparseable published_at to "", which sorts before every real
+    # date — so a malformed release stays skipped, exactly as it was under
+    # the old at-or-before gate.
+    snap = {
+        "orgs": {
+            "acme": {
+                "repos": {},
+                "releases": [
+                    {"repo": "big", "tag": "v1"},
+                    {"repo": "big", "tag": "v2", "published_at": "not-a-date"},
+                ],
+            }
+        }
+    }
+    cur = {"acme": {"big": _repo(stars=900)}}
+    assert fc_stories.detect_releases(snap, "2026-08-18", cur, _cfg()) == []
 
 
 def test_release_stage_embeds_tag_verbatim_even_with_colon():
@@ -496,6 +601,32 @@ def test_detect_all_passes_the_baseline_to_the_novelty_detectors():
     out = fc_stories.detect_all("2026-08-25", cfg)
     assert out["baseline_date"] == "2026-08-18"
     assert "NEW_REPO:acme/late-arrival:new" in [s["key"] for s in out["stories"]]
+
+
+def test_detect_all_survives_a_baseline_where_the_org_errored():
+    # The confirmed incident: the baseline snapshot recorded the org in
+    # "errors" (build_snapshot omits it from "orgs" entirely), and the next
+    # run announced three repos created in 2020 as NEW_REPO at top priority —
+    # filling per_org_story_cap and permanently burning their mention-once
+    # keys. With the unknown-org fallback, the ancient catalog stays silent.
+    d = fc_common.snapshot_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "2026-08-18.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "date": "2026-08-18",
+                "orgs": {},
+                "errors": {"acme": "HTTP 500 from the org listing"},
+            }
+        )
+    )
+    cur = {"acme": {f"old{i}": _repo(created_at="2020-01-01T00:00:00Z") for i in range(3)}}
+    _write_snap("2026-08-25", cur)
+    cfg = _cfg(orgs=[{"name": "acme", "filter": "none"}])
+    out = fc_stories.detect_all("2026-08-25", cfg)
+    assert out["baseline_date"] == "2026-08-18"
+    assert [s for s in out["stories"] if s["type"] == "NEW_REPO"] == []
 
 
 def test_cli_detect_prints_contract_and_mark_round_trips(tmp_path, capsys):
