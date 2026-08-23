@@ -78,16 +78,67 @@ Already-written segments. Skip straight to rendering.
 
 ## Script template
 
-**Intro** (~400 chars, one paragraph): "Today's digest for [date in long form]. [N] items today, covering [2-4 word theme list]. Here's the rundown."
+The template is a **rotation, not a fixed form**. Seventy-six consecutive episodes opened with the same sentence and ran twelve identically-shaped segments; the rotation exists to stop that. Take today's assignments from the date, never at random — a re-run of the same day must rebuild the same episode.
 
-**Per-item segment** (≥600 chars; aim for 700-900):
-- Lead with the headline or one-sentence framing
-- 3-4 sentences of substance: what, why, key detail
+**Seed:** `day` = day-of-year of today's date (1-365). Every index below is `day` modulo the bank size.
+
+### Cold open (~350-400 chars, one paragraph)
+
+Bank of five, indexed `day % 5`:
+
+| # | Mode | Do |
+| --- | --- | --- |
+| 0 | `classic` | The show's standard line: "Today's digest for [date in long form]. [N] stories today, covering [2-4 word theme list]. Here's the rundown." |
+| 1 | `theme-first` | Name the through-line connecting today's headlines in one sentence, then the date and the story count. |
+| 2 | `lead-first` | Open on the single biggest story in one line, then say how many more follow, plus the date. |
+| 3 | `number-first` | Open on the most striking concrete figure across today's headlines, then the date and the story count. |
+| 4 | `tension` | Open on two of today's headlines that pull against each other, then the date and the story count. |
+
+`classic` stays in the rotation deliberately — the show keeps a recognizable open about one day in five instead of losing its signature altogether. Every mode still states the date and the story count; that is the show's contract with a daily listener, not a stylistic flourish.
+
+### Per-item segments
+
+Each segment gets a **shape** and a **length band**, both assigned by its position.
+
+**Shape** — bank of five. The segment at position `i` (0-based; the lead story is 0) takes index `(day + i * stride) % 5`, where `stride = 1 + day % 4`:
+
+| # | Shape | Opening |
+| --- | --- | --- |
+| 0 | `plain-lede` | Headline framing, then the substance. |
+| 1 | `stakes-first` | Who is affected and what changes for them, then what happened. |
+| 2 | `number-first` | The single most concrete figure - a count, a sum, a version, a share - then what it measures. |
+| 3 | `scene` | One concrete detail or a short quoted line from the reporting, then widen to the news. |
+| 4 | `contrast` | The gap between what was assumed and what this item shows, then the substance. |
+
+A stride rather than a plain rotation: rotating only shifts the bank's phase, so `stakes-first` would follow `plain-lede` in every episode ever made. Five is prime, so any stride in 1-4 is coprime with it and a full cycle still visits each shape exactly once.
+
+**Length band** — the lead story gets room, and roughly one non-lead segment in four runs short:
+
+| Position | Band | Role |
+| --- | --- | --- |
+| 0 | 850-1100 chars | Lead read — the day's biggest story |
+| `(day + i) % 4 == 0` | 500-650 chars | Short take |
+| everything else | 600-900 chars | Body segment |
+
+500 is a hard floor, not a target: a segment under it reads as filler next to its neighbours and `orchestrate.py` drops the item outright (`MIN_SEGMENT_CHARS`). Short takes are only safe at all because Spotify's sub-30s chapter cap was retired upstream — see [Chapter-duration guardrail](#chapter-duration-guardrail).
+
+**Every segment, whatever its shape:**
+- Substance in the middle: what, why, the key detail
 - End on the last sentence of substantive analysis. Never verbally reference the source URL, the show notes, the description, or "the link" — source attribution is handled non-verbally by the per-segment `link` companion in the timeline and by the timestamped chapter links in the HTML description.
 - Never read URLs aloud
 - One source per segment — strict 1:1 mapping
 
-**Outro** (~300 chars): brief sign-off, no new content. Same rule as segments: don't tell listeners to check the show notes or description.
+### Sign-off (~250-300 chars)
+
+Bank of three, indexed `day % 3`:
+
+| # | Mode | Do |
+| --- | --- | --- |
+| 0 | `plain` | A simple thanks. |
+| 1 | `throughline` | Call back to the episode's through-line in one clause, then sign off. |
+| 2 | `forward-look` | One line on what is worth watching next out of today's stories, then sign off. |
+
+No new facts in any of them, and the same rule as segments: don't tell listeners to check the show notes or description.
 
 ### Rules
 - Convert relative dates from sources to absolute (today's date is available via the system clock)
@@ -95,7 +146,8 @@ Already-written segments. Skip straight to rendering.
 - Numbers under 10 in words; abbreviations expanded ("D R I" not "DRI")
 - "CLAUDE dot md" not "CLAUDE.md"
 - No em dashes — TTS encoding flakes; use hyphens
-- Use 1-2 transition phrases between segments ("Next up", "Moving on", "Also today")
+- Transitions: vary the connective tissue, and never reuse one within an episode. Not every segment needs a transition; two or three across the whole episode is enough. A fixed rotation of "Next up / Moving on / Also today" is what made twelve segments sound like one.
+- Vary sentence rhythm inside a segment too: don't open every sentence with its subject, and don't close on a summarizing "ultimately" / "in short" clause
 - This is a news digest. Cover security, breach, and research stories at a reporting altitude — what was disclosed, who is affected, the response. Reporting on a disclosed vulnerability or breach is ordinary tech journalism; cover it confidently. Never write exploit steps, payloads, working commands, or attacker how-to; if an item can't be made substantive without them, it doesn't belong in the episode. (The [Unattended daily run](#unattended-daily-run) curation and fetch steps keep coverage at this altitude; this is the writing-side backstop.)
 
 > **Defense in depth:** `render.py` validates the manifest structure (failing fast with a per-field message before the model loads) and re-strips TTS-hostile characters from every segment — em/en dashes, smart quotes, code fences + backticks, leading markdown headings, and bare URLs — regardless of what the caller wrote. It does *not* do the stylistic rules above (numbers-to-words, abbreviation spacing, "CLAUDE dot md") — those stay the writer's job. Set `"raw_text": true` in the manifest to skip normalization (e.g. text pre-formatted for a different TTS).
@@ -320,7 +372,7 @@ You are an unattended invocation. Ship today's episode and exit. Be decisive, do
 
    Several outlets cannot be fetched at all. Consult [`blocked_sources.json`](blocked_sources.json) *before* spending a fetch: it lists each blocked domain with the reason, a recovery `strategy` (`primary-source`, `alt-outlet`, `feed-summary`), and a `substitute`. It also lists `preferred` outlets that fetch clean, and `non_article_hosts` (YouTube, Reddit, HN permalinks) that must never be a segment `source_url`. When you recover a story from a different outlet, use **that** URL as `source_url` — it is what you actually read.
 
-5. **Write segments** per the [script template](#script-template) above. Intro (~400 chars), one segment per item (≥600, aim 700–900), outro (~300). **Strict 1:1**: `segment[i]` ↔ `source[i]`, no merging, no reordering. **Report, don't instruct**: never include exploit steps, payloads, working commands, or any procedure an attacker could follow; if a kept item can't be substantive without them, drop it rather than sanitize it.
+5. **Write segments** per the [script template](#script-template) above. Compute `day` (day-of-year) once and use it for the cold open, the sign-off, and each segment's shape and length band — the template is a date-seeded rotation, so do not fall back to one fixed form. **Strict 1:1**: `segment[i]` ↔ `source[i]`, no merging, no reordering. **Report, don't instruct**: never include exploit steps, payloads, working commands, or any procedure an attacker could follow; if a kept item can't be substantive without them, drop it rather than sanitize it.
 
 6. **Self-critique pass** (silent): tighten segments over 900 chars or repetitive. Never reorder, never drop a segment.
 

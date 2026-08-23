@@ -43,6 +43,16 @@ Four documents are load-bearing; read all of them before changing behavior:
 
 **Auth failure is systemic, not per-item.** A child `claude -p` authenticates from disk/env, not from the parent's in-memory session login, so under a scheduler the children can start with no usable credential and every item 401s. `classify_output` maps that to a distinct `AUTH` outcome (`AUTH_RE`, anchored to auth strings only so transient rate-limit/overload errors stay `ERROR`). When a run ends with **zero survivors and any `auth` drop**, `main()` fails fast with an actionable single line pointing at SKILL.md *"Unattended runs need durable credentials"* — instead of silently degrading to the generic `no viable items`. Detection is post-fan-out (a 401 returns fast, so there's no happy-path cost and no preflight probe). Keep `AUTH_RE` auth-only and keep the diagnostic gated on `not survivors`.
 
+### Script variety is assigned, not requested
+
+**The script template is a date-seeded rotation, and the seed must stay the date.** Seventy-six episodes shipped with a byte-identical opening sentence and twelve identically-shaped segments. Telling a model to "be varied" regresses to the mean, and in the orchestrator each segment is written by an isolated `claude -p` that cannot see its neighbours to differ from them — so the variety is *assigned* from outside: `day_index(date_iso)` picks the cold open (`INTRO_MODES`), the sign-off (`OUTRO_MODES`), and every segment's shape (`SEGMENT_SHAPES`) and length band. A date rather than a random draw is what makes a resumed or repeated run rebuild the same episode.
+
+Three things here are load-bearing:
+
+- **`SEGMENT_SHAPES` must stay prime-length, and `segment_shape` must keep its stride.** A plain rotation only shifts the bank's phase, so `stakes-first` would follow `plain-lede` in every episode ever made; the day-varying stride reorders adjacencies too. Prime length is what makes every stride in `1..n-1` coprime with `n`, so a full cycle still visits each shape exactly once. Adding a sixth shape breaks that — either keep the bank prime or replace the stride with a real permutation. `test_segment_shape_reorders_adjacencies_across_days` is the test that catches a "simplification" back to a plain rotation.
+- **`SHORT_BAND`'s floor IS `MIN_SEGMENT_CHARS`.** A short take that lands under it is classified `REFUSED` and its item is dropped, so lowering the floor silently shortens episodes instead of varying them. Short chapters are only safe at all because Spotify's sub-30s cap was retired upstream (verified 2026-08-22).
+- **SKILL.md is the production path, not `orchestrate.py`.** The scheduled run is a `claude -p` following SKILL.md's *Script template* section, so a shape that exists only in code never reaches a real episode. `test_skill_md_documents_every_shape_and_mode` fails if the two drift, and `test_summarize_prompt_declares_the_variety_placeholders` locks the `<<SHAPE>>` / `<<MIN_CHARS>>` / `<<MAX_CHARS>>` contract between `fill_prompt` and `prompts/summarize_item.md`.
+
 ### The reliability layer (pre-flight, artifact gate, durable state, incidents)
 
 Added after an audit of every failure mode this pipeline hit in production. The
