@@ -82,8 +82,10 @@ PUBLISHED_SLUGS = [
 
 def test_published_slug_fixture_is_the_whole_live_feed():
     """Guards the fixture itself: a truncated capture would make the compatibility
-    test below pass vacuously for the dates it silently dropped."""
-    assert len(PUBLISHED_SLUGS) == 75
+    test below pass vacuously for the dates it silently dropped. Bounded below, not
+    pinned: the fixture's own header tells the next contributor to append new dates,
+    and 75 is the count that was live when it was captured (2026-08-23)."""
+    assert len(PUBLISHED_SLUGS) >= 75
 
 
 @pytest.mark.parametrize("date,published", PUBLISHED_SLUGS)
