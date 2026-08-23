@@ -1037,9 +1037,13 @@ _ROUNDUP_URLS = (
     "-and-bsides-las-vegas-2026-x/",
 )
 
-# A same-domain ordinary story: an over-broad pattern that swallowed this would
-# be worse than no pattern list at all.
-_NOT_A_ROUNDUP_URL = "https://www.helpnetsecurity.com/2026/08/17/apple-macos-screen-sharing-flaw/"
+# Ordinary stories an over-broad pattern would swallow, which is worse than no
+# pattern list at all. The herbicide headline is why no pattern may be a bare
+# common noun: "roundup" alone matched it, so the qualifier is load-bearing.
+_NOT_ROUNDUPS = (
+    "https://www.helpnetsecurity.com/2026/08/17/apple-macos-screen-sharing-flaw/",
+    "Bayer loses another Roundup herbicide appeal",
+)
 
 _DUPLICATE_SHAPES = (
     "Primary ↔ commentary",
@@ -1085,10 +1089,11 @@ def test_curation_names_the_duplicate_shapes_and_drops_roundups():
         haystack = _normalize_for_roundup_match(url)
         assert any(p in haystack for p in normalized), f"roundup URL not dropped: {url}"
 
-    haystack = _normalize_for_roundup_match(_NOT_A_ROUNDUP_URL)
-    assert not any(p in haystack for p in normalized), (
-        f"roundup pattern is over-broad, it drops an ordinary story: {_NOT_A_ROUNDUP_URL}"
-    )
+    for item in _NOT_ROUNDUPS:
+        haystack = _normalize_for_roundup_match(item)
+        assert not any(p in haystack for p in normalized), (
+            f"roundup pattern is over-broad, it drops an ordinary story: {item}"
+        )
 
 
 # --- TTS speech-rate outlier gate (2026-08-17 degeneration) -----------------

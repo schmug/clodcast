@@ -1,5 +1,5 @@
 {
-  "_comment": "Outlets that cannot be fetched for article bodies during curation. Every entry traces to a run where a segment could not be written. `substitute` names a reliably-fetchable outlet covering the same beat; `strategy` names the recovery that worked. Consumed by render.load_blocked_sources()/is_blocked_domain and documented in incidents/webfetch-blocked-source.md. `roundup_patterns` is curation data, not fetch data: load_blocked_sources() returns only `domains`, so that list is read by the curating agent (SKILL.md step 3), never through that accessor.",
+  "_comment": "Outlets that cannot be fetched for article bodies during curation. Every entry traces to a run where a segment could not be written. `substitute` names a reliably-fetchable outlet covering the same beat; `strategy` names the recovery that worked. Consumed by render.load_blocked_sources()/is_blocked_domain and documented in incidents/webfetch-blocked-source.md. `roundup_patterns` is curation data, not fetch data: load_blocked_sources() returns only `domains`, so that list is read by the curating agent (SKILL.md step 3), never through that accessor. Every pattern must be QUALIFIED, never a bare common noun: `roundup` alone also matched \"Bayer loses another Roundup herbicide appeal\", so the qualifier is what keeps the list from swallowing ordinary stories.",
   "domains": {
     "wired.com": {
       "reason": "webfetch-blocked",
@@ -77,7 +77,10 @@
     "week-in-review",
     "weekly-recap",
     "top-highlights",
-    "roundup",
+    "weekly roundup",
+    "monthly roundup",
+    "security roundup",
+    "news roundup",
     "this week in",
     "week in security"
   ],
