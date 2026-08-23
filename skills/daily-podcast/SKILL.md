@@ -48,10 +48,10 @@ Already-written segments. Skip straight to rendering.
 
 ```json
 {
-  "title": "Daily Digest - May 22, 2026",
+  "title": "Daily Digest - May 22, 2026",  // display-only free text; does NOT key the slug/guid (see "Publishing to the web")
   "summary": "Today's one-sentence hook.",
   "show_id": "spotify:show:...",
-  "date": "2026-05-22",                    // optional ISO date; stamps the cover. Omit to use today (re-renders of a dated manifest reproduce its date)
+  "date": "2026-05-22",                    // optional ISO date; stamps the cover AND keys the web slug/guid. Omit to use today (re-renders of a dated manifest reproduce its date)
   "voice": "house",                        // default; or "random" / preset name; set voice_instruct for custom VoiceDesign
   "segments": [
     {"text": "Intro segment...",            "source_url": null},
@@ -359,6 +359,25 @@ episode to a Cloudflare R2 bucket *after* the Spotify upload reaches `READY`:
   conforming to cortech.online's `episodeSchema`. [cortech.online](https://github.com/schmug/cortech.online)
   reads this at build time and renders `/podcast/` plus an iTunes RSS feed at
   `/podcast/rss.xml`.
+
+### `slug` is keyed on the date, never the title
+
+`slug` comes from `slug_for_date(<episode date>)` alone — the manifest `title` is
+display-only free text and cannot reach it. This is not cosmetic: cortech.online
+republishes `/podcast/<slug>/` as an `isPermaLink` `<guid>`, and Spotify treats a
+changed guid as a brand-new episode, so every published slug is immutable in practice.
+Coupling the two (as `slugify(title, date)` used to) meant rewriting a title silently
+duplicated the whole back catalogue. Keep them decoupled: enrich titles freely, and
+never derive the slug from anything but the date.
+
+The slug's shape (`daily-digest-august-23-2026`) is a compatibility artifact — it
+reproduces the slugs minted from the old date-only titles, hence the historical
+`daily-digest-` prefix, the unpadded day, and the year. `tests/data/published_slugs.tsv`
+pins every live slug byte-for-byte; append to it, never edit it. The date resolves the
+same way `resolve_pubdate` does (explicit manifest `date` wins), so a back-fill
+re-render reproduces its historical slug and upserts the same R2 object instead of
+minting a second one. `--dry-run` prints the URL through the same resolver the real
+publish uses, so the rehearsal is exact.
 
 Each manifest entry carries both a Spotify-flavored `description` (HTML — `<p>summary</p>`,
 one timestamped `<p>… - <a>source</a></p>` per chapter, then the credit footer — see

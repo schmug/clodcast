@@ -9,15 +9,34 @@ seam (`mp3_duration_ms`) is monkeypatched, as elsewhere in the suite.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
+import inspect
 import io
 import json
+import locale
 import re
+from pathlib import Path
 
 import pytest
 from botocore.exceptions import ClientError
 
 import render
+
+
+@contextlib.contextmanager
+def _lc_time(name: str):
+    """Run a block under a different LC_TIME, skipping where that locale isn't built."""
+    previous = locale.setlocale(locale.LC_TIME)
+    try:
+        locale.setlocale(locale.LC_TIME, name)
+    except locale.Error:
+        pytest.skip(f"locale {name} not available on this host")
+    try:
+        yield
+    finally:
+        locale.setlocale(locale.LC_TIME, previous)
+
 
 # --- fake S3 ---------------------------------------------------------------
 
@@ -46,24 +65,72 @@ class FakeS3:
         return {"Body": io.BytesIO(self.objects[Key])}
 
 
-# --- slugify ---------------------------------------------------------------
+# --- slug_for_date ---------------------------------------------------------
+#
+# The slug keys the R2 object AND the /podcast/<slug>/ permalink that cortech.online
+# publishes as an isPermaLink <guid>. Spotify treats a changed guid as a brand-new
+# episode, so these identifiers are immutable in practice. #128 decoupled the slug
+# from the title so titles became free display text; these tests are the contract
+# that made that safe.
+
+PUBLISHED_SLUGS = [
+    tuple(line.split("\t"))
+    for line in (Path(__file__).parent / "data" / "published_slugs.tsv").read_text().splitlines()
+    if line and not line.startswith("#")
+]
 
 
-def test_slugify_basic():
-    assert render.slugify("Daily Digest - May 22, 2026", "2026-05-22") == "daily-digest-may-22-2026"
+def test_published_slug_fixture_is_the_whole_live_feed():
+    """Guards the fixture itself: a truncated capture would make the compatibility
+    test below pass vacuously for the dates it silently dropped."""
+    assert len(PUBLISHED_SLUGS) == 75
 
 
-def test_slugify_collapses_and_trims_punctuation():
-    assert render.slugify("  Hello, World!!  ", "2026-01-01") == "hello-world"
+@pytest.mark.parametrize("date,published", PUBLISHED_SLUGS)
+def test_slug_for_date_reproduces_every_published_slug(date, published):
+    """Every slug already live on cortech.online must survive byte-for-byte. Any
+    change here orphans a published episode and duplicates it on Spotify."""
+    assert render.slug_for_date(date) == published
 
 
-def test_slugify_empty_falls_back_to_date():
-    assert render.slugify("!!!", "2026-06-01") == "episode-2026-06-01"
+def test_slug_for_date_ignores_the_title():
+    """The property this decoupling exists to establish: slug_for_date takes a date
+    and nothing else, so no title can reach it."""
+    assert render.slug_for_date("2026-05-22") == "daily-digest-may-22-2026"
+    assert "title" not in inspect.signature(render.slug_for_date).parameters
 
 
-def test_slugify_matches_consumer_regex():
-    slug = render.slugify("Aé/B  C—D", "2026-06-01")
-    assert re.fullmatch(r"[a-z0-9-]+", slug)
+def test_slug_for_date_does_not_zero_pad_the_day():
+    """The historical titles used %-d, so single-digit days have no leading zero."""
+    assert render.slug_for_date("2026-06-01") == "daily-digest-june-1-2026"
+
+
+def test_slug_for_date_month_names_survive_a_non_english_locale():
+    """Month names are spelled out rather than taken from strftime("%B"), which is
+    LC_TIME-dependent. A run on a non-English box must not mint a new permalink."""
+    with _lc_time("de_DE.UTF-8"):
+        assert render.slug_for_date("2026-08-23") == "daily-digest-august-23-2026"
+
+
+def test_slug_for_date_matches_consumer_regex_and_cap():
+    for date in ("2026-09-30", "2026-12-25", "not-a-date", ""):
+        slug = render.slug_for_date(date)
+        assert re.fullmatch(r"[a-z0-9-]+", slug), date  # slug: z.string().regex(^[a-z0-9-]+$)
+        assert len(slug) <= 80, date
+
+
+def test_slug_for_date_falls_back_on_an_unparseable_date():
+    """validate_manifest never checked `date`, so a malformed one must still yield a
+    deterministic schema-valid slug instead of crashing the publish."""
+    assert render.slug_for_date("22 May 2026") == "episode-22-may-2026"
+    assert render.slug_for_date(None) == "episode-none"
+
+
+def test_resolve_slug_date_prefers_an_explicit_manifest_date():
+    """Mirrors resolve_pubdate: a back-fill or archive re-render reproduces its
+    historical slug rather than stamping the day it happened to be re-rendered."""
+    assert render.resolve_slug_date({"date": "2026-06-01"}) == "2026-06-01"
+    assert render.resolve_slug_date({}) == dt.date.today().isoformat()
 
 
 # --- chapters_from_timeline ------------------------------------------------
@@ -411,17 +478,19 @@ def test_publish_happy_path(monkeypatch, tmp_path):
 
     assert status == render.R2_PUBLISHED
     # mp3 + cover + manifest all uploaded; mp3 before manifest.
-    assert "daily-x.mp3" in s3.objects
-    assert "daily-x.jpg" in s3.objects
+    assert "daily-digest-june-1-2026.mp3" in s3.objects
+    assert "daily-digest-june-1-2026.jpg" in s3.objects
     assert "manifest.json" in s3.objects
-    assert s3.put_order.index("daily-x.mp3") < s3.put_order.index("manifest.json")
+    assert s3.put_order.index("daily-digest-june-1-2026.mp3") < s3.put_order.index("manifest.json")
 
     manifest = json.loads(s3.objects["manifest.json"])
     assert len(manifest) == 1
     e = manifest[0]
-    assert e["slug"] == "daily-x"
-    assert e["mp3_url"] == "https://audio.cortech.online/daily-x.mp3"  # trailing slash stripped
-    assert e["cover_url"] == "https://audio.cortech.online/daily-x.jpg"
+    # Slug is keyed on the manifest date, never the title "Daily X" (#128).
+    assert e["slug"] == "daily-digest-june-1-2026"
+    base = "https://audio.cortech.online"  # trailing slash stripped
+    assert e["mp3_url"] == f"{base}/daily-digest-june-1-2026.mp3"
+    assert e["cover_url"] == f"{base}/daily-digest-june-1-2026.jpg"
     assert e["mp3_bytes"] == len(b"AUDIODATA")
     assert e["duration_s"] == 123.0
     assert e["spotify_uri"] == "spotify:episode:abc"
@@ -444,7 +513,41 @@ def test_publish_appends_to_existing_manifest(monkeypatch, tmp_path):
     )
     assert status == render.R2_PUBLISHED
     manifest = json.loads(s3.objects["manifest.json"])
-    assert [e["slug"] for e in manifest] == ["daily-x", "older"]
+    assert [e["slug"] for e in manifest] == ["daily-digest-june-1-2026", "older"]
+
+
+def test_publish_key_is_unchanged_when_the_title_changes(monkeypatch, tmp_path):
+    """The property #128 exists to establish: enriching an episode's title must not
+    move the R2 object or the permalink guid derived from it. Re-publishing the same
+    date upserts the single entry rather than minting a second one."""
+    s3 = FakeS3()
+    _configured(monkeypatch, tmp_path, s3)
+    cfg_config = {"r2_bucket": "b", "r2_public_base_url": "https://a.test"}
+    kwargs = _publish_kwargs(tmp_path)
+
+    assert render.maybe_publish_r2(cfg_config, **kwargs) == render.R2_PUBLISHED
+    kwargs["manifest"] = {**kwargs["manifest"], "title": "Anthropic's IPO path, an MCP roadmap"}
+    assert render.maybe_publish_r2(cfg_config, **kwargs) == render.R2_PUBLISHED
+
+    assert [k for k in s3.objects if k.endswith(".mp3")] == ["daily-digest-june-1-2026.mp3"]
+    entries = json.loads(s3.objects["manifest.json"])
+    assert [e["slug"] for e in entries] == ["daily-digest-june-1-2026"]  # upsert, not a 2nd entry
+    assert entries[0]["title"] == "Anthropic's IPO path, an MCP roadmap"  # display text did move
+
+
+def test_dry_run_preview_url_matches_the_real_publish_url(monkeypatch, tmp_path):
+    """--dry-run must advertise exactly the URL a real publish would write; both
+    resolve it through r2_episode_mp3_url, so the rehearsal cannot drift from it."""
+    s3 = FakeS3()
+    _configured(monkeypatch, tmp_path, s3)
+    cfg_config = {"r2_bucket": "b", "r2_public_base_url": "https://audio.cortech.online/"}
+    kwargs = _publish_kwargs(tmp_path)
+
+    preview = render.r2_episode_mp3_url(render.load_r2_config(cfg_config), kwargs["manifest"])
+
+    assert render.maybe_publish_r2(cfg_config, **kwargs) == render.R2_PUBLISHED
+    published = json.loads(s3.objects["manifest.json"])[0]["mp3_url"]
+    assert preview == published == "https://audio.cortech.online/daily-digest-june-1-2026.mp3"
 
 
 def test_publish_mp3_failure_reports_failed_distinct_from_skipped(monkeypatch, tmp_path, capsys):
@@ -600,7 +703,7 @@ def test_resume_publishes_to_r2_when_env_configured(monkeypatch, tmp_path, capsy
     )
 
     assert rc == 0
-    assert "daily-x.mp3" in s3.objects
+    assert "daily-digest-june-1-2026.mp3" in s3.objects
     assert "manifest.json" in s3.objects
     e = json.loads(s3.objects["manifest.json"])[0]
     assert e["spotify_uri"] == "spotify:episode:abc123"
@@ -690,7 +793,7 @@ def test_resume_without_description_html_skips_r2(monkeypatch, tmp_path, capsys)
 
 def test_manifest_entry_conforms_to_consumer_episode_schema():
     entry = render.build_manifest_entry(
-        slug=render.slugify("Daily Digest - June 1, 2026", "2026-06-01"),
+        slug=render.slug_for_date("2026-06-01"),
         title="Daily Digest - June 1, 2026",
         description="<p>hook</p><p>(0:00) - Intro</p>",
         summary="hook",

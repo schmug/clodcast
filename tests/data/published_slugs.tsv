@@ -1,0 +1,86 @@
+# Every episode slug published at https://cortech.online/podcast/rss.xml, paired
+# with its episode date. Captured 2026-08-23 from the live feed's <guid isPermaLink>
+# values (`podcast/<slug>/`) and <pubDate>; all 75 were minted by the old
+# title-derived slugify() from date-only titles ("Daily Digest - August 23, 2026").
+#
+# cortech.online publishes each of these as an isPermaLink guid, and Spotify treats a
+# changed guid as a brand-new episode. So this file is a compatibility contract, not a
+# sample: slug_for_date() must reproduce every line byte-for-byte, forever (#128).
+# Append new dates; never edit or delete an existing line.
+#
+# <episode date>	<published slug>
+2026-08-23	daily-digest-august-23-2026
+2026-08-22	daily-digest-august-22-2026
+2026-08-21	daily-digest-august-21-2026
+2026-08-20	daily-digest-august-20-2026
+2026-08-19	daily-digest-august-19-2026
+2026-08-18	daily-digest-august-18-2026
+2026-08-17	daily-digest-august-17-2026
+2026-08-16	daily-digest-august-16-2026
+2026-08-15	daily-digest-august-15-2026
+2026-08-14	daily-digest-august-14-2026
+2026-08-13	daily-digest-august-13-2026
+2026-08-12	daily-digest-august-12-2026
+2026-08-11	daily-digest-august-11-2026
+2026-08-10	daily-digest-august-10-2026
+2026-08-09	daily-digest-august-9-2026
+2026-08-07	daily-digest-august-7-2026
+2026-08-06	daily-digest-august-6-2026
+2026-08-05	daily-digest-august-5-2026
+2026-08-04	daily-digest-august-4-2026
+2026-08-03	daily-digest-august-3-2026
+2026-08-02	daily-digest-august-2-2026
+2026-08-01	daily-digest-august-1-2026
+2026-07-31	daily-digest-july-31-2026
+2026-07-30	daily-digest-july-30-2026
+2026-07-29	daily-digest-july-29-2026
+2026-07-28	daily-digest-july-28-2026
+2026-07-27	daily-digest-july-27-2026
+2026-07-26	daily-digest-july-26-2026
+2026-07-25	daily-digest-july-25-2026
+2026-07-24	daily-digest-july-24-2026
+2026-07-23	daily-digest-july-23-2026
+2026-07-22	daily-digest-july-22-2026
+2026-07-21	daily-digest-july-21-2026
+2026-07-20	daily-digest-july-20-2026
+2026-07-18	daily-digest-july-18-2026
+2026-07-16	daily-digest-july-16-2026
+2026-07-15	daily-digest-july-15-2026
+2026-07-14	daily-digest-july-14-2026
+2026-07-13	daily-digest-july-13-2026
+2026-07-11	daily-digest-july-11-2026
+2026-07-10	daily-digest-july-10-2026
+2026-07-09	daily-digest-july-9-2026
+2026-07-08	daily-digest-july-8-2026
+2026-07-07	daily-digest-july-7-2026
+2026-07-06	daily-digest-july-6-2026
+2026-07-05	daily-digest-july-5-2026
+2026-07-04	daily-digest-july-4-2026
+2026-07-03	daily-digest-july-3-2026
+2026-07-02	daily-digest-july-2-2026
+2026-06-30	daily-digest-june-30-2026
+2026-06-28	daily-digest-june-28-2026
+2026-06-27	daily-digest-june-27-2026
+2026-06-26	daily-digest-june-26-2026
+2026-06-25	daily-digest-june-25-2026
+2026-06-24	daily-digest-june-24-2026
+2026-06-23	daily-digest-june-23-2026
+2026-06-21	daily-digest-june-21-2026
+2026-06-20	daily-digest-june-20-2026
+2026-06-19	daily-digest-june-19-2026
+2026-06-18	daily-digest-june-18-2026
+2026-06-16	daily-digest-june-16-2026
+2026-06-15	daily-digest-june-15-2026
+2026-06-14	daily-digest-june-14-2026
+2026-06-13	daily-digest-june-13-2026
+2026-06-12	daily-digest-june-12-2026
+2026-06-11	daily-digest-june-11-2026
+2026-06-10	daily-digest-june-10-2026
+2026-06-09	daily-digest-june-9-2026
+2026-06-08	daily-digest-june-8-2026
+2026-06-07	daily-digest-june-7-2026
+2026-06-06	daily-digest-june-6-2026
+2026-06-05	daily-digest-june-5-2026
+2026-06-04	daily-digest-june-4-2026
+2026-06-02	daily-digest-june-2-2026
+2026-06-01	daily-digest-june-1-2026
