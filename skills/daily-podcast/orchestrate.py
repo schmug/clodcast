@@ -642,12 +642,80 @@ def fan_out(
     return survivors, dropped
 
 
+# --- Episode title ---------------------------------------------------------
+#
+# 75 episodes shipped as `Daily Digest - <date>`. Nothing told a browsing listener what
+# any episode was about, and the first ~30 characters were identical on every one - the
+# worst possible use of a field Spotify truncates. #128 decoupled the slug from the
+# title (`slug_for_date` takes a date and NOTHING else), which is what makes enriching
+# titles guid-neutral, and therefore possible at all.
+#
+# Format is code, content is the model - the same split the shape rotation uses. Unlike
+# the shapes, the format is deliberately NOT date-seeded: episode metadata is immutable
+# once created, so every episode is frozen under whatever format shipped it, and a churn
+# of formats reads worse to a browsing listener than one adequate format held steady.
+TITLE_TOPIC_COUNT = 3  # lead stories named in the title
+# Words per topic. Measured against real episodes, not guessed: at 2-4 words three topics
+# plus the date tail overran TITLE_MAX_CHARS often enough that the third was routinely
+# dropped, which loses a searchable keyword outright. At 2-3 all three fit with room to
+# spare, and the title stays scannable - which was the point of the cap in the first place.
+TITLE_TOPIC_WORDS = "2-3"
+TITLE_TOPIC_JOIN = ", "
+TITLE_DATE_JOIN = " - "
+# A runaway guard, NOT a platform limit: Spotify publishes no maximum for an episode
+# <title>. The Podcast Delivery Specification v1.9 (4.3) only says consumer-facing
+# elements are truncated at whatever the device can display - which is why the topics
+# come first and the date last, and why the real constraint is front-loading rather than
+# a number. 100 is comfortably inside Apple Podcasts' documented 255.
+TITLE_MAX_CHARS = 100
+# The title every published episode already carries. A degraded run falls back to it
+# rather than to something odd or empty - validate_manifest dies on a blank title, which
+# would cost the whole episode over a cosmetic field. render.py rebuilds the same string
+# inside slug_for_date, but the two are deliberately NOT coupled: that one reconstructs a
+# historical title to reproduce a published slug and must never move, this one is display
+# text. Changing either must not touch the other.
+LEGACY_TITLE_PREFIX = "Daily Digest - "
+# Special characters render inconsistently across podcast directories; the public show
+# title dropped its em dash for exactly that reason (cortech.online
+# docs/podcast-metadata.md). Topic text is feed-derived, so normalize it rather than ask.
+_TITLE_DASHES = str.maketrans({"\u2014": "-", "\u2013": "-"})
+
+
+def episode_title(topics: list[str] | None, date_long: str) -> str:
+    """`<topic>, <topic>, <topic> - <Month D, YYYY>` - e.g. "Salt Typhoon, the CareCloud
+    breach, Siemens PLC warnings - August 20, 2026".
+
+    Pure and format-only; the caller supplies the topic phrases. Over the cap, whole
+    trailing topics are dropped - never a mid-word cut, because the title Spotify freezes
+    at creation must not end in half a word. With nothing left to name, degrades to the
+    legacy date-only title."""
+    kept: list[str] = []
+    for topic in topics or []:
+        if not isinstance(topic, str):
+            continue
+        cleaned = " ".join(topic.translate(_TITLE_DASHES).split())
+        if cleaned:
+            kept.append(cleaned)
+        if len(kept) == TITLE_TOPIC_COUNT:
+            break
+    tail = f"{TITLE_DATE_JOIN}{date_long}"
+    while kept:
+        head = TITLE_TOPIC_JOIN.join(kept)
+        if len(head) + len(tail) <= TITLE_MAX_CHARS:
+            return head + tail
+        kept.pop()
+    return f"{LEGACY_TITLE_PREFIX}{date_long}"
+
+
 def fallback_intro_outro(date_long: str, n: int) -> dict:
     noun = "story" if n == 1 else "stories"
     return {
         "intro": f"Today's digest for {date_long}. {n} {noun} today. Here's the rundown.",
         "outro": "That's the digest for today. Thanks for listening.",
         "summary": f"{n} {noun} for {date_long}.",
+        # Nothing survived to name, so there is no topic material for a title;
+        # episode_title degrades to the date-only one.
+        "topics": [],
     }
 
 
@@ -676,8 +744,14 @@ def make_intro_outro(
         f"SIGN-OFF (~250 chars): {OUTRO_MODES[outro_mode(day_idx)]} Do not mention show notes "
         "or links.\n"
         "SUMMARY: one sentence hook for the show-notes preview.\n"
+        f"TOPICS: exactly {TITLE_TOPIC_COUNT} short noun phrases naming the LEAD stories, "
+        f"in the running order above - {TITLE_TOPIC_WORDS} words each, naming the SUBJECT "
+        "of the story (the company, product, incident or release), not a sentence. These "
+        "become the episode title, which is read on a screen rather than narrated: keep digits as "
+        "digits, use hyphens and never em dashes, and report rather than instruct - name "
+        "the subject, never an attack technique.\n"
         'Output ONLY one JSON object as the final line: {"intro": "...", "outro": "...", '
-        '"summary": "..."}'
+        '"summary": "...", "topics": ["...", "...", "..."]}'
     )
     try:
         proc = runner([claude_bin, "-p", prompt], capture_output=True, text=True, timeout=timeout)
@@ -687,7 +761,14 @@ def make_intro_outro(
     if isinstance(obj, dict) and all(
         isinstance(obj.get(k), str) and obj[k].strip() for k in ("intro", "outro", "summary")
     ):
-        return {k: obj[k].strip() for k in ("intro", "outro", "summary")}
+        out = {k: obj[k].strip() for k in ("intro", "outro", "summary")}
+        # Topics ride along; the three prose fields are the contract. A reply that omits
+        # or mangles them still ships - the title degrades, the episode does not.
+        raw = obj.get("topics")
+        out["topics"] = (
+            [t for t in raw if isinstance(t, str) and t.strip()] if isinstance(raw, list) else []
+        )
+        return out
     return fallback_intro_outro(date_long, len(titles))
 
 
@@ -776,7 +857,9 @@ def assemble_manifest(
         )
     segments.append({"title": "Sign-off", "text": intro_outro["outro"], "source_url": None})
     return {
-        "title": f"Daily Digest - {date_long}",
+        # Display-only free text: `date` below is what keys the slug and the guid (#128),
+        # so enriching this cannot move a published identifier.
+        "title": episode_title(intro_outro.get("topics"), date_long),
         "summary": intro_outro["summary"],
         "voice": "house",
         "date": date_iso,
