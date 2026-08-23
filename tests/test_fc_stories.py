@@ -1,0 +1,400 @@
+import json
+
+import pytest
+
+import fc_common
+import fc_stories
+
+
+def _repo(**kw):
+    base = {
+        "stars": 50,
+        "forks": 0,
+        "open_issues": 0,
+        "created_at": "2026-08-20T00:00:00Z",
+        "pushed_at": "2026-08-24T00:00:00Z",
+        "archived": False,
+        "fork": False,
+        "topics": [],
+        "description": "d",
+        "language": "Py",
+    }
+    base.update(kw)
+    return base
+
+
+def _cfg(**kw):
+    cfg = dict(fc_common.DEFAULT_CONFIG)
+    cfg.update(kw)
+    return cfg
+
+
+def _write_snap(date, org_repos):
+    d = fc_common.snapshot_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    snap = {
+        "schema_version": 1,
+        "date": date,
+        "orgs": {o: {"fetched_at": "", "repos": r, "releases": []} for o, r in org_repos.items()},
+        "errors": {},
+    }
+    (d / f"{date}.json").write_text(json.dumps(snap))
+    return snap
+
+
+# --- snapshot loading + baseline -------------------------------------------
+
+
+def test_pick_baseline_prefers_newest_at_or_before_lookback():
+    dates = ["2026-08-10", "2026-08-17", "2026-08-18", "2026-08-24"]
+    assert fc_stories.pick_baseline(dates, "2026-08-25", 7) == "2026-08-18"
+
+
+def test_pick_baseline_falls_back_to_oldest_then_none():
+    assert fc_stories.pick_baseline(["2026-08-24"], "2026-08-25", 7) == "2026-08-24"
+    assert fc_stories.pick_baseline(["2026-08-25"], "2026-08-25", 7) is None
+    assert fc_stories.pick_baseline([], "2026-08-25", 7) is None
+
+
+def test_load_snapshot_degrades_to_none_on_malformed():
+    d = fc_common.snapshot_dir()
+    d.mkdir(parents=True)
+    (d / "2026-08-25.json").write_text("{not json")
+    assert fc_stories.load_snapshot("2026-08-25") is None
+    # parseable but not an object -> None too (a list can't be a snapshot)
+    (d / "2026-08-24.json").write_text("[1, 2]")
+    assert fc_stories.load_snapshot("2026-08-24") is None
+
+
+def test_load_snapshot_refuses_non_date_names():
+    # date_iso is interpolated into a path; anything that isn't a snapshot date
+    # must not resolve to a file outside (or inside) the snapshot dir.
+    d = fc_common.snapshot_dir()
+    d.mkdir(parents=True)
+    (d.parent / "escaped.json").write_text("{}")
+    assert fc_stories.load_snapshot("../escaped") is None
+    assert fc_stories.load_snapshot("2026-8-5") is None
+    assert fc_stories.load_snapshot(None) is None
+
+
+def test_org_views_degrades_on_malformed_shapes():
+    snap = {
+        "orgs": {
+            "good": {"repos": {"ok": _repo(), "broken-rec": "not-a-dict"}, "releases": []},
+            "no-repos-map": {"repos": "nope"},
+            "not-a-view": 7,
+        }
+    }
+    views = fc_stories.org_views(snap)
+    assert set(views) == {"good", "no-repos-map"}
+    assert set(views["good"]) == {"ok"}
+    assert views["no-repos-map"] == {}
+    assert fc_stories.org_views({"orgs": "bogus"}) == {}
+
+
+def test_org_views_drops_names_outside_githubs_alphabet():
+    # such names can only come from a damaged snapshot, and they would forge
+    # colliding story keys ("a:b" + stage "c" vs "a" + stage "b:c") or URLs
+    snap = {
+        "orgs": {
+            "acme": {"repos": {"fine": _repo(), "evil:name": _repo(), "sl/ash": _repo()}},
+            "bad:org": {"repos": {"x": _repo()}},
+        }
+    }
+    views = fc_stories.org_views(snap)
+    assert set(views) == {"acme"}
+    assert set(views["acme"]) == {"fine"}
+
+
+# --- detectors: NEW_REPO / NOTABLE_FORK / ARCHIVED --------------------------
+
+
+def test_detect_new_repos_skips_forks_and_old_repos():
+    cur = {
+        "shiny": _repo(created_at="2026-08-21T00:00:00Z"),
+        "forked": _repo(created_at="2026-08-21T00:00:00Z", fork=True),
+        "ancient": _repo(created_at="2020-01-01T00:00:00Z"),
+    }
+    got = fc_stories.detect_new_repos({"acme": cur}, "2026-08-18")
+    assert [s["repo"] for s in got] == ["shiny"]
+    assert got[0]["key"] == "NEW_REPO:acme/shiny:new"
+    assert got[0]["url"] == "https://github.com/acme/shiny"
+
+
+def test_detect_notable_forks_requires_recent_push():
+    cur = {
+        "git": _repo(
+            fork=True, created_at="2026-08-21T00:00:00Z", pushed_at="2026-08-24T00:00:00Z"
+        ),
+        "dead": _repo(
+            fork=True, created_at="2026-08-21T00:00:00Z", pushed_at="2026-06-01T00:00:00Z"
+        ),
+    }
+    got = fc_stories.detect_notable_forks({"openai": cur}, "2026-08-18", "2026-08-25")
+    assert [s["repo"] for s in got] == ["git"]
+    assert got[0]["type"] == "NOTABLE_FORK"
+
+
+def test_detect_archived_needs_a_flip_and_a_baseline():
+    base = {"acme": {"gym": _repo(archived=False)}}
+    cur = {"acme": {"gym": _repo(archived=True), "born-dead": _repo(archived=True)}}
+    got = fc_stories.detect_archived(cur, base)
+    assert [s["key"] for s in got] == ["ARCHIVED:acme/gym:archived"]
+    assert fc_stories.detect_archived(cur, None) == []
+
+
+# --- detectors: GOING_STALE / STAR_SURGE / RELEASE --------------------------
+
+
+def test_going_stale_stages_and_floor():
+    cur = {
+        "acme": {
+            "big-stale": _repo(stars=5000, pushed_at="2026-01-01T00:00:00Z"),  # 236 days
+            "big-dead": _repo(stars=5000, pushed_at="2024-08-01T00:00:00Z"),  # > 365
+            "small-stale": _repo(stars=10, pushed_at="2026-01-01T00:00:00Z"),
+            "fresh": _repo(stars=5000, pushed_at="2026-08-20T00:00:00Z"),
+            "tombstone": _repo(stars=5000, pushed_at="2026-01-01T00:00:00Z", archived=True),
+        }
+    }
+    got = fc_stories.detect_going_stale(cur, "2026-08-25", _cfg())
+    assert {s["key"] for s in got} == {
+        "GOING_STALE:acme/big-stale:stale-180",
+        "GOING_STALE:acme/big-dead:stale-365",
+    }
+
+
+def test_star_surge_normalizes_to_seven_days_and_needs_baseline():
+    base = {"acme": {"hot": _repo(stars=1000), "cool": _repo(stars=1000)}}
+    cur = {"acme": {"hot": _repo(stars=2200), "cool": _repo(stars=1100)}}
+    got = fc_stories.detect_star_surge(cur, base, "2026-08-11", "2026-08-25", _cfg())
+    # hot: +1200 over 14d -> +600/7d >= max(500, 200); cool: +50/7d -> no
+    assert [s["repo"] for s in got] == ["hot"]
+    assert got[0]["key"] == "STAR_SURGE:acme/hot:2026-W35"
+    assert fc_stories.detect_star_surge(cur, None, None, "2026-08-25", _cfg()) == []
+
+
+def test_release_detection_respects_stars_bar_and_allowlist():
+    snap = {
+        "orgs": {
+            "acme": {
+                "repos": {},
+                "releases": [
+                    {"repo": "big", "tag": "v2", "published_at": "2026-08-22T00:00:00Z"},
+                    {"repo": "tiny", "tag": "v1", "published_at": "2026-08-22T00:00:00Z"},
+                    {"repo": "listed", "tag": "v3", "published_at": "2026-08-22T00:00:00Z"},
+                    {"repo": "old", "tag": "v0", "published_at": "2026-01-01T00:00:00Z"},
+                ],
+            }
+        }
+    }
+    cur = {
+        "acme": {
+            "big": _repo(stars=900),
+            "tiny": _repo(stars=5),
+            "listed": _repo(stars=5),
+            "old": _repo(stars=900),
+        }
+    }
+    cfg = _cfg(allowlist={"acme": ["listed"]})
+    got = fc_stories.detect_releases(snap, "2026-08-18", cur, cfg)
+    assert {s["key"] for s in got} == {"RELEASE:acme/big:v2", "RELEASE:acme/listed:v3"}
+
+
+def test_release_stage_embeds_tag_verbatim_even_with_colon():
+    # The key is an opaque exact-match token, never parsed — so a tag with ':'
+    # is embedded VERBATIM. Sanitizing instead would collide distinct tags
+    # ("v1:beta" vs "v1_beta") into one key and silently skip a mention.
+    snap = {
+        "orgs": {
+            "acme": {
+                "repos": {},
+                "releases": [
+                    {"repo": "big", "tag": "v1:beta", "published_at": "2026-08-22T00:00:00Z"},
+                    {"repo": "big", "tag": "v1_beta", "published_at": "2026-08-22T00:00:00Z"},
+                ],
+            }
+        }
+    }
+    cur = {"acme": {"big": _repo(stars=900)}}
+    got = fc_stories.detect_releases(snap, "2026-08-18", cur, _cfg())
+    keys = [s["key"] for s in got]
+    assert "RELEASE:acme/big:v1:beta" in keys
+    assert "RELEASE:acme/big:v1_beta" in keys
+    assert len(set(keys)) == 2  # no collision
+    # and the colon key round-trips through the mention-once state
+    fc_stories.mark_reported(["RELEASE:acme/big:v1:beta"], "2026-08-25", "spotify:episode:e1")
+    left = fc_stories.filter_new(got, fc_stories.load_reported())
+    assert [s["key"] for s in left] == ["RELEASE:acme/big:v1_beta"]
+
+
+def test_release_skips_empty_tags_unsafe_names_and_malformed_entries():
+    snap = {
+        "orgs": {
+            "acme": {
+                "repos": {},
+                "releases": [
+                    {"repo": "big", "tag": "", "published_at": "2026-08-22T00:00:00Z"},
+                    {"repo": "evil:name", "tag": "v1", "published_at": "2026-08-22T00:00:00Z"},
+                    "not-a-dict",
+                    {"repo": "big", "tag": "v2", "published_at": "2026-08-22T00:00:00Z"},
+                ],
+            },
+            "bad": {"releases": "nope"},
+        }
+    }
+    cur = {"acme": {"big": _repo(stars=900)}}
+    got = fc_stories.detect_releases(snap, "2026-08-18", cur, _cfg())
+    assert [s["key"] for s in got] == ["RELEASE:acme/big:v2"]
+
+
+# --- mention-once state ------------------------------------------------------
+
+
+def test_mention_once_and_stage_readmission():
+    s180 = fc_stories.story("GOING_STALE", "acme", "x", "stale-180", {})
+    s365 = fc_stories.story("GOING_STALE", "acme", "x", "stale-365", {})
+    fc_stories.mark_reported([s180["key"]], "2026-08-25", "spotify:episode:e1")
+    reported = fc_stories.load_reported()
+    assert fc_stories.filter_new([s180, s365], reported) == [s365]
+
+
+def test_load_reported_degrades_on_malformed():
+    fc_common.reported_path().parent.mkdir(parents=True, exist_ok=True)
+    fc_common.reported_path().write_text("{broken")
+    assert fc_stories.load_reported() == {}
+    fc_common.reported_path().write_text("[1]")  # parseable but not an object
+    assert fc_stories.load_reported() == {}
+
+
+def test_mark_reported_round_trips_and_merges():
+    fc_stories.mark_reported(["A:o/r:new"], "2026-08-25", "spotify:episode:e1")
+    fc_stories.mark_reported(["B:o/r:new"], "2026-09-01", "spotify:episode:e2")
+    rep = fc_stories.load_reported()
+    assert rep["A:o/r:new"]["episode_uri"] == "spotify:episode:e1"
+    assert rep["B:o/r:new"]["date"] == "2026-09-01"
+
+
+# --- scoring + selection -----------------------------------------------------
+
+
+def test_scoring_orders_types_then_stars():
+    new_small = fc_stories.story("NEW_REPO", "a", "x", "new", {"stars": 0})
+    surge_huge = fc_stories.story("STAR_SURGE", "a", "y", "2026-W35", {"stars": 100000})
+    assert fc_stories.score_story(new_small) > fc_stories.score_story(surge_huge)
+
+
+def test_scoring_degrades_on_malformed_stars():
+    # a damaged snapshot's stars must degrade the score, never crash log10
+    junk = fc_stories.story("NEW_REPO", "a", "x", "new", {"stars": "lots"})
+    negative = fc_stories.story("NEW_REPO", "a", "x", "new", {"stars": -5})
+    floor = fc_stories.score_story(fc_stories.story("NEW_REPO", "a", "x", "new", {"stars": 0}))
+    assert fc_stories.score_story(junk) == floor
+    assert fc_stories.score_story(negative) == floor
+
+
+def test_select_stories_enforces_per_org_cap_and_target():
+    cands = []
+    for i in range(5):
+        s = fc_stories.story("NEW_REPO", "monopoly", f"r{i}", "new", {"stars": 100 - i})
+        s["score"] = fc_stories.score_story(s)
+        cands.append(s)
+    other = fc_stories.story("RELEASE", "indie", "z", "v1", {"stars": 1})
+    other["score"] = fc_stories.score_story(other)
+    cands.append(other)
+    picked = fc_stories.select_stories(cands, target=4, per_org_cap=3)
+    assert len(picked) == 4
+    assert sum(1 for s in picked if s["org"] == "monopoly") == 3
+    assert any(s["org"] == "indie" for s in picked)
+
+
+def test_select_stories_breaks_score_ties_by_key():
+    a = fc_stories.story("NEW_REPO", "b", "x", "new", {"stars": 5})
+    b = fc_stories.story("NEW_REPO", "a", "y", "new", {"stars": 5})
+    for s in (a, b):
+        s["score"] = fc_stories.score_story(s)
+    picked = fc_stories.select_stories([a, b], target=1, per_org_cap=3)
+    assert [s["key"] for s in picked] == ["NEW_REPO:a/y:new"]
+
+
+# --- detect_all + CLI --------------------------------------------------------
+
+
+def test_detect_all_end_to_end_with_mention_once(capsys):
+    base_repos = {"acme": {"steady": _repo(stars=1000, created_at="2020-01-01T00:00:00Z")}}
+    cur_repos = {
+        "acme": {
+            "steady": _repo(stars=1000, created_at="2020-01-01T00:00:00Z"),
+            "brand-new": _repo(created_at="2026-08-22T00:00:00Z"),
+        }
+    }
+    _write_snap("2026-08-18", base_repos)
+    _write_snap("2026-08-25", cur_repos)
+    cfg = _cfg(orgs=[{"name": "acme", "filter": "none"}])
+
+    out = fc_stories.detect_all("2026-08-25", cfg)
+    assert out["baseline_date"] == "2026-08-18"
+    assert [s["key"] for s in out["stories"]] == ["NEW_REPO:acme/brand-new:new"]
+    assert out["thin"] is True  # 1 < min_stories_per_episode (2)
+
+    fc_stories.mark_reported([s["key"] for s in out["stories"]], "2026-08-25", "spotify:episode:e")
+    again = fc_stories.detect_all("2026-08-25", cfg)
+    assert again["stories"] == []
+
+
+def test_detect_all_falls_back_to_newest_snapshot_and_logs(capsys):
+    _write_snap("2026-08-18", {"acme": {}})
+    _write_snap("2026-08-24", {"acme": {"n": _repo(created_at="2026-08-22T00:00:00Z")}})
+    cfg = _cfg(orgs=[{"name": "acme", "filter": "none"}])
+    out = fc_stories.detect_all("2026-08-25", cfg)
+    assert out["baseline_date"] == "2026-08-18"
+    assert [s["key"] for s in out["stories"]] == ["NEW_REPO:acme/n:new"]
+    assert "warn: no snapshot for 2026-08-25, using 2026-08-24" in capsys.readouterr().out
+
+
+def test_detect_all_dies_without_any_snapshot():
+    with pytest.raises(SystemExit):
+        fc_stories.detect_all("2026-08-25", _cfg())
+
+
+def test_cli_detect_prints_contract_and_mark_round_trips(tmp_path, capsys):
+    fc_common.atomic_write_json(
+        fc_common.config_path(), {"orgs": [{"name": "acme", "filter": "none"}]}
+    )
+    _write_snap("2026-08-25", {"acme": {"n": _repo(created_at="2026-08-22T00:00:00Z")}})
+    rc = fc_stories.main(["detect", "--date", "2026-08-25"])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert set(out) == {"run_date", "baseline_date", "thin", "stories"}
+
+    f = tmp_path / "stories.json"
+    f.write_text(json.dumps(out))
+    rc = fc_stories.main(["mark", "--stories", str(f), "--episode-uri", "spotify:episode:e9"])
+    assert rc == 0
+    marked = fc_stories.load_reported()[out["stories"][0]["key"]]
+    assert marked["episode_uri"] == "spotify:episode:e9"
+    assert marked["date"] == "2026-08-25"  # the file's run_date, not a second clock read
+
+
+def test_cli_detect_rejects_bad_date_and_lookback(tmp_path):
+    fc_common.atomic_write_json(
+        fc_common.config_path(), {"orgs": [{"name": "acme", "filter": "none"}]}
+    )
+    with pytest.raises(SystemExit):
+        fc_stories.main(["detect", "--date", "not-a-date"])
+    with pytest.raises(SystemExit):
+        fc_stories.main(["detect", "--date", "2026-08-25", "--lookback-days", "0"])
+
+
+def test_cli_mark_dies_on_malformed_stories_file(tmp_path):
+    missing = tmp_path / "nope.json"
+    with pytest.raises(SystemExit):
+        fc_stories.main(["mark", "--stories", str(missing), "--episode-uri", "u"])
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"stories": [{"no-key": True}], "run_date": "2026-08-25"}))
+    with pytest.raises(SystemExit):
+        fc_stories.main(["mark", "--stories", str(bad), "--episode-uri", "u"])
+    no_date = tmp_path / "no_date.json"
+    no_date.write_text(json.dumps({"stories": [{"key": "A:o/r:new"}]}))
+    with pytest.raises(SystemExit):
+        fc_stories.main(["mark", "--stories", str(no_date), "--episode-uri", "u"])
+    assert fc_stories.load_reported() == {}  # nothing was partially marked
