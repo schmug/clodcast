@@ -64,4 +64,4 @@ select = ["E", "W", "F", "I", "UP", "B"]
 # render.py and the frontier-commits fc_* modules are local modules loaded via
 # sys.path (see tests/conftest.py), so keep them in their own first-party import
 # group rather than lumping them with third-party.
-known-first-party = ["render", "fc_common"]
+known-first-party = ["render", "fc_common", "fc_snapshot"]
