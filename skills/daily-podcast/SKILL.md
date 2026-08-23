@@ -132,7 +132,9 @@ Don't replace the table with arithmetic. The first version of this used a stride
 | `(day + i) % 4 == 0` | 500-650 chars | Short take |
 | everything else | 600-900 chars | Body segment |
 
-500 is a hard floor, not a target: a segment under it reads as filler next to its neighbours and `orchestrate.py` drops the item outright (`MIN_SEGMENT_CHARS`). Short takes are only safe at all because Spotify's sub-30s chapter cap was retired upstream — see [Chapter-duration guardrail](#chapter-duration-guardrail).
+**The band measures the story body, not the body plus its segue.** A segue is added on top of whatever the band allows, so a 500-650 short take carrying a 100-character bridge lands near 750 in the finished manifest — that is correct, not an overrun. This is not a stylistic reading: in `orchestrate.py` the band reaches the item writer through `fill_prompt`, which fills `<<MIN_CHARS>>`/`<<MAX_CHARS>>` in [`prompts/summarize_item.md`](prompts/summarize_item.md), and that writer only ever produces the body; `make_transitions` prepends the segue afterward in `assemble_manifest`. Measure the two separately when writing by hand, or every short take comes out starved.
+
+500 is a hard floor, not a target: a body under it reads as filler next to its neighbours and `orchestrate.py` drops the item outright (`MIN_SEGMENT_CHARS`, checked on the body before any segue is attached). Short takes are only safe at all because Spotify's sub-30s chapter cap was retired upstream — see [Chapter-duration guardrail](#chapter-duration-guardrail).
 
 **Every segment, whatever its shape:**
 - Substance in the middle: what, why, the key detail
