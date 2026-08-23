@@ -158,12 +158,44 @@ SHAPE_ORDERS = (
 )
 
 
-def segment_shape(day_idx: int, position: int) -> str:
-    """Name the shape for the segment at `position` in today's episode. Positions
-    past the bank size wrap, so a twelve-segment episode reuses the day's ordering."""
-    names = list(SEGMENT_SHAPES)
-    order = SHAPE_ORDERS[day_idx % len(SHAPE_ORDERS)]
+# What a segue DOES, not a phrase to say. "Next up / Moving on / Also today" were
+# interchangeable filler; a move names the relationship between two adjacent stories,
+# which is the thing that can actually differ. `cold` carries no text at all - that is
+# what makes "not every segment needs a segue" mechanical instead of a hope.
+TRANSITION_MOVES = {
+    "cold": "",
+    "pivot": "Name the change of subject in a few words, then go.",
+    "contrast": "Set this story against the one before it - they point different ways.",
+    "escalate": "Mark that this story raises the stakes on the theme just covered.",
+    "echo": "Mark that this story rhymes with the previous one: same pattern, new actor.",
+}
+
+# Segues walk the SAME Latin square as shapes, from a different row. On the same row a
+# given shape would carry the same segue forever, collapsing two independent axes into
+# one. Any non-zero offset works; `test_transitions_are_not_locked_to_the_shape_rotation`
+# locks the decoupling rather than this particular value.
+TRANSITION_ROW_OFFSET = 2
+
+
+def _latin_pick(bank: dict, day_idx: int, position: int, row_offset: int = 0) -> str:
+    """Read one name out of `bank` using the day's row of SHAPE_ORDERS. Positions past
+    the bank size wrap, so a twelve-segment episode reuses the day's ordering."""
+    names = list(bank)
+    order = SHAPE_ORDERS[(day_idx + row_offset) % len(SHAPE_ORDERS)]
     return names[order[position % len(order)]]
+
+
+def segment_shape(day_idx: int, position: int) -> str:
+    """Name the shape for the segment at `position` in today's episode."""
+    return _latin_pick(SEGMENT_SHAPES, day_idx, position)
+
+
+def segment_transition(day_idx: int, position: int) -> str | None:
+    """Name the segue INTO the story at `position`, or None for the lead story, which
+    follows the cold open and needs no bridge."""
+    if position == 0:
+        return None
+    return _latin_pick(TRANSITION_MOVES, day_idx, position - 1, TRANSITION_ROW_OFFSET)
 
 
 def intro_mode(day_idx: int) -> str:
@@ -659,17 +691,86 @@ def make_intro_outro(
     return fallback_intro_outro(date_long, len(titles))
 
 
+def make_transitions(
+    titles: list[str],
+    day_idx: int,
+    claude_bin: str = "claude",
+    runner: Callable = subprocess.run,
+    timeout: int = SUMMARIZE_TIMEOUT_S,
+) -> list[str]:
+    """Write the episode's segues from the running order of TITLES ONLY - no article
+    bodies, so the one-body-per-request invariant is untouched. This has to happen here
+    rather than in the per-item writers: an isolated `claude -p` has never seen the
+    previous story, so it cannot bridge to it.
+
+    Returns one entry per story; index 0 is always "" (the lead follows the cold open)
+    and `cold` junctions stay "". Any failure degrades to all hard cuts - an episode
+    without segues is fine, a dead run is not."""
+    n = len(titles)
+    if n < 2:
+        return [""] * n
+    wanted = [
+        (i, segment_transition(day_idx, i))
+        for i in range(1, n)
+        if segment_transition(day_idx, i) != "cold"
+    ]
+    if not wanted:
+        return [""] * n
+    briefs = "\n".join(
+        f'  {i}. into "{titles[i]}" (after "{titles[i - 1]}") - {TRANSITION_MOVES[move]}'
+        for i, move in wanted
+    )
+    prompt = (
+        "You are writing the SEGUES for a daily news-digest podcast - the short spoken "
+        "bridges between stories. Below is today's running order, then the assigned move "
+        "for each junction that needs one.\n\n"
+        + "RUNNING ORDER:\n"
+        + "\n".join(f"  {i}. {t}" for i, t in enumerate(titles))
+        + f"\n\nJUNCTIONS:\n{briefs}\n\n"
+        "RULES:\n"
+        "- One short clause or sentence each. These are bridges, not summaries.\n"
+        "- If the assigned move needs a relationship the two stories do not actually "
+        "have, do NOT manufacture one. Write a plain topic change instead. A false "
+        "connection between unrelated news items is worse than a blunt hand-off.\n"
+        "- Spoken style. No em dashes; use hyphens. No URLs. Do not restate a headline.\n"
+        f"OUTPUT: exactly one JSON object as the final line, a list of {n} strings where "
+        'index 0 is "" and any junction not listed above is also "": '
+        '{"transitions": ["", "...", ...]}'
+    )
+    try:
+        proc = runner([claude_bin, "-p", prompt], capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return [""] * n
+    obj = extract_last_json(proc.stdout or "")
+    items = obj.get("transitions") if isinstance(obj, dict) else None
+    if not isinstance(items, list):
+        return [""] * n
+    out = [""] * n
+    for i, _move in wanted:
+        val = items[i] if i < len(items) else ""
+        if isinstance(val, str) and val.strip():
+            out[i] = val.strip()
+    return out
+
+
 def assemble_manifest(
-    date_long: str, date_iso: str, survivors: list[dict], intro_outro: dict
+    date_long: str,
+    date_iso: str,
+    survivors: list[dict],
+    intro_outro: dict,
+    transitions: list[str] | None = None,
 ) -> dict:
     """Build the render.py manifest: intro + one segment per survivor (strict 1:1
     source mapping) + sign-off. Shape matches render.validate_manifest."""
     segments: list[dict] = [{"title": "Intro", "text": intro_outro["intro"], "source_url": None}]
-    for s in survivors:
+    for i, s in enumerate(survivors):
+        # The segue belongs to the INCOMING chapter, so the chapter mark lands on the
+        # bridge rather than mid-sentence after it.
+        segue = (transitions[i] if transitions and i < len(transitions) else "") or ""
         segments.append(
             {
                 "title": (s["title"][:120] or "Story"),
-                "text": s["segment"],
+                "text": f"{segue} {s['segment']}".strip() if segue else s["segment"],
                 "source_url": s["source_url"],
             }
         )
@@ -846,8 +947,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         return _fail("no viable items (all dropped/blocked)")
 
-    intro_outro = make_intro_outro([s["title"] for s in survivors], date_long, day_idx=day_idx)
-    manifest = assemble_manifest(date_long, date_iso, survivors, intro_outro)
+    titles = [s["title"] for s in survivors]
+    intro_outro = make_intro_outro(titles, date_long, day_idx=day_idx)
+    transitions = make_transitions(titles, day_idx)
+    manifest = assemble_manifest(
+        date_long, date_iso, survivors, intro_outro, transitions=transitions
+    )
 
     workdir = (
         Path(args.workdir)

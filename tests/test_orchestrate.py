@@ -901,3 +901,115 @@ def test_skill_md_shape_table_matches_the_code():
         assert cells[1:] == [names[i] for i in order], (
             f"row {row}: SKILL.md says {cells[1:]}, code says {[names[i] for i in order]}"
         )
+
+
+# --- Segues: assigned, like everything else --------------------------------
+#
+# The first pass at this left transitions as a REQUEST ("vary the connective
+# tissue"), which is the exact thing the rest of this design argues does not
+# work. It also could not apply to the orchestrator at all: a per-item writer is
+# isolated and has never seen the previous story, so it cannot write a segue.
+# Transitions are therefore assigned from the running order of TITLES - context
+# `make_intro_outro` is already allowed to have, so the one-body-per-request
+# invariant is untouched.
+
+
+def test_transition_moves_include_a_hard_cut():
+    # `cold` is what makes "not every segment needs a segue" mechanical rather
+    # than a hope. Without it, every junction gets connective tissue.
+    assert "cold" in orchestrate.TRANSITION_MOVES
+    assert len(orchestrate.TRANSITION_MOVES) == len(orchestrate.SEGMENT_SHAPES)
+
+
+def test_lead_story_has_no_incoming_segue():
+    for day in range(1, 366):
+        assert orchestrate.segment_transition(day, 0) is None
+
+
+def test_transitions_do_not_pin_a_junction_two_days_running():
+    for day in range(1, 366):
+        for pos in range(1, 15):
+            today = orchestrate.segment_transition(day, pos)
+            assert today != orchestrate.segment_transition(day + 1, pos), (
+                f"junction {pos} repeats {today!r} on days {day}/{day + 1}"
+            )
+
+
+def test_every_junction_sees_every_move_within_one_bank_cycle():
+    n = len(orchestrate.TRANSITION_MOVES)
+    for start in range(1, 60):
+        for pos in range(1, n + 1):
+            seen = {orchestrate.segment_transition(start + k, pos) for k in range(n)}
+            assert seen == set(orchestrate.TRANSITION_MOVES), f"junction {pos} starved"
+
+
+def test_transitions_are_not_locked_to_the_shape_rotation():
+    """Segues and shapes both walk SHAPE_ORDERS. If they walked the SAME row, a
+    given shape would carry the same segue forever, collapsing two independent
+    axes of variety into one."""
+    shapes = list(orchestrate.SEGMENT_SHAPES)
+    moves = list(orchestrate.TRANSITION_MOVES)
+    for day in range(1, 366):
+        shape_row = [shapes.index(orchestrate.segment_shape(day, p)) for p in range(5)]
+        move_row = [moves.index(orchestrate.segment_transition(day, p + 1)) for p in range(5)]
+        assert shape_row != move_row, f"day {day}: segues walk the same row as shapes"
+
+
+def test_make_transitions_falls_back_to_hard_cuts(monkeypatch):
+    # Same posture as make_intro_outro: a failure here must cost the episode its
+    # segues, never the run.
+    def boom(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, 1)
+
+    out = orchestrate.make_transitions(["A", "B", "C"], day_idx=3, runner=boom)
+    assert out == ["", "", ""]
+
+
+def test_make_transitions_returns_one_entry_per_story_and_never_leads():
+    def runner(cmd, **kw):
+        return SimpleNamespace(
+            stdout='{"transitions": ["IGNORED", "Then the other side of that.", "Elsewhere."]}',
+            stderr="",
+            returncode=0,
+        )
+
+    out = orchestrate.make_transitions(["A", "B", "C"], day_idx=3, runner=runner)
+    assert len(out) == 3
+    assert out[0] == ""  # the lead story never gets an incoming segue
+    assert out[1] and out[2]
+
+
+def test_assemble_manifest_prepends_segues_to_the_right_segments():
+    survivors = [
+        {
+            "title": f"T{i}",
+            "url": f"u/{i}",
+            "source_url": f"u/{i}",
+            "segment": f"body{i}",
+            "feed_name": "F",
+        }
+        for i in range(3)
+    ]
+    io = {"intro": "i", "outro": "o", "summary": "s"}
+    m = orchestrate.assemble_manifest(
+        "June 4, 2026", "2026-06-04", survivors, io, transitions=["", "Meanwhile.", ""]
+    )
+    texts = [s["text"] for s in m["segments"]]
+    assert texts[0] == "i" and texts[-1] == "o"  # intro/outro untouched
+    assert texts[1] == "body0"  # lead: no segue
+    assert texts[2] == "Meanwhile. body1"  # segue prepended, single space
+    assert texts[3] == "body2"  # `cold` junction stays a hard cut
+
+
+def test_assemble_manifest_without_transitions_is_unchanged():
+    # Back-compat: the fallback path passes nothing and must behave as before.
+    survivors = [{"title": "T", "url": "u", "source_url": "u", "segment": "body", "feed_name": "F"}]
+    io = {"intro": "i", "outro": "o", "summary": "s"}
+    m = orchestrate.assemble_manifest("June 4, 2026", "2026-06-04", survivors, io)
+    assert [s["text"] for s in m["segments"]] == ["i", "body", "o"]
+
+
+def test_skill_md_documents_every_transition_move():
+    skill = (orchestrate.SKILL_DIR / "SKILL.md").read_text()
+    for name in orchestrate.TRANSITION_MOVES:
+        assert name in skill, f"SKILL.md never mentions the {name!r} segue"
