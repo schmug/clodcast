@@ -122,6 +122,15 @@ per-failure write-ups in [incidents/](incidents/) are the source of truth for
 
 These are subtle and easy to break. Preserve them or the produced episode is rejected by Spotify or sounds wrong.
 
+- **The web `slug` is keyed on the episode DATE, never the title.** `slug_for_date(date)`
+  cannot see `title` by construction (#128). cortech.online republishes `/podcast/<slug>/`
+  as an `isPermaLink` `<guid>`, and Spotify treats a changed guid as a brand-new episode —
+  so every published slug is immutable and the title is free display text. Its shape is a
+  compatibility artifact reproducing the slugs minted from the old date-only titles;
+  `tests/data/published_slugs.tsv` pins all 75 live ones byte-for-byte (append, never edit).
+  Month names are a literal table, not `strftime("%B")`, which is LC_TIME-dependent. The
+  `--dry-run` preview and the real publish both resolve the URL through
+  `r2_episode_mp3_url`, so the rehearsal can't advertise a URL the publish wouldn't write.
 - **Strict 1:1 segment ↔ source mapping.** `build_timeline_and_description` assumes every non-null `source_url` becomes a `link` companion to the chapter at that index. Don't merge segments or attach multiple URLs to one segment.
 - **Consecutive chapter starts must be at least `MIN_CHAPTER_GAP_MS` = 5 s apart; the final chapter is exempt.** This is the *only* chapter-duration rule the platform still has, and it governs chapter **spacing** (`start_time_ms` deltas), not inter-chapter silence — so `DEFAULT_SILENCE_MS = 800` is unrelated to it and stays. `plan_silences` pads a segment's trailing silence only far enough to reach that 5 s floor, which real segments never trigger; `verify_artifact` re-checks it at the artifact gate. **Retired invariant (verified 2026-08-22):** there used to be a "max 3 chapters under 30 s" rule here, and `plan_silences` padded toward a 30.5 s target — up to 12 s of dead air per chapter — dying with a script-rewrite error when it ran out of room. Upstream PR #44 (save-to-spotify v0.1.4) dropped that cap. Confirmed against CLI 0.2.0 on a throwaway show: a timeline with 11 of 12 chapters under 30 s was accepted by `timeline set` and processed to `READY`, while a 3 s gap was still refused with `chapter at index 0 must be at least 5s long`. Don't reintroduce a 30 s target.
 - **The last segment gets `LAST_SILENCE_MS = 0` trailing silence.** Padding the tail breaks chapter math (`last_chapter_start_ms >= episode_duration_ms` is fatal).

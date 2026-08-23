@@ -1868,14 +1868,54 @@ def _resume(
 # never call load_config (pinned by test_resume_skips_upload_and_runs_idempotent_tail).
 
 
-def slugify(title: str, date: str) -> str:
+# Spelled out rather than taken from strftime("%B"), which is LC_TIME-dependent: these
+# slugs are permanent public identifiers, and a run on a non-English box must never
+# mint `daily-digest-agosto-23-2026` for a date that already published as `august`.
+_LEGACY_TITLE_MONTHS = (
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)
+
+
+def slug_for_date(date: str) -> str:
     """Lowercase kebab slug matching the consumer schema's ^[a-z0-9-]+$. It keys both
-    the R2 object (<slug>.mp3) and the /podcast/<slug>/ permalink, so it must be
-    stable for a given title: re-rendering the same title upserts, never duplicates."""
-    s = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
-    if not s:
-        s = f"episode-{date}"
-    return s[:80].strip("-")
+    the R2 object (<slug>.mp3) and the /podcast/<slug>/ permalink, which cortech.online
+    republishes as an isPermaLink <guid> — and Spotify treats a changed guid as a
+    brand-new episode. So the slug must be stable for a given DATE, and deliberately
+    cannot see the `title` (#128): the title is display-only free text that is expected
+    to be rewritten, and coupling the two made retitling duplicate the back catalogue.
+
+    The shape is not a fresh design — it reproduces the slugs already published, which
+    were minted by running the old date-only titles ("Daily Digest - August 23, 2026")
+    through the kebab normalizer below. Hence the historical prefix, the unpadded day
+    and the comma. tests/data/published_slugs.tsv pins every live one byte-for-byte.
+    """
+    try:
+        d = dt.datetime.strptime(date, "%Y-%m-%d").date()
+        legacy_title = f"Daily Digest - {_LEGACY_TITLE_MONTHS[d.month - 1]} {d.day}, {d.year}"
+    except (TypeError, ValueError):
+        # validate_manifest never checked `date`, so a malformed one must still yield a
+        # deterministic schema-valid slug rather than crash the publish. Same shape as
+        # the empty-title fallback this replaced.
+        legacy_title = f"episode-{date}"
+    return re.sub(r"[^a-z0-9]+", "-", legacy_title.lower()).strip("-")[:80].strip("-")
+
+
+def resolve_slug_date(manifest: dict[str, Any]) -> str:
+    """The ISO date the slug is keyed on. An explicit manifest `date` wins, mirroring
+    resolve_pubdate: a back-fill or archive re-render must reproduce that date's
+    historical slug, not stamp the day it happened to be re-rendered."""
+    return manifest.get("date") or dt.date.today().isoformat()
 
 
 def resolve_pubdate(manifest: dict[str, Any]) -> str:
@@ -2120,6 +2160,13 @@ R2_SKIPPED = "skipped"
 R2_FAILED = "failed"
 
 
+def r2_episode_mp3_url(cfg: dict[str, Any], manifest: dict[str, Any]) -> str:
+    """Public URL of the episode mp3 for this manifest. The --dry-run preview and the
+    real publish both resolve it here, so a rehearsal can never advertise a URL the
+    publish would not actually write (#128)."""
+    return f"{cfg['public_base_url'].rstrip('/')}/{slug_for_date(resolve_slug_date(manifest))}.mp3"
+
+
 def maybe_publish_r2(
     config: dict[str, Any],
     *,
@@ -2142,9 +2189,8 @@ def maybe_publish_r2(
         return R2_SKIPPED
     try:
         client = r2_client(cfg)
-        date_iso = manifest.get("date") or dt.date.today().isoformat()
         title = manifest["title"]
-        slug = slugify(title, date_iso)
+        slug = slug_for_date(resolve_slug_date(manifest))
         base = cfg["public_base_url"].rstrip("/")
         immutable = "public, max-age=31536000, immutable"
 
@@ -2158,7 +2204,7 @@ def maybe_publish_r2(
             "audio/mpeg",
             cache_control=immutable,
         )
-        mp3_url = f"{base}/{mp3_key}"
+        mp3_url = r2_episode_mp3_url(cfg, manifest)
 
         # Cover is best-effort: a flaky image upload must not sink the episode.
         cover_url: str | None = None
@@ -3276,8 +3322,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
         # Preview where R2 publish *would* have gone, without uploading anything.
         r2_cfg = load_r2_config(config)
         if r2_cfg:
-            slug = slugify(title, manifest.get("date") or dt.date.today().isoformat())
-            r2_would_publish = f"{r2_cfg['public_base_url'].rstrip('/')}/{slug}.mp3"
+            r2_would_publish = r2_episode_mp3_url(r2_cfg, manifest)
             log(
                 f"[r2] dry-run: would publish {r2_would_publish} + manifest entry "
                 f"to bucket {r2_cfg['bucket']}"
