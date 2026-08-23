@@ -789,6 +789,32 @@ def test_validate_manifest_rejects_bad_date():
         render.validate_manifest(m)
 
 
+def test_validate_manifest_r2_manifest_name_accepts_bare_json_filename():
+    m = _valid_manifest()
+    m["r2_manifest_name"] = "manifest-frontier-commits.json"
+    render.validate_manifest(m)  # no raise
+
+
+def test_validate_manifest_r2_manifest_name_allows_null():
+    m = _valid_manifest()
+    m["r2_manifest_name"] = None  # explicit null behaves like absent
+    render.validate_manifest(m)  # no raise
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["../evil.json", "a/b.json", "manifest.txt", "", 7, "no-extension"],
+)
+def test_validate_manifest_r2_manifest_name_rejects_paths_and_non_json(bad):
+    # Whitelist, not blocklist: the key names an R2 object, so anything that isn't
+    # a bare `*.json` filename (path separators, other extensions, non-strings)
+    # must die before it can redirect the manifest PUT at another bucket object.
+    m = _valid_manifest()
+    m["r2_manifest_name"] = bad
+    with pytest.raises(SystemExit):
+        render.validate_manifest(m)
+
+
 # --- normalize_for_tts ----------------------------------------------------
 
 
