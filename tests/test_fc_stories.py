@@ -92,6 +92,29 @@ def test_org_views_degrades_on_malformed_shapes():
     assert fc_stories.org_views({"orgs": "bogus"}) == {}
 
 
+def test_org_views_coerces_malformed_stars_to_zero():
+    # upstream repo_record returns None for a present-but-null stargazers_count;
+    # detectors compare stars numerically BEFORE score_story's guard applies, so
+    # the coercion has to happen once at the malformed-data gate.
+    snap = {
+        "orgs": {
+            "acme": {
+                "repos": {
+                    "null-stars": _repo(stars=None),
+                    "negative": _repo(stars=-5),
+                    "boolean": _repo(stars=True),
+                    "fine": _repo(stars=7),
+                }
+            }
+        }
+    }
+    views = fc_stories.org_views(snap)
+    assert views["acme"]["null-stars"]["stars"] == 0
+    assert views["acme"]["negative"]["stars"] == 0
+    assert views["acme"]["boolean"]["stars"] == 0
+    assert views["acme"]["fine"]["stars"] == 7
+
+
 def test_org_views_drops_names_outside_githubs_alphabet():
     # such names can only come from a damaged snapshot, and they would forge
     # colliding story keys ("a:b" + stage "c" vs "a" + stage "b:c") or URLs
@@ -133,6 +156,41 @@ def test_detect_notable_forks_requires_recent_push():
     got = fc_stories.detect_notable_forks({"openai": cur}, "2026-08-18", "2026-08-25")
     assert [s["repo"] for s in got] == ["git"]
     assert got[0]["type"] == "NOTABLE_FORK"
+
+
+def test_new_repo_novelty_is_set_membership_when_baseline_exists():
+    # The critic's scenario: the baseline snapshot was taken early on D0 and a
+    # repo was created later that same day — absent from base, but its
+    # created_at date <= the cutoff date. Set membership must fire it anyway;
+    # a repo present in both snapshots must not fire. The no-baseline fallback
+    # still honors the date cutoff.
+    base = {"acme": {"steady": _repo(created_at="2020-01-01T00:00:00Z")}}
+    cur = {
+        "acme": {
+            "steady": _repo(created_at="2020-01-01T00:00:00Z"),
+            "late-arrival": _repo(created_at="2026-08-18T22:00:00Z"),
+        }
+    }
+    got = fc_stories.detect_new_repos(cur, "2026-08-18", base)
+    assert [s["key"] for s in got] == ["NEW_REPO:acme/late-arrival:new"]
+    # no baseline -> date arithmetic: created ON the cutoff date is excluded
+    assert fc_stories.detect_new_repos(cur, "2026-08-18", None) == []
+
+
+def test_notable_fork_novelty_is_set_membership_when_baseline_exists():
+    base = {"acme": {"old-fork": _repo(fork=True, created_at="2020-01-01T00:00:00Z")}}
+    cur = {
+        "acme": {
+            "old-fork": _repo(
+                fork=True, created_at="2020-01-01T00:00:00Z", pushed_at="2026-08-24T00:00:00Z"
+            ),
+            "late-fork": _repo(
+                fork=True, created_at="2026-08-18T22:00:00Z", pushed_at="2026-08-24T00:00:00Z"
+            ),
+        }
+    }
+    got = fc_stories.detect_notable_forks(cur, "2026-08-18", "2026-08-25", base)
+    assert [s["repo"] for s in got] == ["late-fork"]
 
 
 def test_detect_archived_needs_a_flip_and_a_baseline():
@@ -354,6 +412,90 @@ def test_detect_all_falls_back_to_newest_snapshot_and_logs(capsys):
 def test_detect_all_dies_without_any_snapshot():
     with pytest.raises(SystemExit):
         fc_stories.detect_all("2026-08-25", _cfg())
+
+
+def test_missed_day_never_uses_the_current_snapshot_as_its_own_baseline(monkeypatch, tmp_path):
+    # One snapshot dated D-1, run on D: the baseline must resolve to None —
+    # never to the current snapshot itself (which would make the cutoff the
+    # snapshot's own date and silently empty the episode). The run must detect
+    # exactly what the same snapshot detects when dated D.
+    repos = {"acme": {"n": _repo(created_at="2026-08-22T00:00:00Z")}}
+    cfg = _cfg(orgs=[{"name": "acme", "filter": "none"}])
+
+    monkeypatch.setattr(fc_common, "CONFIG_DIR", tmp_path / "same-day")
+    _write_snap("2026-08-25", repos)
+    same_day = fc_stories.detect_all("2026-08-25", cfg)
+
+    monkeypatch.setattr(fc_common, "CONFIG_DIR", tmp_path / "missed-day")
+    _write_snap("2026-08-24", repos)
+    missed = fc_stories.detect_all("2026-08-25", cfg)
+
+    assert same_day["baseline_date"] is None
+    assert missed["baseline_date"] is None
+    assert [s["key"] for s in same_day["stories"]] == ["NEW_REPO:acme/n:new"]
+    assert [s["key"] for s in missed["stories"]] == [s["key"] for s in same_day["stories"]]
+
+
+def test_calendar_invalid_snapshot_names_are_ignored():
+    # 2026-02-30.json passes the filename regex but is not a real date; picked
+    # as a baseline it would crash detect_star_surge with an uncaught
+    # ValueError. It must be invisible to date listing entirely.
+    _write_snap("2026-02-30", {"acme": {"x": _repo(stars=100)}})
+    _write_snap("2026-08-25", {"acme": {"n": _repo(created_at="2026-08-22T00:00:00Z")}})
+    assert "2026-02-30" not in fc_stories.list_snapshot_dates()
+    cfg = _cfg(orgs=[{"name": "acme", "filter": "none"}])
+    out = fc_stories.detect_all("2026-08-25", cfg)
+    assert out["baseline_date"] is None
+    assert [s["key"] for s in out["stories"]] == ["NEW_REPO:acme/n:new"]
+
+
+def test_stars_none_repo_degrades_instead_of_killing_the_run():
+    # One healthy story plus one repo whose stars came back null: the run must
+    # complete and the healthy story must survive.
+    cur = {
+        "acme": {
+            "healthy": _repo(created_at="2026-08-22T00:00:00Z"),
+            "null-stars": _repo(stars=None, created_at="2020-01-01T00:00:00Z"),
+        }
+    }
+    _write_snap("2026-08-25", cur)
+    cfg = _cfg(orgs=[{"name": "acme", "filter": "none"}])
+    out = fc_stories.detect_all("2026-08-25", cfg)
+    assert "NEW_REPO:acme/healthy:new" in [s["key"] for s in out["stories"]]
+
+
+def test_detect_all_warns_but_proceeds_inside_the_snapshot_age_ceiling(capsys):
+    _write_snap("2026-08-23", {"acme": {"n": _repo(created_at="2026-08-22T00:00:00Z")}})
+    cfg = _cfg(orgs=[{"name": "acme", "filter": "none"}])
+    out = fc_stories.detect_all("2026-08-25", cfg)  # gap of 2 days
+    assert [s["key"] for s in out["stories"]] == ["NEW_REPO:acme/n:new"]
+    assert "warn: no snapshot for 2026-08-25, using 2026-08-23" in capsys.readouterr().out
+
+
+def test_detect_all_dies_when_the_newest_snapshot_exceeds_the_age_ceiling(capsys):
+    _write_snap("2026-08-21", {"acme": {"n": _repo(created_at="2026-08-20T00:00:00Z")}})
+    cfg = _cfg(orgs=[{"name": "acme", "filter": "none"}])
+    with pytest.raises(SystemExit):
+        fc_stories.detect_all("2026-08-25", cfg)  # gap of 4 days > MAX_SNAPSHOT_AGE_DAYS (3)
+    assert "run fc_snapshot.py first" in capsys.readouterr().out
+
+
+def test_detect_all_passes_the_baseline_to_the_novelty_detectors():
+    # Wiring for the set-membership fix: a repo created ON the baseline date but
+    # after that day's snapshot was taken must still surface as NEW_REPO.
+    base_repos = {"acme": {"steady": _repo(created_at="2020-01-01T00:00:00Z")}}
+    cur_repos = {
+        "acme": {
+            "steady": _repo(created_at="2020-01-01T00:00:00Z"),
+            "late-arrival": _repo(created_at="2026-08-18T22:00:00Z"),
+        }
+    }
+    _write_snap("2026-08-18", base_repos)
+    _write_snap("2026-08-25", cur_repos)
+    cfg = _cfg(orgs=[{"name": "acme", "filter": "none"}])
+    out = fc_stories.detect_all("2026-08-25", cfg)
+    assert out["baseline_date"] == "2026-08-18"
+    assert "NEW_REPO:acme/late-arrival:new" in [s["key"] for s in out["stories"]]
 
 
 def test_cli_detect_prints_contract_and_mark_round_trips(tmp_path, capsys):

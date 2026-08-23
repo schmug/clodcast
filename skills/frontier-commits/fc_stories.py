@@ -21,6 +21,13 @@ import fc_common
 
 FORK_ACTIVE_DAYS = 14
 
+# Staleness ceiling for the newest snapshot. Gap-tolerant across a missed cron
+# day or a weekend, but a detect run against a stale world is worse than no run
+# at all: GOING_STALE measures days from run_date against an ancient pushed_at,
+# so a six-month-old snapshot yields garbage stories. Beyond this, die and
+# demand a fresh snapshot instead.
+MAX_SNAPSHOT_AGE_DAYS = 3
+
 TYPE_PRIORITY = {
     "NEW_REPO": 100,
     "ARCHIVED": 90,
@@ -70,8 +77,13 @@ def list_snapshot_dates() -> list[str]:
     d = fc_common.snapshot_dir()
     if not d.is_dir():
         return []
+    # The filename regex alone admits calendar-invalid dates (2026-02-30.json),
+    # which would later blow up date arithmetic (an uncaught ValueError in
+    # detect_star_surge) — apply the same calendar check _valid_run_date embodies.
     return sorted(
-        m.group(1) for p in d.iterdir() if (m := re.fullmatch(fc_common.SNAPSHOT_RE, p.name))
+        m.group(1)
+        for p in d.iterdir()
+        if (m := re.fullmatch(fc_common.SNAPSHOT_RE, p.name)) and _valid_run_date(m.group(1))
     )
 
 
@@ -124,7 +136,11 @@ def org_views(snap: dict) -> dict:
     off disk and may be damaged, so a non-dict org view, a non-dict repos map,
     or a non-dict record is dropped here instead of crashing a detector
     mid-run. Names outside GitHub's alphabet are dropped too (see
-    _SAFE_NAME_RE — they would forge colliding story keys/URLs).
+    _SAFE_NAME_RE — they would forge colliding story keys/URLs). Stars are
+    coerced here as well: upstream repo_record emits None for a
+    present-but-null stargazers_count, which would TypeError inside the
+    detectors' numeric comparisons BEFORE score_story's guard ever applies —
+    killing the whole run and losing the healthy stories with it.
     """
     orgs = snap.get("orgs", {})
     if not isinstance(orgs, dict):
@@ -136,17 +152,36 @@ def org_views(snap: dict) -> dict:
         repos = view.get("repos")
         if not isinstance(repos, dict):
             repos = {}
-        out[org] = {
-            name: rec for name, rec in repos.items() if _safe_name(name) and isinstance(rec, dict)
-        }
+        kept: dict = {}
+        for name, rec in repos.items():
+            if not _safe_name(name) or not isinstance(rec, dict):
+                continue
+            stars = rec.get("stars")
+            if not (isinstance(stars, (int, float)) and not isinstance(stars, bool) and stars >= 0):
+                stars = 0
+            kept[name] = {**rec, "stars": stars}
+        out[org] = kept
     return out
 
 
-def detect_new_repos(cur: dict, cutoff_date: str) -> list[dict]:
+def _appeared(org: str, name: str, r: dict, base: dict | None, cutoff_date: str) -> bool:
+    """When a baseline exists, "appeared" is SET MEMBERSHIP — present in cur,
+    absent from the baseline's repo set for that org — never date arithmetic.
+    A created_at cutoff would permanently silence a repo created ON the
+    baseline date but AFTER that day's snapshot was taken (absent from base,
+    yet excluded by the date gate — and the cutoff only moves forward). The
+    date cutoff applies only in the no-baseline fallback, where there is
+    nothing to compare against."""
+    if base is not None:
+        return name not in base.get(org, {})
+    return _date_only(r.get("created_at", "")) > cutoff_date
+
+
+def detect_new_repos(cur: dict, cutoff_date: str, base: dict | None = None) -> list[dict]:
     out = []
     for org, repos in cur.items():
         for name, r in repos.items():
-            if r.get("fork") or _date_only(r.get("created_at", "")) <= cutoff_date:
+            if r.get("fork") or not _appeared(org, name, r, base, cutoff_date):
                 continue
             out.append(
                 story(
@@ -166,14 +201,16 @@ def detect_new_repos(cur: dict, cutoff_date: str) -> list[dict]:
     return sorted(out, key=lambda s: (s["org"], s["repo"]))
 
 
-def detect_notable_forks(cur: dict, cutoff_date: str, run_date: str) -> list[dict]:
+def detect_notable_forks(
+    cur: dict, cutoff_date: str, run_date: str, base: dict | None = None
+) -> list[dict]:
     # The actively-pushed arm only: the spec's upstream-stars arm needs a
     # per-fork parent lookup (network) and is deliberately deferred.
     active_cutoff = dt.date.fromisoformat(run_date) - dt.timedelta(days=FORK_ACTIVE_DAYS)
     out = []
     for org, repos in cur.items():
         for name, r in repos.items():
-            if not r.get("fork") or _date_only(r.get("created_at", "")) <= cutoff_date:
+            if not r.get("fork") or not _appeared(org, name, r, base, cutoff_date):
                 continue
             pushed = _parse_iso(r.get("pushed_at", ""))
             if not pushed or pushed.date() < active_cutoff:
@@ -386,12 +423,27 @@ def detect_all(run_date: str, config: dict) -> dict:
         fc_common.die(f"no snapshot at or before {run_date} — run fc_snapshot.py first")
     cur_date = usable[-1]
     if cur_date != run_date:
+        gap = (dt.date.fromisoformat(run_date) - dt.date.fromisoformat(cur_date)).days
+        if gap > MAX_SNAPSHOT_AGE_DAYS:
+            fc_common.die(
+                f"newest snapshot {cur_date} is older than {MAX_SNAPSHOT_AGE_DAYS} days "
+                f"before {run_date} — run fc_snapshot.py first"
+            )
         fc_common.log(f"warn: no snapshot for {run_date}, using {cur_date}")
     snap = load_snapshot(cur_date)
     if snap is None:
         fc_common.die(f"snapshot {cur_date} is unreadable")
     cur = org_views(snap)
-    baseline_date = pick_baseline(usable, run_date, config["lookback_days"])
+    # The baseline must NEVER be the current snapshot itself: pick_baseline's
+    # fallback arm only excludes run_date, so on a missed cron day with a young
+    # snapshot dir it would resolve to cur_date — cutoff becomes the snapshot's
+    # own date (NEW_REPO/NOTABLE_FORK can never fire), ARCHIVED compares the
+    # file with itself, and STAR_SURGE deltas are all 0: a silently empty
+    # episode. With no distinct baseline, baseline_date=None already does the
+    # right thing (date-cutoff fallback, no delta detectors).
+    baseline_date = pick_baseline(
+        [d for d in usable if d != cur_date], run_date, config["lookback_days"]
+    )
     base_snap = load_snapshot(baseline_date) if baseline_date else None
     base = org_views(base_snap) if base_snap else None
     cutoff = (
@@ -402,8 +454,8 @@ def detect_all(run_date: str, config: dict) -> dict:
     )
 
     cands = [
-        *detect_new_repos(cur, cutoff),
-        *detect_notable_forks(cur, cutoff, run_date),
+        *detect_new_repos(cur, cutoff, base),
+        *detect_notable_forks(cur, cutoff, run_date, base),
         *detect_archived(cur, base),
         *detect_going_stale(cur, run_date, config),
         *detect_star_surge(cur, base, baseline_date, run_date, config),
