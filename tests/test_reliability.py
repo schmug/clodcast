@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -1016,6 +1017,78 @@ def test_daily_prompt_stays_a_stub():
     for marker in ("Gather candidate items from OPML", "Build manifest at", "Self-critique pass"):
         assert marker not in stub, f"prompts/daily.md re-inlined the procedure: {marker!r}"
     assert len(stub.splitlines()) < 80, "stub grew back into a full prompt"
+
+
+# --- curation dedup: duplicate-story shapes + weekly roundups --------------
+#
+# Episodes 2026-08-09 -> 2026-08-22 re-covered five stories. Every one passed
+# step 2's exact-URL `covered.json` membership test, because the second airing
+# had a different URL: a link blog and the announcement it links to, a rumor
+# and its confirmation, one outlet's rewrite of another's, and two weekly
+# digests of stories the show had already run under their own URLs. Exact URL
+# identity is the wrong key for "same story", so the judgment rules live in
+# SKILL.md step 3 and the mechanical half's data lives in blocked_sources.json.
+
+# Both shipped as re-coverage in the 2026-08-09 -> 2026-08-22 window.
+_ROUNDUP_URLS = (
+    "https://www.helpnetsecurity.com/2026/08/16/week-in-review-salesforce-and"
+    "-servicenow-portals-exposed-for-17-months-exploited-metabase-0-day/",
+    "https://this.weekinsecurity.com/the-top-highlights-from-black-hat-def-con"
+    "-and-bsides-las-vegas-2026-x/",
+)
+
+# A same-domain ordinary story: an over-broad pattern that swallowed this would
+# be worse than no pattern list at all.
+_NOT_A_ROUNDUP_URL = "https://www.helpnetsecurity.com/2026/08/17/apple-macos-screen-sharing-flaw/"
+
+_DUPLICATE_SHAPES = (
+    "Primary ↔ commentary",
+    "Rumor → confirmation",
+    "Outlet B rewrites outlet A",
+)
+
+
+def _normalize_for_roundup_match(text: str) -> str:
+    """Separators are interchangeable between a URL slug and a title, so a
+    pattern written `week-in-review` has to match both `/week-in-review-.../`
+    in a path and "Week in review:" in a title."""
+    return " ".join(re.split(r"[^a-z0-9]+", text.lower()))
+
+
+def _skill_step_three() -> str:
+    skill = (_repo_root() / "skills" / "daily-podcast" / "SKILL.md").read_text()
+    start = skill.index("3. **Curate down to")
+    return skill[start : skill.index("4. **Fetch full content", start)]
+
+
+def test_curation_names_the_duplicate_shapes_and_drops_roundups():
+    """Step 3 is the chokepoint that owns what survives to become a segment.
+
+    "Don't repeat stories" is too abstract to act on mid-curation, so the three
+    shapes a duplicate actually takes here have to be named, and the roundup
+    patterns have to be data rather than prose so they are greppable."""
+    blocked = json.loads(
+        (_repo_root() / "skills" / "daily-podcast" / "blocked_sources.json").read_text()
+    )
+    patterns = blocked.get("roundup_patterns")
+    assert isinstance(patterns, list) and patterns, (
+        "blocked_sources.json has no greppable roundup_patterns list"
+    )
+
+    step3 = _skill_step_three()
+    for shape in _DUPLICATE_SHAPES:
+        assert shape in step3, f"SKILL.md step 3 does not name the duplicate shape {shape!r}"
+    assert "roundup_patterns" in step3, "step 3 must cite the pattern list, not re-inline it"
+
+    normalized = [_normalize_for_roundup_match(p) for p in patterns]
+    for url in _ROUNDUP_URLS:
+        haystack = _normalize_for_roundup_match(url)
+        assert any(p in haystack for p in normalized), f"roundup URL not dropped: {url}"
+
+    haystack = _normalize_for_roundup_match(_NOT_A_ROUNDUP_URL)
+    assert not any(p in haystack for p in normalized), (
+        f"roundup pattern is over-broad, it drops an ordinary story: {_NOT_A_ROUNDUP_URL}"
+    )
 
 
 # --- TTS speech-rate outlier gate (2026-08-17 degeneration) -----------------
