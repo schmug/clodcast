@@ -18,6 +18,11 @@ sys.path.insert(0, str(SKILL_DIR))
 
 import render  # noqa: E402  (must follow the sys.path insert above)
 
+FC_SKILL_DIR = Path(__file__).resolve().parent.parent / "skills" / "frontier-commits"
+sys.path.insert(0, str(FC_SKILL_DIR))
+
+import fc_common  # noqa: E402  (must follow the sys.path insert above)
+
 # Every user-level state path render.py can WRITE to. Redirected per-test below.
 # Read-only paths (the bundled house-voice refs, blocked_sources.json) are left
 # alone — tests legitimately assert against the shipped files.
@@ -60,6 +65,8 @@ def _isolate_user_state(tmp_path_factory, monkeypatch):
     workdirs = sandbox / "tmp"
     workdirs.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(render, "TMP_BASE", workdirs)
+    fc_sandbox = tmp_path_factory.mktemp("frontier-commits-state")
+    monkeypatch.setattr(fc_common, "CONFIG_DIR", fc_sandbox)
     yield sandbox
 
 
@@ -68,6 +75,7 @@ def pytest_configure(config):
     resolve a writable state path inside the real home config directory."""
     real = Path.home() / ".config" / "daily-podcast"
     config._daily_podcast_real_state_dir = real
+    config._frontier_real_state_dir = Path.home() / ".config" / "frontier-commits"
 
 
 @pytest.fixture(autouse=True)
@@ -84,4 +92,9 @@ def _assert_no_real_state_writes(request, _isolate_user_state):
     assert Path(render.TMP_BASE).resolve() != system_tmp, (
         "test left render.TMP_BASE at the system temp dir; a deterministic auto "
         "workdir would then collide with a real same-day run"
+    )
+    real_fc = request.config._frontier_real_state_dir
+    fc_dir = Path(fc_common.CONFIG_DIR)
+    assert real_fc not in fc_dir.parents and fc_dir != real_fc, (
+        f"test left fc_common.CONFIG_DIR pointing at real user state: {fc_dir}"
     )
