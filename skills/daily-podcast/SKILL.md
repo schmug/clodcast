@@ -100,7 +100,17 @@ Bank of five, indexed `day % 5`:
 
 Each segment gets a **shape** and a **length band**, both assigned by its position.
 
-**Shape** — bank of five. The segment at position `i` (0-based; the lead story is 0) takes index `(day + i * stride) % 5`, where `stride = 1 + day % 4`:
+**Shape** — take today's row from the table below by `day % 5`, then read the shapes left to right across your segments. Positions past the fifth wrap around and reuse the row.
+
+| `day % 5` | pos 0 | pos 1 | pos 2 | pos 3 | pos 4 |
+| --- | --- | --- | --- | --- | --- |
+| 0 | `stakes-first` | `scene` | `plain-lede` | `contrast` | `number-first` |
+| 1 | `scene` | `stakes-first` | `contrast` | `number-first` | `plain-lede` |
+| 2 | `plain-lede` | `number-first` | `scene` | `stakes-first` | `contrast` |
+| 3 | `contrast` | `plain-lede` | `number-first` | `scene` | `stakes-first` |
+| 4 | `number-first` | `contrast` | `stakes-first` | `plain-lede` | `scene` |
+
+What each shape means:
 
 | # | Shape | Opening |
 | --- | --- | --- |
@@ -110,7 +120,9 @@ Each segment gets a **shape** and a **length band**, both assigned by its positi
 | 3 | `scene` | One concrete detail or a short quoted line from the reporting, then widen to the news. |
 | 4 | `contrast` | The gap between what was assumed and what this item shows, then the substance. |
 
-A stride rather than a plain rotation: rotating only shifts the bank's phase, so `stakes-first` would follow `plain-lede` in every episode ever made. Five is prime, so any stride in 1-4 is coprime with it and a full cycle still visits each shape exactly once.
+That table is a **Latin square**, and both of its properties are load-bearing. Every *row* is a permutation of the bank, so each shape appears once per five segments. Every *column* holds each shape exactly once, so no position is starved and no position repeats its shape two days running. The rows are deliberately not rotations of one another — under a plain rotation `stakes-first` would follow `plain-lede` in every episode ever made.
+
+Don't replace the table with arithmetic. The first version of this used a stride (`(day + i * stride) % 5`, `stride = 1 + day % 4`) and looked correct in a year-long coverage check, but pinned positions 4, 9 and 14 to one shape for four days at a time.
 
 **Length band** — the lead story gets room, and roughly one non-lead segment in four runs short:
 

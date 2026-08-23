@@ -67,8 +67,7 @@ MIN_SEGMENT_CHARS = 500
 # So the date picks the shapes, deterministically - a resumed or re-run day
 # rebuilds the same episode, and consecutive days never open alike.
 
-# Named openings. Order is load-bearing (`segment_shape` walks this bank) and so
-# is the length being PRIME - that is what makes every stride coprime with it.
+# Named openings. Order is load-bearing: SHAPE_ORDERS indexes into this bank.
 SEGMENT_SHAPES = {
     "plain-lede": "Open with the headline framing, then the substance.",
     "stakes-first": "Open on who is affected and what changes for them, then what happened.",
@@ -136,19 +135,35 @@ def day_index(date_iso: str) -> int:
     return dt.date.fromisoformat(date_iso).timetuple().tm_yday
 
 
-def segment_shape(day_idx: int, position: int) -> str:
-    """Name the shape for the segment at `position` in today's episode.
+# Row = the day's ordering, column = segment position; values index SEGMENT_SHAPES.
+# This is a LATIN SQUARE, and both of its properties are load-bearing: every row is
+# a permutation of the bank (each shape once per episode-cycle) and every COLUMN
+# holds each shape exactly once (no position is starved, and none can repeat two
+# days running). It replaces an arithmetic stride that passed a yearly-coverage test
+# while pinning positions 4, 9 and 14 to a single shape for four days at a time -
+# `(1 + p) % 5 == 0` cancelled the day-varying term, leaving only `day // 4`. A
+# smoke test caught that; the unit tests had not.
+#
+# Rows are deliberately NOT mutual rotations (4 distinct shift signatures, 14 of 20
+# possible adjacency pairs), so `stakes-first` does not forever follow `plain-lede`.
+# Replacing this table means re-verifying BOTH properties - `test_no_position_holds_
+# its_shape_two_days_running` and `test_every_position_sees_every_shape_within_one_
+# bank_cycle` exist to make that non-optional.
+SHAPE_ORDERS = (
+    (1, 3, 0, 4, 2),
+    (3, 1, 4, 2, 0),
+    (0, 2, 3, 1, 4),
+    (4, 0, 2, 3, 1),
+    (2, 4, 1, 0, 3),
+)
 
-    A stride, not a plain rotation: rotating only shifts the bank's phase, so
-    `stakes-first` would follow `plain-lede` in every episode ever made. Walking the
-    bank with a day-varying stride reorders the adjacencies too. len(SEGMENT_SHAPES)
-    is prime, so every stride in 1..n-1 is coprime with n and a full cycle still
-    visits each shape exactly once.
-    """
+
+def segment_shape(day_idx: int, position: int) -> str:
+    """Name the shape for the segment at `position` in today's episode. Positions
+    past the bank size wrap, so a twelve-segment episode reuses the day's ordering."""
     names = list(SEGMENT_SHAPES)
-    n = len(names)
-    stride = 1 + day_idx % (n - 1)
-    return names[(day_idx + position * stride) % n]
+    order = SHAPE_ORDERS[day_idx % len(SHAPE_ORDERS)]
+    return names[order[position % len(order)]]
 
 
 def intro_mode(day_idx: int) -> str:
