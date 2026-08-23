@@ -16,8 +16,10 @@ Its final stdout line is the scheduler contract:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import hashlib
+import io
 import json
 import re
 import subprocess
@@ -31,6 +33,30 @@ import fc_stories
 
 class SweepFailed(RuntimeError):
     pass
+
+
+class ConfigFailed(RuntimeError):
+    """load_config() die()d — carries the die message for the FAILED line."""
+
+
+def _load_config_or_fail() -> dict:
+    """fc_common.load_config() reports a bad config by die()ing — printing
+    `error: …` and raising SystemExit — which used to escape main() BEFORE the
+    try, so a missing/invalid config.json (the realistic launchd first-run
+    state) exited with no SNAPSHOT line at all, invisible to the scheduler
+    contract. Capture die's output and convert it to ConfigFailed so main's
+    handler emits `SNAPSHOT FAILED <die message>` exactly once as the final
+    line — the captured `error:` line is not re-emitted (no double print)."""
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            config = fc_common.load_config()
+    except SystemExit as e:
+        msg = buf.getvalue().strip().removeprefix("error: ")
+        raise ConfigFailed(msg or "invalid config") from e
+    # load_config prints nothing on success today; never swallow it if it does
+    sys.stdout.write(buf.getvalue())
+    return config
 
 
 def repo_record(raw: dict) -> dict:
@@ -218,6 +244,8 @@ DISPLAY_NAMES = {
 }
 
 LABS_TOP_N = 10
+# new_repos is a TIMELINE (created_at within this many days of the measurement
+# snapshot's date), never baseline set-membership — novelty is fc_stories' job.
 NEW_REPO_WINDOW_DAYS = 30
 # A movers baseline younger than this yields noise deltas; ">= 6 days older"
 # is inclusive at the boundary so a weekly cadence (exactly 7, sometimes 6
@@ -228,9 +256,9 @@ STALE_WATCH_MIN_DAYS = 120
 ACTIVE_WINDOW_DAYS = 30
 
 
-def _days_since(run: dt.date, ts: str) -> int | None:
+def _days_since(day: dt.date, ts: str) -> int | None:
     d = _parse_iso(ts)
-    return (run - d.date()).days if d else None
+    return (day - d.date()).days if d else None
 
 
 def _date_str(ts: str) -> str:
@@ -248,18 +276,24 @@ def _views_for(date_iso: str | None) -> dict | None:
 def _lab_entry(
     org: str,
     view: dict,
-    run: dt.date,
+    snap_day: dt.date,
     config: dict,
     base_view: dict | None,
     base_span: int,
     arch_view: dict | None,
 ) -> dict:
-    """One lab's aggregates. `base_view`/`arch_view` are None when that org is
-    UNKNOWN in the comparison snapshot (absent or empty) — the comparisons then
-    skip rather than treat the org as an empty set, mirroring fc_stories'
-    _appeared: new_repos falls back to the created_at window (inclusive at
-    exactly NEW_REPO_WINDOW_DAYS), and movers/archived_recent stay empty."""
-    new_cutoff = (run - dt.timedelta(days=NEW_REPO_WINDOW_DAYS)).isoformat()
+    """One lab's aggregates, every window anchored to `snap_day` — the
+    MEASUREMENT snapshot's date, never the CLI run date: the stars and pushes
+    were observed on snap_day, so a run replayed or backfilled days later must
+    compute the same windows. new_repos is a TIMELINE, not a novelty detector:
+    a repo is listed iff its created_at falls within NEW_REPO_WINDOW_DAYS of
+    snap_day (inclusive at the boundary), whether or not a baseline saw it —
+    novelty/mention-once is fc_stories' job; the dashboard shows what was
+    created recently. `base_view`/`arch_view` are None when that org is
+    UNKNOWN in the comparison snapshot (absent or empty) — movers and
+    archived_recent then stay empty rather than treating the org as an empty
+    set, mirroring fc_stories' _appeared."""
+    new_cutoff = (snap_day - dt.timedelta(days=NEW_REPO_WINDOW_DAYS)).isoformat()
     new_repos: list[dict] = []
     movers: list[dict] = []
     stale: list[dict] = []
@@ -267,13 +301,12 @@ def _lab_entry(
     totals = {"repos": len(view), "active_30d": 0, "stars": 0}
     for name, r in view.items():
         totals["stars"] += r["stars"]
-        pushed_days = _days_since(run, r.get("pushed_at", ""))
+        pushed_days = _days_since(snap_day, r.get("pushed_at", ""))
         if pushed_days is not None and pushed_days <= ACTIVE_WINDOW_DAYS:
             totals["active_30d"] += 1
 
         prev = base_view.get(name) if base_view else None
-        is_new = prev is None if base_view else _date_str(r.get("created_at", "")) >= new_cutoff
-        if is_new:
+        if _date_str(r.get("created_at", "")) >= new_cutoff:
             new_repos.append(
                 {
                     "name": name,
@@ -328,13 +361,17 @@ def _lab_entry(
 
 def build_labs_json(config: dict, run_date: str) -> dict:
     """Aggregate the snapshot history into the labs.json the /labs/ page
-    prerenders (schema_version 1). Movers diff against the newest snapshot at
-    least MOVERS_MIN_BASELINE_AGE_DAYS older than run_date; archived flips diff
-    against the OLDEST snapshot within ARCHIVED_WINDOW_DAYS (so a flip that
-    happened mid-window is still caught). An org absent from the current
-    snapshot gets no entry at all — build_snapshot omits failed orgs, and a lab
-    of zeros would misreport an outage as a dead lab."""
-    run = dt.date.fromisoformat(run_date)
+    prerenders (schema_version 1). run_date only SELECTS the measurement
+    snapshot (newest at or before it); every window and span then anchors to
+    that snapshot's date — the day the stars actually come from — never the
+    CLI run date, so a run three days late computes the same aggregates the
+    on-time run would have. Movers diff against the newest snapshot at least
+    MOVERS_MIN_BASELINE_AGE_DAYS older than the measurement snapshot; archived
+    flips diff against the OLDEST snapshot within ARCHIVED_WINDOW_DAYS of it
+    (so a flip that happened mid-window is still caught). An org absent from
+    the current snapshot gets no entry at all — build_snapshot omits failed
+    orgs, and a lab of zeros would misreport an outage as a dead lab."""
+    dt.date.fromisoformat(run_date)  # calendar-validate; windows anchor below
     usable = [d for d in fc_stories.list_snapshot_dates() if d <= run_date]
     out: dict = {
         "schema_version": 1,
@@ -349,17 +386,22 @@ def build_labs_json(config: dict, run_date: str) -> dict:
     cur_date = usable[-1]
     out["snapshot_date"] = cur_date
     cur = fc_stories.org_views(snap)
+    snap_day = dt.date.fromisoformat(cur_date)
 
     older = [d for d in usable if d != cur_date]
     movers_dates = [
-        d for d in older if (run - dt.date.fromisoformat(d)).days >= MOVERS_MIN_BASELINE_AGE_DAYS
+        d
+        for d in older
+        if (snap_day - dt.date.fromisoformat(d)).days >= MOVERS_MIN_BASELINE_AGE_DAYS
     ]
-    arch_dates = [d for d in older if (run - dt.date.fromisoformat(d)).days <= ARCHIVED_WINDOW_DAYS]
+    arch_dates = [
+        d for d in older if (snap_day - dt.date.fromisoformat(d)).days <= ARCHIVED_WINDOW_DAYS
+    ]
     movers_date = movers_dates[-1] if movers_dates else None
     arch_date = arch_dates[0] if arch_dates else None
     movers_views = _views_for(movers_date)
     arch_views = _views_for(arch_date)
-    movers_span = (run - dt.date.fromisoformat(movers_date)).days if movers_date else 0
+    movers_span = (snap_day - dt.date.fromisoformat(movers_date)).days if movers_date else 0
 
     for org_cfg in config["orgs"]:
         org = org_cfg["name"]
@@ -370,7 +412,7 @@ def build_labs_json(config: dict, run_date: str) -> dict:
             _lab_entry(
                 org,
                 view,
-                run,
+                snap_day,
                 config,
                 (movers_views or {}).get(org) or None,
                 movers_span,
@@ -428,8 +470,14 @@ def publish_labs(labs: dict, config: dict, client_factory=None) -> str:
     R2_BUCKET turn a rehearsal into a real PUT. Credentials resolve via
     fc_common.load_r2_secrets (env → secrets.json tiers). Missing bucket or
     creds → 'skipped', same posture as render.py's three-state R2 'absent'.
-    The hash file is written only AFTER a successful PUT, so a failed publish
-    leaves the gate open and the next run retries."""
+
+    The gate record at labs_hash_path() is JSON {"bucket", "key", "sha256"} —
+    keyed on the DESTINATION as well as the content. Content alone would make
+    a renamed labs_manifest_name or a switched r2_bucket report 'unchanged'
+    forever: the new destination never written, the miss indistinguishable
+    from a healthy no-op. Any mismatch (or a legacy plain-sha / malformed
+    record) forces a publish. The record is written only AFTER a successful
+    PUT, so a failed publish leaves the gate open and the next run retries."""
     try:
         secrets = fc_common.load_r2_secrets()
         bucket = config.get("r2_bucket")
@@ -438,23 +486,30 @@ def publish_labs(labs: dict, config: dict, client_factory=None) -> str:
         )
         if not bucket or not creds_ok:
             return "skipped"
+        key = config.get("labs_manifest_name") or "labs.json"
         new_hash = labs_content_hash(labs)
         hash_path = fc_common.labs_hash_path()
         try:
-            if hash_path.read_text().strip() == new_hash:
-                return "unchanged"
-        except OSError:
-            pass  # no previous publish recorded — publish
+            prev = json.loads(hash_path.read_text())
+        except (OSError, ValueError):
+            prev = None  # nothing recorded, or a legacy/corrupt record — publish
+        if (
+            isinstance(prev, dict)
+            and prev.get("bucket") == bucket
+            and prev.get("key") == key
+            and prev.get("sha256") == new_hash
+        ):
+            return "unchanged"
         client = (client_factory or _r2_labs_client)(secrets)
         client.put_object(
             Bucket=bucket,
-            Key=config.get("labs_manifest_name") or "labs.json",
+            Key=key,
             Body=json.dumps(labs, indent=2, sort_keys=True).encode(),
             ContentType="application/json",
             CacheControl="no-cache",
         )
         hash_path.parent.mkdir(parents=True, exist_ok=True)
-        hash_path.write_text(new_hash)
+        hash_path.write_text(json.dumps({"bucket": bucket, "key": key, "sha256": new_hash}))
         hook = secrets.get("PAGES_DEPLOY_HOOK_URL")
         if hook:
             fire_hook(hook)
@@ -503,8 +558,8 @@ def main(argv: list[str] | None = None) -> int:
     if not _valid_snapshot_date(date_iso):
         print(f"SNAPSHOT FAILED --date must be YYYY-MM-DD, got {date_iso!r}")
         return 1
-    config = fc_common.load_config()
     try:
+        config = _load_config_or_fail()
         snap = build_snapshot(config, date_iso, runner=_default_runner)
         write_snapshot(snap)
         removed = prune_snapshots(
@@ -521,12 +576,19 @@ def main(argv: list[str] | None = None) -> int:
             labs_status = "dry-run"
         else:
             labs_status = publish_labs(labs, config)
-    except (SweepFailed, fc_common.GhError, subprocess.SubprocessError, OSError) as e:
-        # One parseable line, never a traceback: a gh timeout (TimeoutExpired),
-        # a missing gh binary (FileNotFoundError under launchd), and a full
-        # disk mid-write must all land here. Flattened — stderr fragments in
-        # the message may carry newlines, and the contract is a single line.
+    except (ConfigFailed, SweepFailed, fc_common.GhError, subprocess.SubprocessError, OSError) as e:
+        # One parseable line, never a traceback: a bad config (ConfigFailed), a
+        # gh timeout (TimeoutExpired), a missing gh binary (FileNotFoundError
+        # under launchd), and a full disk mid-write must all land here.
+        # Flattened — stderr fragments in the message may carry newlines, and
+        # the contract is a single line.
         print(f"SNAPSHOT FAILED {' '.join(str(e).split())}")
+        return 1
+    except SystemExit:
+        # Belt and braces: any future die() below this frame has already
+        # printed its own `error: …` line — the scheduler contract still needs
+        # the FINAL line to be SNAPSHOT FAILED and the exit code to stay 1.
+        print("SNAPSHOT FAILED aborted by die() — see the error line above")
         return 1
     n_repos = sum(len(v["repos"]) for v in snap["orgs"].values())
     n_rel = sum(len(v["releases"]) for v in snap["orgs"].values())

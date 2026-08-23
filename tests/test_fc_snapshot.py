@@ -315,12 +315,13 @@ _R2_CREDS = {
 
 
 def test_build_labs_json_movers_and_new_repos():
-    _snap_file("2026-08-18", {"acme": {"hot": _raw_rec(stars=100)}})
+    old = "2025-01-01T00:00:00Z"
+    _snap_file("2026-08-18", {"acme": {"hot": _raw_rec(stars=100, created_at=old)}})
     _snap_file(
         "2026-08-25",
         {
             "acme": {
-                "hot": _raw_rec(stars=900),
+                "hot": _raw_rec(stars=900, created_at=old),
                 "fresh": _raw_rec(created_at="2026-08-20T00:00:00Z"),
             }
         },
@@ -373,8 +374,9 @@ def test_labs_movers_skip_when_newest_older_snapshot_is_under_six_days():
     assert labs["labs"][0]["movers"] == []
 
 
-def test_labs_new_repos_fallback_window_is_inclusive_at_thirty_days():
-    # no older snapshot at all -> the created_at window decides, boundary in
+def test_labs_new_repos_window_is_inclusive_at_thirty_days_without_baseline():
+    # no older snapshot at all -> the created_at window still decides (it does
+    # in every branch — new_repos is a timeline, not a diff), boundary in
     _snap_file(
         "2026-08-25",
         {
@@ -390,11 +392,89 @@ def test_labs_new_repos_fallback_window_is_inclusive_at_thirty_days():
     assert [n["name"] for n in labs["labs"][0]["new_repos"]] == ["edge"]
 
 
+def test_labs_new_repos_is_a_timeline_not_a_novelty_detector():
+    # ORCHESTRATOR RULING: new_repos shows what was CREATED recently — the
+    # created_at window applies in every branch, baseline present or not.
+    # 'young' (20 days old) is listed even though the baseline already saw it;
+    # 'edge' sits exactly ON the 30-day boundary (inclusive) and is listed;
+    # 'revealed' (40 days old) is NOT listed despite being absent from the
+    # baseline — set-membership novelty is fc_stories' job, not this field's.
+    _snap_file(
+        "2026-08-18",
+        {
+            "acme": {
+                "young": _raw_rec(created_at="2026-08-05T00:00:00Z"),
+                "edge": _raw_rec(created_at="2026-07-26T12:00:00Z"),
+            }
+        },
+    )
+    _snap_file(
+        "2026-08-25",
+        {
+            "acme": {
+                "young": _raw_rec(created_at="2026-08-05T00:00:00Z"),
+                "edge": _raw_rec(created_at="2026-07-26T12:00:00Z"),
+                "revealed": _raw_rec(created_at="2026-07-16T00:00:00Z"),
+            }
+        },
+    )
+    labs = fc_snapshot.build_labs_json(
+        _cfg(orgs=[{"name": "acme", "filter": "none"}]), "2026-08-25"
+    )
+    assert [n["name"] for n in labs["labs"][0]["new_repos"]] == ["young", "edge"]
+
+
+def test_labs_movers_baseline_and_span_anchor_to_the_snapshot_date():
+    # run_date is 3 days after the newest snapshot. Anchored to the RUN date,
+    # the 08-22 snapshot would look 6 days old and become the movers baseline;
+    # anchored to the MEASUREMENT date (08-25, where the stars come from) it is
+    # only 3 days old, so the baseline must be 08-19 — and the span 6 days
+    # (08-19 -> 08-25), never 9 (-> run date).
+    old = "2025-01-01T00:00:00Z"
+    _snap_file("2026-08-19", {"acme": {"hot": _raw_rec(stars=100, created_at=old)}})
+    _snap_file("2026-08-22", {"acme": {"hot": _raw_rec(stars=500, created_at=old)}})
+    _snap_file("2026-08-25", {"acme": {"hot": _raw_rec(stars=900, created_at=old)}})
+    labs = fc_snapshot.build_labs_json(
+        _cfg(orgs=[{"name": "acme", "filter": "none"}]), "2026-08-28"
+    )
+    assert labs["snapshot_date"] == "2026-08-25"
+    assert labs["labs"][0]["movers"][0]["delta_7d"] == round(800 * 7 / 6)
+
+
+def test_labs_windows_anchor_to_the_snapshot_date_not_the_run_date():
+    # Every fixture sits exactly ON its boundary relative to the MEASUREMENT
+    # snapshot (2026-08-25), with the run three days later — a run-date anchor
+    # flips each one: the 07-26 archived baseline would fall out of the 30-day
+    # window, 'edge-new' out of the new_repos window, 'cusp-active' out of
+    # active_30d, and s120's days_since_push would read 123.
+    old = "2020-01-01T00:00:00Z"
+    _snap_file("2026-07-26", {"acme": {"dead": _raw_rec(archived=False, created_at=old)}})
+    _snap_file(
+        "2026-08-25",
+        {
+            "acme": {
+                "dead": _raw_rec(archived=True, created_at=old),
+                "edge-new": _raw_rec(created_at="2026-07-26T12:00:00Z"),
+                "cusp-active": _raw_rec(created_at=old, pushed_at="2026-07-26T00:00:00Z"),
+                "s120": _raw_rec(stars=5000, created_at=old, pushed_at="2026-04-27T00:00:00Z"),
+            }
+        },
+    )
+    labs = fc_snapshot.build_labs_json(
+        _cfg(orgs=[{"name": "acme", "filter": "none"}]), "2026-08-28"
+    )
+    lab = labs["labs"][0]
+    assert [n["name"] for n in lab["new_repos"]] == ["edge-new"]
+    assert [a["name"] for a in lab["archived_recent"]] == ["dead"]
+    assert [(w["name"], w["days_since_push"]) for w in lab["stale_watch"]] == [("s120", 120)]
+    assert lab["totals"]["active_30d"] == 3  # dead, edge-new, cusp-active; not s120
+
+
 def test_labs_absent_org_in_baseline_is_unknown_not_empty():
-    # The baseline snapshot never saw acme: movers must skip the comparison and
-    # new_repos must fall back to the created_at window — never treat the org's
-    # baseline as an empty set and flood its whole catalog as "new" (mirror of
-    # fc_stories' _appeared posture).
+    # The baseline snapshot never saw acme: movers must skip the comparison —
+    # never treat the org's baseline as an empty set (mirror of fc_stories'
+    # _appeared posture). new_repos is unaffected either way: the created_at
+    # window applies in every branch, so the ancient repo stays out.
     _snap_file("2026-08-18", {"other": {"x": _raw_rec()}})
     _snap_file(
         "2026-08-25",
@@ -480,9 +560,60 @@ def test_publish_labs_hash_gate_and_statuses(monkeypatch):
     s3 = FakeS3()
     assert fc_snapshot.publish_labs(labs, cfg, client_factory=lambda c: s3) == "published"
     assert s3.puts[0]["Key"] == "labs.json"
+    # the gate record is destination-keyed JSON, not a bare content hash
+    assert json.loads(fc_common.labs_hash_path().read_text()) == {
+        "bucket": "clodcast",
+        "key": "labs.json",
+        "sha256": fc_snapshot.labs_content_hash(labs),
+    }
     # same content, different generated_at -> unchanged, no second PUT
     labs2 = dict(labs, generated_at="T2")
     assert fc_snapshot.publish_labs(labs2, cfg, client_factory=lambda c: s3) == "unchanged"
+    assert len(s3.puts) == 1
+
+
+def test_publish_labs_republishes_when_the_destination_changes(monkeypatch):
+    # The gate is keyed on DESTINATION + content, not content alone: renaming
+    # labs_manifest_name or switching r2_bucket with identical content must PUT
+    # to the new destination — never report a healthy-looking 'unchanged' while
+    # the new key stays unwritten forever.
+    labs = {"schema_version": 1, "generated_at": "T1", "labs": []}
+    monkeypatch.setattr(fc_common, "load_r2_secrets", lambda: dict(_R2_CREDS))
+    s3 = FakeS3()
+    cfg = _cfg(r2_bucket="clodcast")
+    assert fc_snapshot.publish_labs(labs, cfg, client_factory=lambda c: s3) == "published"
+    # same content, new key -> published, PUT lands on the new key
+    cfg2 = _cfg(r2_bucket="clodcast", labs_manifest_name="labs-v2.json")
+    assert fc_snapshot.publish_labs(labs, cfg2, client_factory=lambda c: s3) == "published"
+    assert len(s3.puts) == 2 and s3.puts[-1]["Key"] == "labs-v2.json"
+    # same content, new bucket -> published
+    cfg3 = _cfg(r2_bucket="clodcast-staging", labs_manifest_name="labs-v2.json")
+    assert fc_snapshot.publish_labs(labs, cfg3, client_factory=lambda c: s3) == "published"
+    assert len(s3.puts) == 3 and s3.puts[-1]["Bucket"] == "clodcast-staging"
+    # same content AND same destination -> unchanged, no PUT
+    assert fc_snapshot.publish_labs(labs, cfg3, client_factory=lambda c: s3) == "unchanged"
+    assert len(s3.puts) == 3
+
+
+def test_publish_labs_legacy_plain_sha_record_publishes_and_rewrites(monkeypatch):
+    # a pre-destination-keyed gate file holds the bare content sha: treat it as
+    # no-gate (publish) and rewrite it as the destination-keyed JSON record
+    labs = {"schema_version": 1, "generated_at": "T1", "labs": []}
+    cfg = _cfg(r2_bucket="clodcast")
+    monkeypatch.setattr(fc_common, "load_r2_secrets", lambda: dict(_R2_CREDS))
+    p = fc_common.labs_hash_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(fc_snapshot.labs_content_hash(labs))
+    s3 = FakeS3()
+    assert fc_snapshot.publish_labs(labs, cfg, client_factory=lambda c: s3) == "published"
+    assert len(s3.puts) == 1
+    assert json.loads(p.read_text()) == {
+        "bucket": "clodcast",
+        "key": "labs.json",
+        "sha256": fc_snapshot.labs_content_hash(labs),
+    }
+    # the rewritten record gates the next identical publish
+    assert fc_snapshot.publish_labs(labs, cfg, client_factory=lambda c: s3) == "unchanged"
     assert len(s3.puts) == 1
 
 
@@ -562,6 +693,32 @@ def test_cli_failed_line_when_every_org_fails(monkeypatch, capsys):
     rc = fc_snapshot.main(["--date", "2026-08-25"])
     assert rc == 1
     assert capsys.readouterr().out.strip().splitlines()[-1].startswith("SNAPSHOT FAILED")
+
+
+def test_cli_failed_line_when_config_is_missing(capsys):
+    # the launchd first-run state: no config.json at all. load_config die()s
+    # (SystemExit), which used to escape main() with only an `error: …` line —
+    # no SNAPSHOT line, invisible to the scheduler contract. The die message
+    # must ride the FAILED line, exactly once (one line, no `error:` echo).
+    rc = fc_snapshot.main(["--date", "2026-08-25"])
+    assert rc == 1
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert lines[-1].startswith("SNAPSHOT FAILED")
+    assert "config.json" in lines[-1]
+    assert lines == lines[-1:]  # the contract line is the ONLY line — no double print
+
+
+def test_cli_failed_line_when_config_is_invalid(capsys):
+    # every load_config die() site (not just the missing-file one) must end in
+    # the parseable FAILED line with exit code 1
+    fc_common.atomic_write_json(
+        fc_common.config_path(), {"orgs": [{"name": "acme", "filter": "nope"}]}
+    )
+    rc = fc_snapshot.main(["--date", "2026-08-25"])
+    assert rc == 1
+    last = capsys.readouterr().out.strip().splitlines()[-1]
+    assert last.startswith("SNAPSHOT FAILED")
+    assert "filter" in last  # the die message, flattened onto the contract line
 
 
 def test_cli_failed_line_on_oserror_after_sweep(monkeypatch, capsys):
