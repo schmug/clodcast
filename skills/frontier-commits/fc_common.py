@@ -3,13 +3,15 @@
 Sibling modules (fc_snapshot, fc_stories, fc_script_plan) import this module and
 reach every path through the helper *functions* below, never by importing the
 constants — so tests redirect the whole skill by monkeypatching
-fc_common.CONFIG_DIR alone (tests/conftest.py does this for every test).
+fc_common.CONFIG_DIR and DAILY_PODCAST_CONFIG_DIR (tests/conftest.py patches
+both for every test; the second is the secrets fallback tier below).
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -132,9 +134,23 @@ def load_config() -> dict[str, Any]:
     if not isinstance(file_cfg, dict):
         die(f"{path} must contain a JSON object")
     cfg = {**DEFAULT_CONFIG, **file_cfg}
+    # allowlist/denylist merge PER ORG, not wholesale: a file entry overrides only
+    # that org's list, defaults for unmentioned orgs survive. A wholesale
+    # replacement would silently drop the default google allowlist — the only
+    # mechanism rescuing non-AI-named google repos past the org's "ai" filter.
+    # A null file value degrades to {} rather than TypeError.
+    for k in ("allowlist", "denylist"):
+        cfg[k] = {**DEFAULT_CONFIG[k], **(file_cfg.get(k) or {})}
+    if not isinstance(cfg["orgs"], list):
+        die(f"{path}: \"orgs\" must be a list — see SKILL.md 'Setup' for the schema")
     for org in cfg["orgs"]:
         if not isinstance(org, dict) or "name" not in org:
             die(f'each org needs a "name": {org!r}')
+        # Org names land verbatim in gh api paths (gh_paginate), where '/', '?',
+        # '&', or '..' would rewrite the request path — refuse anything outside
+        # GitHub's own org-name alphabet.
+        if not isinstance(org["name"], str) or not re.fullmatch(r"[A-Za-z0-9-]+", org["name"]):
+            die(f"org name {org['name']!r} must match [A-Za-z0-9-]+")
         if org.get("filter", "none") not in VALID_ORG_FILTERS:
             die(f"org {org['name']!r} filter must be one of {VALID_ORG_FILTERS}")
     return cfg

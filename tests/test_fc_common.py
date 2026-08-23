@@ -19,6 +19,53 @@ def test_load_config_merges_defaults_under_file_values(tmp_path, monkeypatch):
     assert any(o["name"] == "xai-org" for o in cfg["orgs"])  # default org list present
 
 
+def test_load_config_deep_merges_allowlist_per_org(tmp_path, monkeypatch):
+    """A file allowlist overrides per org, never wholesale: setting openai's list
+    must not wipe the default google allowlist — that list is the only mechanism
+    rescuing non-AI-named google repos past the org's "ai" filter."""
+    monkeypatch.setattr(fc_common, "CONFIG_DIR", tmp_path)
+    (tmp_path / "config.json").write_text(json.dumps({"allowlist": {"openai": ["whisper"]}}))
+    cfg = fc_common.load_config()
+    assert cfg["allowlist"]["openai"] == ["whisper"]  # file entry wins for its org
+    assert "langextract" in cfg["allowlist"]["google"]  # default org survives
+
+
+def test_load_config_allowlist_override_replaces_only_that_org(tmp_path, monkeypatch):
+    monkeypatch.setattr(fc_common, "CONFIG_DIR", tmp_path)
+    (tmp_path / "config.json").write_text(json.dumps({"allowlist": {"google": ["custom-repo"]}}))
+    cfg = fc_common.load_config()
+    assert cfg["allowlist"]["google"] == ["custom-repo"]  # per-org replace, not append
+    assert cfg["denylist"] == {}  # sibling key untouched
+
+
+def test_load_config_null_allowlist_degrades_to_defaults(tmp_path, monkeypatch):
+    """A file value of null must behave like an absent key ({}), not TypeError."""
+    monkeypatch.setattr(fc_common, "CONFIG_DIR", tmp_path)
+    (tmp_path / "config.json").write_text(json.dumps({"allowlist": None, "denylist": None}))
+    cfg = fc_common.load_config()
+    assert "langextract" in cfg["allowlist"]["google"]
+    assert cfg["denylist"] == {}
+
+
+@pytest.mark.parametrize("orgs", [None, 5])
+def test_load_config_rejects_non_list_orgs(tmp_path, monkeypatch, orgs):
+    """A malformed orgs container must reach die()'s schema pointer, never leak a
+    raw TypeError traceback from the validation loop."""
+    monkeypatch.setattr(fc_common, "CONFIG_DIR", tmp_path)
+    (tmp_path / "config.json").write_text(json.dumps({"orgs": orgs}))
+    with pytest.raises(SystemExit):
+        fc_common.load_config()
+
+
+def test_load_config_rejects_org_name_unsafe_for_api_paths(tmp_path, monkeypatch):
+    """Org names are interpolated into gh api paths (gh_paginate); '/' or '?'
+    would rewrite the request path, so anything outside [A-Za-z0-9-] dies."""
+    monkeypatch.setattr(fc_common, "CONFIG_DIR", tmp_path)
+    (tmp_path / "config.json").write_text(json.dumps({"orgs": [{"name": "a/b", "filter": "none"}]}))
+    with pytest.raises(SystemExit):
+        fc_common.load_config()
+
+
 def test_load_config_rejects_bad_org_filter(tmp_path, monkeypatch):
     monkeypatch.setattr(fc_common, "CONFIG_DIR", tmp_path)
     (tmp_path / "config.json").write_text(
@@ -110,6 +157,23 @@ def test_load_r2_secrets_env_first(monkeypatch, tmp_path):
     for k in ("R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_ACCOUNT_ID"):
         monkeypatch.setenv(k, f"env-{k}")
     assert fc_common.load_r2_secrets()["R2_ACCESS_KEY_ID"] == "env-R2_ACCESS_KEY_ID"
+
+
+def test_fallback_tier_is_sandboxed_by_default(monkeypatch):
+    """The autouse fixture must redirect BOTH user-state roots. With no env vars
+    and no per-test patches, the secrets fallback tier finds nothing — proving a
+    test can never read the developer's real ~/.config/daily-podcast/secrets.json."""
+    for k in (
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "R2_ACCESS_KEY_ID",
+        "R2_SECRET_ACCESS_KEY",
+        "R2_ACCOUNT_ID",
+        "PAGES_DEPLOY_HOOK_URL",
+    ):
+        monkeypatch.delenv(k, raising=False)
+    assert fc_common.load_r2_secrets() == {}
+    assert "GH_TOKEN" not in fc_common._gh_env()
 
 
 def test_load_r2_secrets_falls_back_to_daily_podcast_file(monkeypatch, tmp_path):

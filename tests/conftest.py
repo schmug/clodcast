@@ -67,6 +67,11 @@ def _isolate_user_state(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(render, "TMP_BASE", workdirs)
     fc_sandbox = tmp_path_factory.mktemp("frontier-commits-state")
     monkeypatch.setattr(fc_common, "CONFIG_DIR", fc_sandbox)
+    # fc_common has a SECOND user-state root: the daily-podcast secrets fallback
+    # tier. Left unpatched, any test that reaches _gh_env/load_r2_secrets reads
+    # the developer's real 0600 ~/.config/daily-podcast/secrets.json — and a
+    # live GH_TOKEN there would print in any assertion that reprs a captured env.
+    monkeypatch.setattr(fc_common, "DAILY_PODCAST_CONFIG_DIR", fc_sandbox / "daily-podcast")
     yield sandbox
 
 
@@ -94,7 +99,11 @@ def _assert_no_real_state_writes(request, _isolate_user_state):
         "workdir would then collide with a real same-day run"
     )
     real_fc = request.config._frontier_real_state_dir
-    fc_dir = Path(fc_common.CONFIG_DIR)
-    assert real_fc not in fc_dir.parents and fc_dir != real_fc, (
-        f"test left fc_common.CONFIG_DIR pointing at real user state: {fc_dir}"
-    )
+    # Both fc_common roots must stay clear of BOTH real config dirs — the
+    # daily-podcast fallback tier reads the same secrets.json render.py owns.
+    for attr in ("CONFIG_DIR", "DAILY_PODCAST_CONFIG_DIR"):
+        value = Path(getattr(fc_common, attr))
+        for forbidden in (real_fc, real):
+            assert forbidden not in value.parents and value != forbidden, (
+                f"test left fc_common.{attr} pointing at real user state: {value}"
+            )
