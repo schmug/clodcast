@@ -66,6 +66,7 @@ the next version and changelog; **merging that PR** cuts the tag and GitHub Rele
 - **Python 3.10+** — runtime deps are declared in [`pyproject.toml`](pyproject.toml) (`mlx-audio`, `soundfile`, `mutagen`, `Pillow`, `numpy`, `feedparser`)
   - `pip install -r requirements.txt` (or `pip install -e .` for an editable checkout)
 - **`ffmpeg`** and **`ffprobe`**
+- **`gh` CLI** on `PATH`, authenticated (`gh auth login`) — required by the `frontier-commits` skill (daily snapshot collector and per-story research)
 - ~4 GB free disk for the first model download (Qwen3-TTS Base 1.7B-8bit)
 
 ## Setup

@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "clodcast",
-  "description": "Daily-digest podcast skill — turns saved URLs into a fully-produced Spotify episode using Qwen3-TTS on top of the save-to-spotify CLI.",
+  "description": "Two podcast skills on one production stack — daily-podcast turns saved URLs into a fully-produced daily-digest Spotify episode, and frontier-commits ships a weekly episode watching the frontier AI labs' public GitHub activity, both using Qwen3-TTS on top of the save-to-spotify CLI.",
   "owner": {
     "name": "schmug",
     "url": "https://cortech.online"
@@ -9,10 +9,10 @@
   "plugins": [
     {
       "name": "clodcast",
-      "description": "Daily-digest podcast skill. Ships the `daily-podcast` skill: manifest → mp3 → cover → Spotify upload → timeline with chapters and per-segment link companions.",
+      "description": "Two podcast skills. `daily-podcast` is the daily digest: manifest → mp3 → cover → Spotify upload → timeline with chapters and per-segment link companions. `frontier-commits` is the weekly lab watch: frontier AI labs' public GitHub activity (new repos, releases, archivals, star trends) into a speculation-forward episode through the same renderer.",
       "source": "./",
       "category": "productivity",
-      "tags": ["podcast", "tts", "spotify", "qwen3-tts", "save-to-spotify"],
+      "tags": ["podcast", "tts", "spotify", "qwen3-tts", "save-to-spotify", "github", "ai-labs"],
       "homepage": "https://github.com/schmug/clodcast",
       "license": "MIT"
     }

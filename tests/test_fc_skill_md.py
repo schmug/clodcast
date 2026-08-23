@@ -6,18 +6,47 @@ sections, so a shape or story type that exists only in fc_script_plan /
 fc_stories never reaches a real episode, and a table transcription slip ships
 a different rotation than the one the property tests verified. Same
 discipline as the daily show's test_skill_md_* suite in test_reliability.py.
+
+Bank tables are CELL-parsed, never substring-matched: a bank name that merely
+appears somewhere in the prose must not satisfy the check — deleting a table
+row or renaming a cell has to go red.
 """
 
+import re
 from pathlib import Path
 
+import fc_common
 import fc_script_plan as sp
+import fc_snapshot
 import fc_stories
 
 FC_DIR = Path(__file__).resolve().parent.parent / "skills" / "frontier-commits"
+RENDER_PY = Path(__file__).resolve().parent.parent / "skills" / "daily-podcast" / "render.py"
 
 
 def _skill_text():
     return (FC_DIR / "SKILL.md").read_text()
+
+
+def _first_table_after(marker: str) -> list[list[str]]:
+    """Cell-parse the first markdown table after the line containing `marker`.
+
+    Returns data rows only (header and separator dropped), every cell stripped
+    of whitespace and backticks.
+    """
+    lines = _skill_text().splitlines()
+    start = next((i for i, ln in enumerate(lines) if marker in ln), None)
+    assert start is not None, f"SKILL.md lost the {marker!r} section"
+    i = start + 1
+    while i < len(lines) and not lines[i].lstrip().startswith("|"):
+        i += 1
+    assert i < len(lines), f"SKILL.md has no table after {marker!r}"
+    rows = []
+    while i < len(lines) and lines[i].lstrip().startswith("|"):
+        cells = [c.strip().strip("`").strip() for c in lines[i].strip().strip("|").split("|")]
+        rows.append(cells)
+        i += 1
+    return rows[2:]  # drop the header row and the |---| separator
 
 
 def test_skill_md_shape_table_matches_the_code():
@@ -32,12 +61,75 @@ def test_skill_md_shape_table_matches_the_code():
         assert cells[1:] == [names[i] for i in order]
 
 
-def test_skill_md_documents_every_shape_mode_move_and_story_type():
+def test_skill_md_bank_tables_match_the_code_cell_for_cell():
+    banks = [
+        ("### Cold open", list(sp.INTRO_MODES_W)),
+        ("### Sign-off", list(sp.OUTRO_MODES_W)),
+        ("What each shape means:", list(sp.STORY_SHAPES_W)),
+        ("### Segues", list(sp.MOVES_W)),
+    ]
+    for marker, expected in banks:
+        rows = _first_table_after(marker)
+        got = [r[1] for r in rows]
+        assert got == expected, f"bank table after {marker!r}: {got} != {expected}"
+        indices = [r[0] for r in rows]
+        assert indices == [str(i) for i in range(len(expected))], (
+            f"bank table after {marker!r} is mis-numbered: {indices}"
+        )
+
+
+def test_skill_md_story_type_table_matches_the_code():
+    rows = _first_table_after("## Story types")
+    assert [r[0] for r in rows] == list(fc_stories.TYPE_PRIORITY), (
+        "story-type table rows do not match fc_stories.TYPE_PRIORITY in order"
+    )
+    assert [r[1] for r in rows] == [str(v) for v in fc_stories.TYPE_PRIORITY.values()], (
+        "story-type table priorities drifted from fc_stories.TYPE_PRIORITY"
+    )
+
+
+def test_skill_md_setup_documents_every_default_config_key():
+    m = re.search(r"^## Setup$(.*)\Z", _skill_text(), re.M | re.S)
+    assert m, "SKILL.md lost its Setup section"
+    setup = m.group(1)
+    documented = set(re.findall(r'^\s{1,3}"(\w+)"\s*:', setup, re.M))
+    expected = set(fc_common.DEFAULT_CONFIG) | {"show_id", "show_name", "host_name"}
+    missing = expected - documented
+    assert not missing, f"Setup config example is missing config keys: {sorted(missing)}"
+    phantom = documented - expected
+    assert not phantom, f"Setup config example documents unknown keys: {sorted(phantom)}"
+
+
+def test_fc_snapshot_cli_exists_and_matches_the_documented_contract():
+    assert callable(fc_snapshot.main)
+    source = (FC_DIR / "fc_snapshot.py").read_text()
     skill = _skill_text()
-    for name in (*sp.STORY_SHAPES_W, *sp.INTRO_MODES_W, *sp.OUTRO_MODES_W, *sp.MOVES_W):
-        assert name in skill, f"SKILL.md never mentions {name!r}"
-    for t in fc_stories.TYPE_PRIORITY:
-        assert t in skill, f"SKILL.md never mentions story type {t!r}"
+    for literal in ("SNAPSHOT ok date=", "SNAPSHOT FAILED"):
+        assert literal in source, f"fc_snapshot.py lost its {literal!r} final-line contract"
+        assert literal in skill, f"SKILL.md no longer documents the {literal!r} final line"
+
+
+def test_render_py_honors_the_documented_manifest_key():
+    assert "r2_manifest_name" in RENDER_PY.read_text(), (
+        "SKILL.md's manifest promises r2_manifest_name but render.py never mentions it"
+    )
+
+
+def test_skill_md_relative_paths_resolve():
+    referenced = set(re.findall(r"`\./([^`]+)`", _skill_text()))
+    required = {
+        "fc_common.py",
+        "fc_snapshot.py",
+        "fc_stories.py",
+        "fc_script_plan.py",
+        "prompts/weekly.md",
+        "prompts/write_story.md",
+        "launchd/com.cortech.frontier-commits-snapshot.plist",
+    }
+    missing_refs = required - referenced
+    assert not missing_refs, f"SKILL.md's Layout no longer references: {sorted(missing_refs)}"
+    for rel in sorted(referenced):
+        assert (FC_DIR / rel).exists(), f"SKILL.md references ./{rel} but it does not exist"
 
 
 def test_weekly_prompt_stays_a_stub():
