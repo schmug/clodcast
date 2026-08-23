@@ -182,6 +182,34 @@ No new facts in any of them, and the same rule as segments: don't tell listeners
 
 > **Defense in depth:** `render.py` validates the manifest structure (failing fast with a per-field message before the model loads) and re-strips TTS-hostile characters from every segment — em/en dashes, smart quotes, code fences + backticks, leading markdown headings, and bare URLs — regardless of what the caller wrote. It does *not* do the stylistic rules above (numbers-to-words, abbreviation spacing, "CLAUDE dot md") — those stay the writer's job. Set `"raw_text": true` in the manifest to skip normalization (e.g. text pre-formatted for a different TTS).
 
+### Episode description footer
+
+`render.py` appends one credit paragraph to every episode description, **after**
+the timestamped chapter blocks. It is `DESCRIPTION_FOOTER` in `render.py` — a
+constant, not model output. Don't write it into a segment, don't reproduce it in
+the manifest `summary`, and don't remove it from a rendered description thinking
+it is stray text:
+
+```html
+<p>Sources: <a href="https://cortech.online/podcast/sources.opml">every feed this show reads</a>, curated in <a href="https://donthype.me">Don&#x27;t Hype Me</a>.</p>
+```
+
+Two things about it are load-bearing:
+
+- **It goes after the chapters, never before.** cortech.online's `summaryText()`
+  keeps only the paragraphs *before* the first `(mm:ss)` chapter line and renders
+  them as the website summary. Below the chapters the credit reaches Spotify's
+  show notes in full and the web summary not at all; above them it would leak
+  into every episode summary on the site. It is also why the cap-trimmer pins the
+  footer last instead of treating it as a droppable trailing block.
+- **The credit links the product, `https://donthype.me`** — never the repo behind
+  it, which is private and would 404 for every listener.
+
+This is a show-notes line only. Nothing in the audio points at it: the sign-off
+rule above still stands, so never say "check the show notes" or read the source
+list aloud.
+
+
 ## Voice selection
 
 The default is the **locked house voice** — `ref_audio` cloning from a ~22-second reference clip. The Base 1.7B model regenerates that voice's timbre and prosody for any new text, so the voice stays consistent across episodes.
@@ -323,8 +351,9 @@ episode to a Cloudflare R2 bucket *after* the Spotify upload reaches `READY`:
   reads this at build time and renders `/podcast/` plus an iTunes RSS feed at
   `/podcast/rss.xml`.
 
-Each manifest entry carries both a Spotify-flavored `description` (HTML — `<p>summary</p>`
-followed by one timestamped `<p>… - <a>source</a></p>` per chapter) **and** a clean
+Each manifest entry carries both a Spotify-flavored `description` (HTML — `<p>summary</p>`,
+one timestamped `<p>… - <a>source</a></p>` per chapter, then the credit footer — see
+[Episode description footer](#episode-description-footer)) **and** a clean
 `summary` field (#45) so web/RSS consumers can render prose without HTML-stripping the
 description. `summary` is **HTML-by-contract** (the user authored it), so a consumer
 should still escape it as untrusted text rather than trusting it as guaranteed-plain.

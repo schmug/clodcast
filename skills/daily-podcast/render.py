@@ -120,6 +120,24 @@ MIN_RATE_SAMPLE_SEGMENTS = 5
 # rejects the summary, so build_timeline_and_description fits the HTML under it
 # by dropping whole trailing chapter <p> blocks rather than cutting mid-tag.
 SPOTIFY_SUMMARY_MAX_CHARS = 4000
+# Per-episode credit line, appended AFTER the chapter blocks (#130). The
+# placement IS the contract: cortech.online's summaryText() keeps only the
+# paragraphs BEFORE the first timestamped chapter line and renders them as the
+# website summary, so a footer above the chapters would leak into every episode
+# summary on the web. Below them it reaches Spotify's show notes in full and the
+# website not at all — which is the split the show wants. The credit links the
+# PRODUCT (donthype.me); the repo behind it is private and would 404 for every
+# listener. Escaped like the chapter titles so a consumer's entity decoding
+# round-trips.
+SOURCES_OPML_URL = "https://cortech.online/podcast/sources.opml"
+CURATION_TOOL_URL = "https://donthype.me"
+CURATION_TOOL_NAME = "Don't Hype Me"
+DESCRIPTION_FOOTER = (
+    f'<p>Sources: <a href="{html.escape(SOURCES_OPML_URL, quote=True)}">'
+    "every feed this show reads</a>, curated in "
+    f'<a href="{html.escape(CURATION_TOOL_URL, quote=True)}">'
+    f"{html.escape(CURATION_TOOL_NAME, quote=True)}</a>.</p>"
+)
 # covered.json dedup-log retention. A daily run covers ~10 URLs, so the log
 # would grow ~3.6k entries/year unbounded. 180 days is comfortably larger than
 # the feed-curation lookback window (lookback_hours, default 24h — the only
@@ -1238,17 +1256,22 @@ def build_timeline_and_description(
             parts.append(f'<p>{ts} - {safe_title} - <a href="{safe_url}">source</a></p>')
         else:
             parts.append(f"<p>{ts} - {safe_title}</p>")
-    description = "".join(parts)
+    description = "".join(parts) + DESCRIPTION_FOOTER
 
     # Fit under Spotify's summary cap WITHOUT breaking the HTML: each list entry
     # is a self-contained <p>…</p>, so drop whole chapter blocks from the end
     # (longest-suffix-first) until it fits — never cut mid-tag, never ellipsize a
     # block. parts[0] is the summary <p> and is always preserved (it's the hook).
     # The timeline JSON above is untouched: the audio chapters still exist, only
-    # the show-notes listing is trimmed.
+    # the show-notes listing is trimmed. DESCRIPTION_FOOTER is pinned last rather
+    # than trimmed — it counts against the cap but is never a drop candidate, so
+    # every episode keeps its credit line no matter how long the chapter list is.
     if len(description) > SPOTIFY_SUMMARY_MAX_CHARS:
         kept = list(parts)
-        while len(kept) > 1 and len("".join(kept)) > SPOTIFY_SUMMARY_MAX_CHARS:
+        while (
+            len(kept) > 1
+            and len("".join(kept)) + len(DESCRIPTION_FOOTER) > SPOTIFY_SUMMARY_MAX_CHARS
+        ):
             kept.pop()
         dropped = len(parts) - len(kept)
         log(
@@ -1256,7 +1279,7 @@ def build_timeline_and_description(
             f"dropped {dropped} trailing chapter block(s) from show notes "
             "(timeline/audio chapters unaffected)"
         )
-        description = "".join(kept)
+        description = "".join(kept) + DESCRIPTION_FOOTER
 
     return {"items": items}, description
 

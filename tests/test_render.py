@@ -9,8 +9,10 @@ save-to-spotify CLI. The audio I/O seam (`mp3_duration_ms`) is monkeypatched.
 from __future__ import annotations
 
 import datetime as dt
+import html
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -368,7 +370,8 @@ def test_description_under_cap_is_untruncated(tmp_path, monkeypatch):
     )
 
     assert len(description) <= render.SPOTIFY_SUMMARY_MAX_CHARS
-    assert description.count("<p>") == 3  # summary + 2 chapters, nothing dropped
+    # summary + 2 chapters + the credit footer, nothing dropped
+    assert description.count("<p>") == 4
     assert "https://example.com/a" in description
     assert "https://example.com/b" in description
 
@@ -2049,3 +2052,123 @@ def test_prune_disabled_is_noop(tmp_path, monkeypatch):
     )
     assert deleted == 0
     assert rec.list_calls == 0
+
+
+# --- source-credit footer (#130) ------------------------------------------
+#
+# The consumer (cortech.online src/lib/episodes.ts -> summaryText()) keeps only
+# the paragraphs BEFORE the first timestamped chapter line and uses them as the
+# website summary. That is why the footer appends AFTER the chapters: it reaches
+# Spotify's show notes in full while staying out of every web summary.
+
+CHAPTER_LINE = re.compile(r"^\(\d{1,2}:\d{2}(?::\d{2})?\)")
+
+
+def _blocks(description: str) -> list[str]:
+    """Split the description HTML into its <p> block texts, in order."""
+    return re.findall(r"<p>(.*?)</p>", description, flags=re.S)
+
+
+def _lead_summary(description: str) -> list[str]:
+    """Re-implement the consumer's lead-summary rule: blocks before the first
+    timestamped chapter line."""
+    lead = []
+    for block in _blocks(description):
+        if CHAPTER_LINE.match(block):
+            break
+        lead.append(block)
+    return lead
+
+
+def test_description_ends_with_the_source_credit_footer(tmp_path, monkeypatch):
+    segments = [
+        {"title": "First", "source_url": "https://example.com/a"},
+        {"title": "Second", "source_url": "https://example.com/b"},
+    ]
+    paths = _paths(tmp_path, 2)
+    episode = tmp_path / "episode.mp3"
+    durations = {p: 40_000 for p in paths}
+    durations[episode] = 95_000
+    _patch_durations(monkeypatch, durations)
+
+    _, description = render.build_timeline_and_description(
+        segments,
+        paths,
+        silences_ms=[800, 0],
+        summary="hook",
+        episode_mp3=episode,
+    )
+
+    assert description.endswith(render.DESCRIPTION_FOOTER)
+    assert description.count(render.DESCRIPTION_FOOTER) == 1
+    # Both destinations are present, and the private repo is never linked.
+    assert "https://cortech.online/podcast/sources.opml" in render.DESCRIPTION_FOOTER
+    assert "https://donthype.me" in render.DESCRIPTION_FOOTER
+    assert "github.com/schmug/donthype-me" not in description
+    # It is genuinely LAST: the final block is the footer, and it comes after
+    # every timestamped chapter block.
+    blocks = _blocks(description)
+    assert blocks[-1] == _blocks(render.DESCRIPTION_FOOTER)[0]
+    assert not CHAPTER_LINE.match(blocks[-1])
+    assert sum(1 for b in blocks if CHAPTER_LINE.match(b)) == 2
+
+
+def test_description_footer_stays_out_of_the_web_lead_summary(tmp_path, monkeypatch):
+    # The consumer's rule must capture the hook and NOTHING else — a footer placed
+    # before the chapters would leak into every episode summary on the website.
+    segments = [
+        {"title": "First", "source_url": "https://example.com/a"},
+        {"title": "Second"},
+    ]
+    paths = _paths(tmp_path, 2)
+    episode = tmp_path / "episode.mp3"
+    durations = {p: 40_000 for p in paths}
+    durations[episode] = 95_000
+    _patch_durations(monkeypatch, durations)
+
+    _, description = render.build_timeline_and_description(
+        segments,
+        paths,
+        silences_ms=[800, 0],
+        summary="hook",
+        episode_mp3=episode,
+    )
+
+    assert _lead_summary(description) == ["hook"]
+    assert "donthype.me" not in "".join(_lead_summary(description))
+    assert "sources.opml" not in "".join(_lead_summary(description))
+
+
+def test_description_footer_survives_cap_truncation(tmp_path, monkeypatch):
+    # Trailing chapter blocks are dropped to fit the cap — the credit line is not
+    # one of them. It is pinned last and counted against the cap.
+    n = 80
+    fat = "X" * 200
+    segments = [{"title": f"{fat}-{i}", "source_url": f"https://example.com/{i}"} for i in range(n)]
+    paths = _paths(tmp_path, n)
+    episode = tmp_path / "episode.mp3"
+    durations = {p: 40_000 for p in paths}
+    durations[episode] = n * 41_000
+    _patch_durations(monkeypatch, durations)
+
+    _, description = render.build_timeline_and_description(
+        segments,
+        paths,
+        silences_ms=[800] * (n - 1) + [0],
+        summary="hook",
+        episode_mp3=episode,
+    )
+
+    assert len(description) <= render.SPOTIFY_SUMMARY_MAX_CHARS
+    assert description.startswith("<p>hook</p>")
+    assert description.endswith(render.DESCRIPTION_FOOTER)
+    assert _lead_summary(description) == ["hook"]
+
+
+def test_description_footer_escaping_round_trips(tmp_path, monkeypatch):
+    # Same escaping discipline as the chapter blocks: no raw apostrophe or & can
+    # sit in the markup, and unescaping gives back the human-readable line.
+    footer_text = _blocks(render.DESCRIPTION_FOOTER)[0]
+    stripped = re.sub(r"<[^>]+>", "", footer_text)
+    assert "'" not in stripped and '"' not in stripped
+    assert "Don't Hype Me" in html.unescape(stripped)
