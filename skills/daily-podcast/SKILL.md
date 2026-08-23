@@ -170,6 +170,8 @@ Bank of three, indexed `day % 3`:
 
 No new facts in any of them, and the same rule as segments: don't tell listeners to check the show notes or description.
 
+**If the script names the host anywhere - cold open or sign-off - take the name from `host_name` in [the config](#show--dedup-config), never a hardcoded one.** It is the same credit the public show page carries; a spoken name that disagrees with the show's `<itunes:author>` reads as a different person.
+
 ### Rules
 - Convert relative dates from sources to absolute (today's date is available via the system clock)
 - Strip markdown, code blocks, emoji, hashtags before TTS
@@ -245,8 +247,15 @@ Chapters under 30 seconds used to be capped at 3 per episode, and `render.py` pa
 // ~/.config/daily-podcast/config.json
 {
   "show_id": "spotify:show:...",       // required; one-time setup
-  "show_name": "Daily Digest",
-  "host_name": "Cory",
+  "show_name": "Daily Digest",         // rendered onto every generated cover, so a
+                                       //   change here splits the catalogue's art;
+                                       //   the public show is now "Cortech Daily"
+                                       //   and this has NOT been renamed to match
+                                       //   - that decision is issue #133.
+  "host_name": "Schmug",               // narration only - the name the script says
+                                       //   aloud. Matches the public show's
+                                       //   <itunes:author>/<itunes:owner> credit;
+                                       //   nothing derives a slug or filename from it.
   "opml_files": ["/path/to/feeds.opml"], // optional; used by the unattended run
   "lookback_hours": 24,                  // optional; default 24
   "target_item_count": 10,               // optional; default 10
