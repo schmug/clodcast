@@ -218,16 +218,24 @@ daily show.
 {
   "schema_version": 1,
   "generated_at": "2026-08-23T12:00:00Z",
+  "date": "2026-08-23",
+  "snapshot_date": "2026-08-23",
   "labs": [{
     "org": "anthropics", "display": "Anthropic",
     "totals": {"repos": 102, "active_30d": 44, "stars": 512345},
-    "new_repos": [{"name": "...", "created_at": "...", "stars": 0, "description": "..."}],
+    "new_repos": [{"name": "...", "created_at": "...", "stars": 0, "description": "...", "language": "..."}],
     "movers": [{"name": "...", "stars": 0, "delta_7d": 0}],
-    "stale_watch": [{"name": "...", "stars": 0, "days_since_push": 0}],
-    "archived_recent": ["..."]
+    "stale_watch": [{"name": "...", "stars": 0, "days_since_push": 0, "pushed_at": "..."}],
+    "archived_recent": [{"name": "...", "stars": 0, "pushed_at": "..."}]
   }]
 }
 ```
+
+*(Contract updated 2026-08-23 to the shape `build_labs_json` actually ships — PR #136's
+doc critic caught the drift: `archived_recent` carries objects, not bare names, and the
+additive fields above are part of schema_version 1. `snapshot_date` names the snapshot
+the measurements come from; all windows/spans are anchored to it, not the run date. The
+site's zod schema must be written from THIS block.)*
 
 ## 5. State inventory (all under `~/.config/frontier-commits/`)
 
