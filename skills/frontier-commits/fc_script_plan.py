@@ -24,12 +24,13 @@ _DATE_ONLY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def week_index(date_iso: str) -> int:
-    """ISO-week index — the seed every rotation below keys on. `y * 53 + w` so
-    consecutive real-world weeks give distinct, ordered indices across year
-    boundaries; a date rather than a random draw is what makes a resumed or
-    repeated run rebuild the same episode shape."""
-    y, w, _ = dt.date.fromisoformat(date_iso).isocalendar()
-    return y * 53 + w
+    """Contiguous week counter: the ISO week's Monday ordinal // 7. Consecutive
+    real-world weeks give consecutive integers across EVERY year boundary
+    (52- and 53-week ISO years alike) — a multiplier formula like y*53+w steps
+    by 2 at 52-week year ends, silently skipping a rotation row."""
+    d = dt.date.fromisoformat(date_iso)
+    monday = d - dt.timedelta(days=d.isoweekday() - 1)
+    return monday.toordinal() // 7
 
 
 # Named cold opens. Order is load-bearing: build_plan indexes `list(INTRO_MODES_W)`
