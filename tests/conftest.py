@@ -18,6 +18,11 @@ sys.path.insert(0, str(SKILL_DIR))
 
 import render  # noqa: E402  (must follow the sys.path insert above)
 
+FC_SKILL_DIR = Path(__file__).resolve().parent.parent / "skills" / "frontier-commits"
+sys.path.insert(0, str(FC_SKILL_DIR))
+
+import fc_common  # noqa: E402  (must follow the sys.path insert above)
+
 # Every user-level state path render.py can WRITE to. Redirected per-test below.
 # Read-only paths (the bundled house-voice refs, blocked_sources.json) are left
 # alone — tests legitimately assert against the shipped files.
@@ -60,6 +65,13 @@ def _isolate_user_state(tmp_path_factory, monkeypatch):
     workdirs = sandbox / "tmp"
     workdirs.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(render, "TMP_BASE", workdirs)
+    fc_sandbox = tmp_path_factory.mktemp("frontier-commits-state")
+    monkeypatch.setattr(fc_common, "CONFIG_DIR", fc_sandbox)
+    # fc_common has a SECOND user-state root: the daily-podcast secrets fallback
+    # tier. Left unpatched, any test that reaches _gh_env/load_r2_secrets reads
+    # the developer's real 0600 ~/.config/daily-podcast/secrets.json — and a
+    # live GH_TOKEN there would print in any assertion that reprs a captured env.
+    monkeypatch.setattr(fc_common, "DAILY_PODCAST_CONFIG_DIR", fc_sandbox / "daily-podcast")
     yield sandbox
 
 
@@ -68,6 +80,7 @@ def pytest_configure(config):
     resolve a writable state path inside the real home config directory."""
     real = Path.home() / ".config" / "daily-podcast"
     config._daily_podcast_real_state_dir = real
+    config._frontier_real_state_dir = Path.home() / ".config" / "frontier-commits"
 
 
 @pytest.fixture(autouse=True)
@@ -85,3 +98,12 @@ def _assert_no_real_state_writes(request, _isolate_user_state):
         "test left render.TMP_BASE at the system temp dir; a deterministic auto "
         "workdir would then collide with a real same-day run"
     )
+    real_fc = request.config._frontier_real_state_dir
+    # Both fc_common roots must stay clear of BOTH real config dirs — the
+    # daily-podcast fallback tier reads the same secrets.json render.py owns.
+    for attr in ("CONFIG_DIR", "DAILY_PODCAST_CONFIG_DIR"):
+        value = Path(getattr(fc_common, attr))
+        for forbidden in (real_fc, real):
+            assert forbidden not in value.parents and value != forbidden, (
+                f"test left fc_common.{attr} pointing at real user state: {value}"
+            )
