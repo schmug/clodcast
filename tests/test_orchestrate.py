@@ -709,3 +709,143 @@ def test_main_auth_failure_fails_fast_with_actionable_message(tmp_path, monkeypa
     assert "(all dropped/blocked)" not in out  # distinct from the generic-drop message
     assert "SKILL.md" in out  # points at the operator-setup section that must exist
     assert "\n" not in out.strip()  # stays one line
+
+
+# --- Script variety: date-seeded rotation -----------------------------------
+#
+# 76 shipped episodes opened with the same literal sentence and every segment had
+# the same silhouette. Variety has to be ASSIGNED, not requested: a model told to
+# "be varied" regresses to the mean, and in the fan-out each segment is written by
+# an isolated `claude -p` that cannot see its neighbours to differ from them. These
+# tests lock the rotation's guarantees — a cycle covers the bank, consecutive days
+# never open the same way, and the length rhythm can't drop below the drop floor.
+
+
+def test_day_index_is_day_of_year():
+    assert orchestrate.day_index("2026-01-01") == 1
+    assert orchestrate.day_index("2026-12-31") == 365
+
+
+def test_segment_shape_covers_every_shape_within_one_cycle():
+    n = len(orchestrate.SEGMENT_SHAPES)
+    for day in range(1, 367):
+        shapes = [orchestrate.segment_shape(day, i) for i in range(n)]
+        assert set(shapes) == set(orchestrate.SEGMENT_SHAPES), f"day {day} repeats within a cycle"
+
+
+def test_segment_shape_opens_differently_on_consecutive_days():
+    for day in range(1, 366):
+        assert orchestrate.segment_shape(day, 0) != orchestrate.segment_shape(day + 1, 0)
+
+
+def test_segment_shape_reorders_adjacencies_across_days():
+    # A plain rotation only shifts the bank's phase, so `stakes-first` would follow
+    # `plain-lede` in every episode forever. The stride must reorder pairs too.
+    n = len(orchestrate.SEGMENT_SHAPES)
+    orders = {tuple(orchestrate.segment_shape(d, i) for i in range(n)) for d in range(1, 21)}
+    assert len(orders) > n
+
+
+def test_intro_mode_rotates_daily_and_keeps_the_classic_open():
+    # The classic rundown line stays in the bank: the show keeps a recognizable
+    # open roughly one day in five instead of losing its signature entirely.
+    assert "classic" in orchestrate.INTRO_MODES
+    for day in range(1, 366):
+        assert orchestrate.intro_mode(day) != orchestrate.intro_mode(day + 1)
+    cycle = {orchestrate.intro_mode(d) for d in range(1, 1 + len(orchestrate.INTRO_MODES))}
+    assert cycle == set(orchestrate.INTRO_MODES)
+
+
+def test_outro_mode_rotates_daily():
+    for day in range(1, 366):
+        assert orchestrate.outro_mode(day) != orchestrate.outro_mode(day + 1)
+    cycle = {orchestrate.outro_mode(d) for d in range(1, 1 + len(orchestrate.OUTRO_MODES))}
+    assert cycle == set(orchestrate.OUTRO_MODES)
+
+
+def test_short_take_band_never_trips_the_drop_floor():
+    # A short take under MIN_SEGMENT_CHARS is classified REFUSED and its item is
+    # dropped, so a too-low floor would silently shorten every episode.
+    for day in range(1, 366):
+        for pos in range(15):
+            lo, hi = orchestrate.segment_length_band(day, pos)
+            assert lo >= orchestrate.MIN_SEGMENT_CHARS
+            assert lo < hi
+
+
+def test_lead_segment_gets_the_longest_band():
+    for day in range(1, 366):
+        assert orchestrate.segment_length_band(day, 0) == orchestrate.LEAD_BAND
+        assert all(
+            orchestrate.segment_length_band(day, p)[1] <= orchestrate.LEAD_BAND[1]
+            for p in range(1, 15)
+        )
+
+
+def test_episode_mixes_short_takes_with_body_segments():
+    for day in range(1, 366):
+        bands = {orchestrate.segment_length_band(day, p) for p in range(1, 12)}
+        assert orchestrate.SHORT_BAND in bands and orchestrate.BODY_BAND in bands
+
+
+def test_fill_prompt_substitutes_shape_and_length_band():
+    tpl = "t=<<TITLE>> shape=<<SHAPE>> min=<<MIN_CHARS>> max=<<MAX_CHARS>>"
+    out = orchestrate.fill_prompt(tpl, ITEM, shape="scene", length_band=(500, 650))
+    assert "<<" not in out
+    assert orchestrate.SEGMENT_SHAPES["scene"] in out
+    assert "min=500 max=650" in out
+
+
+def test_fill_prompt_never_leaves_the_shape_instruction_blank():
+    # An unknown or omitted shape must degrade to a real instruction, not an empty
+    # line that reads to the model as "no guidance here".
+    assert orchestrate.fill_prompt("shape=<<SHAPE>>", ITEM).strip() != "shape="
+    assert orchestrate.fill_prompt("shape=<<SHAPE>>", ITEM, shape="nonesuch").strip() != "shape="
+
+
+def test_fan_out_assigns_a_distinct_shape_per_position():
+    ranked = [{"title": f"T{i}", "url": f"u/{i}", "feed_name": "F"} for i in range(5)]
+    seen = {}
+
+    def capture(item, tpl, **kw):
+        seen[item["title"]] = kw["shape"]
+        return {
+            **orchestrate._drop_fields(item),
+            "outcome": "OK",
+            "segment": "s",
+            "source_url": item["url"],
+            "detail": "",
+        }
+
+    orchestrate.fan_out(ranked, "tpl", target=5, summarize=capture, day_idx=7)
+    assert len(set(seen.values())) == 5
+
+
+def test_make_intro_outro_prompt_carries_the_days_open_and_close_modes():
+    captured = {}
+
+    def runner(cmd, **kw):
+        captured["prompt"] = cmd[2]
+        return SimpleNamespace(
+            stdout='{"intro":"i","outro":"o","summary":"s"}', stderr="", returncode=0
+        )
+
+    orchestrate.make_intro_outro(["A", "B"], "June 4, 2026", runner=runner, day_idx=2)
+    assert orchestrate.INTRO_MODES[orchestrate.intro_mode(2)] in captured["prompt"]
+    assert orchestrate.OUTRO_MODES[orchestrate.outro_mode(2)] in captured["prompt"]
+
+
+def test_summarize_prompt_declares_the_variety_placeholders():
+    # The prompt file and fill_prompt are one contract; a renamed placeholder on
+    # either side silently ships segments with a literal "<<SHAPE>>" in them.
+    tpl = orchestrate.SUMMARIZE_PROMPT_PATH.read_text()
+    for marker in ("<<SHAPE>>", "<<MIN_CHARS>>", "<<MAX_CHARS>>"):
+        assert marker in tpl, f"prompts/summarize_item.md dropped {marker}"
+
+
+def test_skill_md_documents_every_shape_and_mode():
+    # SKILL.md is the production path (the cron follows it, not orchestrate.py), so
+    # a shape that exists only in code never reaches a real episode.
+    skill = (orchestrate.SKILL_DIR / "SKILL.md").read_text()
+    for name in (*orchestrate.SEGMENT_SHAPES, *orchestrate.INTRO_MODES, *orchestrate.OUTRO_MODES):
+        assert name in skill, f"SKILL.md never mentions {name!r}"

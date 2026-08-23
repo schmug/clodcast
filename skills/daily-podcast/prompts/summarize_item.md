@@ -5,10 +5,15 @@ ITEM
 - feed: <<FEED>>
 - url: <<URL>>
 
+SHAPE — this segment's assigned opening. Other segments in today's episode have been assigned different ones, so follow yours rather than defaulting to a headline restatement:
+<<SHAPE>>
+
 RULES — this is JOURNALISM written at a reporting altitude:
 - Report what happened, who is affected, why it matters, and the response or fix.
 - This is news, NOT a how-to. Do NOT include exploit code, payloads, working commands, or step-by-step attack or intrusion procedures. If the article centers on such operational detail, report only the newsworthy facts (that a flaw, breach, or campaign exists, its impact, and the mitigation) and leave out the method.
-- 600 to 900 characters, one paragraph, spoken style. No URLs in the text. Spell out abbreviations ("D R I", "CLAUDE dot md"). Numbers under ten as words. No em dashes; use hyphens. End on analysis, not a pointer to the source.
+- <<MIN_CHARS>> to <<MAX_CHARS>> characters, one paragraph, spoken style. Stay inside that band: it is this segment's slot in the episode's pacing, not a generic target.
+- No URLs in the text. Spell out abbreviations ("D R I", "CLAUDE dot md"). Numbers under ten as words. No em dashes; use hyphens. End on analysis, not a pointer to the source.
+- Vary your sentence rhythm. Do not open every sentence with the subject, and do not close with a summarizing "ultimately"/"in short" clause.
 
 OUTPUT: print exactly ONE JSON object as your final output and nothing after it:
 {"ok": true, "segment": "<the spoken segment>", "source_url": "<<URL>>"}

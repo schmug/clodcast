@@ -58,6 +58,118 @@ SUMMARIZE_TIMEOUT_S = 150  # per-item claude -p wall clock
 # its neighbours, so drop the one item (REFUSED) rather than ship a stub chapter.
 MIN_SEGMENT_CHARS = 500
 
+# --- Script variety --------------------------------------------------------
+#
+# 76 episodes shipped opening with the same literal sentence, every segment the
+# same silhouette. Variety here is ASSIGNED, never requested: telling a model to
+# "be varied" regresses to the mean, and in this pipeline each segment is written
+# by an isolated `claude -p` that cannot see its neighbours to differ from them.
+# So the date picks the shapes, deterministically - a resumed or re-run day
+# rebuilds the same episode, and consecutive days never open alike.
+
+# Named openings. Order is load-bearing (`segment_shape` walks this bank) and so
+# is the length being PRIME - that is what makes every stride coprime with it.
+SEGMENT_SHAPES = {
+    "plain-lede": "Open with the headline framing, then the substance.",
+    "stakes-first": "Open on who is affected and what changes for them, then what happened.",
+    "number-first": (
+        "Open on the single most concrete figure in the story - a count, a sum, a "
+        "version, a share - then what it measures."
+    ),
+    "scene": (
+        "Open on one concrete detail or a short quoted line from the reporting, then "
+        "widen to the news."
+    ),
+    "contrast": (
+        "Open on the gap between what was assumed and what this item shows, then the substance."
+    ),
+}
+
+# `classic` stays in the bank on purpose: the show keeps its recognizable open
+# roughly one day in five instead of losing its signature altogether.
+INTRO_MODES = {
+    "classic": (
+        "Open with the show's standard line: \"Today's digest for <the date above>. <N> "
+        "stories today, covering <2-4 word theme list>. Here's the rundown.\""
+    ),
+    "theme-first": (
+        "Open by naming the through-line connecting today's headlines in one sentence, "
+        "then give the date and the story count."
+    ),
+    "lead-first": (
+        "Open on the single biggest story in one line, then say how many more follow, "
+        "plus the date."
+    ),
+    "number-first": (
+        "Open on the most striking concrete figure across today's headlines, then the "
+        "date and the story count."
+    ),
+    "tension": (
+        "Open on two of today's headlines that pull against each other, then the date "
+        "and the story count."
+    ),
+}
+
+OUTRO_MODES = {
+    "plain": "Plain sign-off: a simple thanks. No new content.",
+    "throughline": (
+        "Call back to the through-line of the episode in one clause, then sign off. No new facts."
+    ),
+    "forward-look": (
+        "One line on what is worth watching next out of today's stories, then sign off. "
+        "No new facts."
+    ),
+}
+
+# Length rhythm. A uniform 600-900 made every chapter the same size; a lead read, a
+# body, and a scatter of short takes give the episode a pulse. Newly safe: Spotify's
+# sub-30s chapter cap was dropped upstream (see MIN_SEGMENT_CHARS above).
+LEAD_BAND = (850, 1100)
+BODY_BAND = (600, 900)
+SHORT_BAND = (500, 650)  # floor IS MIN_SEGMENT_CHARS - a shorter take is dropped, not shipped
+SHORT_TAKE_EVERY = 4  # roughly one non-lead segment in four runs short
+
+
+def day_index(date_iso: str) -> int:
+    """Day-of-year - the seed every rotation below keys on. A date rather than a
+    random draw so a resumed or repeated run rebuilds the same episode shape."""
+    return dt.date.fromisoformat(date_iso).timetuple().tm_yday
+
+
+def segment_shape(day_idx: int, position: int) -> str:
+    """Name the shape for the segment at `position` in today's episode.
+
+    A stride, not a plain rotation: rotating only shifts the bank's phase, so
+    `stakes-first` would follow `plain-lede` in every episode ever made. Walking the
+    bank with a day-varying stride reorders the adjacencies too. len(SEGMENT_SHAPES)
+    is prime, so every stride in 1..n-1 is coprime with n and a full cycle still
+    visits each shape exactly once.
+    """
+    names = list(SEGMENT_SHAPES)
+    n = len(names)
+    stride = 1 + day_idx % (n - 1)
+    return names[(day_idx + position * stride) % n]
+
+
+def intro_mode(day_idx: int) -> str:
+    names = list(INTRO_MODES)
+    return names[day_idx % len(names)]
+
+
+def outro_mode(day_idx: int) -> str:
+    names = list(OUTRO_MODES)
+    return names[day_idx % len(names)]
+
+
+def segment_length_band(day_idx: int, position: int) -> tuple[int, int]:
+    """Target character band for the segment at `position`. The lead story gets room;
+    a date-picked scatter of the rest runs short so an episode is not twelve identical
+    slabs. Every floor stays >= MIN_SEGMENT_CHARS or the item would be dropped."""
+    if position == 0:
+        return LEAD_BAND
+    return SHORT_BAND if (day_idx + position) % SHORT_TAKE_EVERY == 0 else BODY_BAND
+
+
 # Source tiers (daily.md priority 1: original reporting/analysis > aggregators).
 TIER_SCORE = {1: 1.0, 2: 0.5, 3: 0.2}
 DEFAULT_TIER = 2
@@ -366,11 +478,22 @@ def _drop_fields(item: dict) -> dict:
     return {"feed_name": item["feed_name"], "url": item["url"], "title": item["title"]}
 
 
-def fill_prompt(template: str, item: dict) -> str:
+def fill_prompt(
+    template: str,
+    item: dict,
+    shape: str = "plain-lede",
+    length_band: tuple[int, int] = BODY_BAND,
+) -> str:
+    lo, hi = length_band
     return (
         template.replace("<<TITLE>>", item["title"])
         .replace("<<URL>>", item["url"])
         .replace("<<FEED>>", item["feed_name"])
+        # An unknown shape degrades to the plain lede, never to an empty string: a
+        # blank instruction reads to the model as "no guidance", not "any shape".
+        .replace("<<SHAPE>>", SEGMENT_SHAPES.get(shape) or SEGMENT_SHAPES["plain-lede"])
+        .replace("<<MIN_CHARS>>", str(lo))
+        .replace("<<MAX_CHARS>>", str(hi))
     )
 
 
@@ -380,10 +503,16 @@ def summarize_item(
     timeout: int = SUMMARIZE_TIMEOUT_S,
     claude_bin: str = "claude",
     runner: Callable = subprocess.run,
+    shape: str = "plain-lede",
+    length_band: tuple[int, int] = BODY_BAND,
 ) -> dict:
     """Summarize ONE item in its own isolated claude -p. Returns a result dict carrying
-    the item's feed_name/url/title plus outcome/segment/source_url/detail."""
-    prompt = fill_prompt(prompt_template, item)
+    the item's feed_name/url/title plus outcome/segment/source_url/detail.
+
+    `shape` and `length_band` are this segment's variety assignment (see
+    SEGMENT_SHAPES); they are the only way an isolated writer can differ from its
+    neighbours, since it never sees them."""
+    prompt = fill_prompt(prompt_template, item, shape=shape, length_band=length_band)
     try:
         proc = runner([claude_bin, "-p", prompt], capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -406,13 +535,27 @@ def fan_out(
     target: int = TARGET_DEFAULT,
     concurrency: int = CONCURRENCY_DEFAULT,
     summarize: Callable = summarize_item,
+    day_idx: int = 0,
 ) -> tuple[list[dict], list[dict]]:
     """Summarize ranked items concurrently (each isolated). Preserve ranked order via
     indexed results. Keep the first `target` OKs as survivors; log every non-OK as a
-    drop. A crashed worker drops its item, never the run."""
+    drop. A crashed worker drops its item, never the run.
+
+    Each worker also gets a shape + length band keyed to its ranked position and the
+    day, which is what keeps twelve independent writers from producing twelve
+    identically-shaped segments."""
     results: list[dict | None] = [None] * len(ranked)
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, concurrency)) as ex:
-        futs = {ex.submit(summarize, item, prompt_template): i for i, item in enumerate(ranked)}
+        futs = {
+            ex.submit(
+                summarize,
+                item,
+                prompt_template,
+                shape=segment_shape(day_idx, i),
+                length_band=segment_length_band(day_idx, i),
+            ): i
+            for i, item in enumerate(ranked)
+        }
         for fut in concurrent.futures.as_completed(futs):
             i = futs[fut]
             try:
@@ -467,9 +610,13 @@ def make_intro_outro(
     claude_bin: str = "claude",
     runner: Callable = subprocess.run,
     timeout: int = SUMMARIZE_TIMEOUT_S,
+    day_idx: int = 0,
 ) -> dict:
     """Write intro/outro/summary from the kept TITLES ONLY (benign — no bodies, so no
-    block risk). Any failure → deterministic fallback so a run never dies here."""
+    block risk). Any failure → deterministic fallback so a run never dies here.
+
+    `day_idx` selects the day's cold-open and sign-off modes, so consecutive episodes
+    do not start and end with the same sentence."""
     if not titles:
         return fallback_intro_outro(date_long, 0)
     headlines = "\n".join(f"- {t}" for t in titles)
@@ -477,10 +624,10 @@ def make_intro_outro(
         "You are writing the intro and sign-off for a daily NEWS-DIGEST podcast. Below are "
         f"the headlines for today's episode (titles only). Write for {date_long}.\n\n"
         f"HEADLINES:\n{headlines}\n\n"
-        f"INTRO (~350 chars): \"Today's digest for {date_long}. <N> stories today, covering "
-        "<2-4 word theme list>. Here's the rundown.\" Use the real count and 2-4 topic words "
-        "drawn from the headlines.\n"
-        "SIGN-OFF (~250 chars): brief, no new content, do not mention show notes or links.\n"
+        f"INTRO (~350 chars): {INTRO_MODES[intro_mode(day_idx)]} Use the real story count "
+        "and topic words drawn from the headlines.\n"
+        f"SIGN-OFF (~250 chars): {OUTRO_MODES[outro_mode(day_idx)]} Do not mention show notes "
+        "or links.\n"
         "SUMMARY: one sentence hook for the show-notes preview.\n"
         'Output ONLY one JSON object as the final line: {"intro": "...", "outro": "...", '
         '"summary": "..."}'
@@ -663,8 +810,9 @@ def main(argv: list[str] | None = None) -> int:
     log(f"ranked top {len(ranked)} for summarization")
 
     prompt_template = SUMMARIZE_PROMPT_PATH.read_text()
+    day_idx = day_index(date_iso)
     survivors, dropped = fan_out(
-        ranked, prompt_template, target=target, concurrency=args.concurrency
+        ranked, prompt_template, target=target, concurrency=args.concurrency, day_idx=day_idx
     )
     write_dropped_log(dropped, date_iso)
     log(f"survivors={len(survivors)} dropped={len(dropped)}")
@@ -683,7 +831,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         return _fail("no viable items (all dropped/blocked)")
 
-    intro_outro = make_intro_outro([s["title"] for s in survivors], date_long)
+    intro_outro = make_intro_outro([s["title"] for s in survivors], date_long, day_idx=day_idx)
     manifest = assemble_manifest(date_long, date_iso, survivors, intro_outro)
 
     workdir = (
