@@ -740,10 +740,16 @@ def test_segment_shape_opens_differently_on_consecutive_days():
 
 def test_segment_shape_reorders_adjacencies_across_days():
     # A plain rotation only shifts the bank's phase, so `stakes-first` would follow
-    # `plain-lede` in every episode forever. The stride must reorder pairs too.
-    n = len(orchestrate.SEGMENT_SHAPES)
-    orders = {tuple(orchestrate.segment_shape(d, i) for i in range(n)) for d in range(1, 21)}
-    assert len(orders) > n
+    # `plain-lede` in every episode forever. Test that property directly rather than
+    # counting orderings: normalise each day's ordering by its own first element and
+    # require more than one signature to survive. A pure rotation collapses to one.
+    names = list(orchestrate.SEGMENT_SHAPES)
+    n = len(names)
+    sigs = set()
+    for day in range(1, 21):
+        order = [names.index(orchestrate.segment_shape(day, i)) for i in range(n)]
+        sigs.add(tuple((x - order[0]) % n for x in order))
+    assert len(sigs) > 1, "orderings are mutual rotations - adjacency never changes"
 
 
 def test_intro_mode_rotates_daily_and_keeps_the_classic_open():
@@ -849,3 +855,49 @@ def test_skill_md_documents_every_shape_and_mode():
     skill = (orchestrate.SKILL_DIR / "SKILL.md").read_text()
     for name in (*orchestrate.SEGMENT_SHAPES, *orchestrate.INTRO_MODES, *orchestrate.OUTRO_MODES):
         assert name in skill, f"SKILL.md never mentions {name!r}"
+
+
+def test_no_position_holds_its_shape_two_days_running():
+    """The yearly-coverage test was too weak: with an arithmetic stride, position 4
+    was PINNED to one shape for four consecutive days (and so were 9 and 14, i.e.
+    two slots of a twelve-segment episode). `(1 + p) % 5 == 0` cancelled the
+    day-varying term, leaving only day // 4. Caught by a smoke test, not by unit
+    tests that only checked coverage across a whole year."""
+    for day in range(1, 366):
+        for pos in range(15):
+            today = orchestrate.segment_shape(day, pos)
+            assert today != orchestrate.segment_shape(day + 1, pos), (
+                f"position {pos} repeats {today!r} on days {day}/{day + 1}"
+            )
+
+
+def test_every_position_sees_every_shape_within_one_bank_cycle():
+    # Fairness: no slot may be starved of a shape. A Latin square gives this for
+    # free - each column holds each shape exactly once - and it is what rules out
+    # the "pinned for four days" failure above by construction.
+    n = len(orchestrate.SEGMENT_SHAPES)
+    for start in range(1, 60):
+        for pos in range(n):
+            seen = {orchestrate.segment_shape(start + k, pos) for k in range(n)}
+            assert seen == set(orchestrate.SEGMENT_SHAPES), (
+                f"position {pos} starved from day {start}"
+            )
+
+
+def test_skill_md_shape_table_matches_the_code():
+    """SKILL.md carries the shape table as prose because the scheduled run is a
+    `claude -p` following it, not orchestrate.py. Name-coverage alone would not
+    notice a reordered row, and a wrong row silently ships the wrong rotation."""
+    names = list(orchestrate.SEGMENT_SHAPES)
+    lines = (orchestrate.SKILL_DIR / "SKILL.md").read_text().splitlines()
+    # Anchor on the table's own header - SKILL.md has several `| 0 |` rows, and an
+    # unanchored match reads the cold-open table instead.
+    header = next((i for i, ln in enumerate(lines) if "| pos 0 |" in ln), None)
+    assert header is not None, "SKILL.md lost the per-position shape table"
+    body = lines[header + 2 : header + 2 + len(orchestrate.SHAPE_ORDERS)]
+    for row, (order, line) in enumerate(zip(orchestrate.SHAPE_ORDERS, body, strict=True)):
+        cells = [c.strip().strip("`") for c in line.strip().strip("|").split("|")]
+        assert cells[0] == str(row), f"shape table row {row} is out of order: {line!r}"
+        assert cells[1:] == [names[i] for i in order], (
+            f"row {row}: SKILL.md says {cells[1:]}, code says {[names[i] for i in order]}"
+        )
