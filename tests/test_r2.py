@@ -921,3 +921,20 @@ def test_manifest_entry_conforms_to_consumer_episode_schema():
         assert isinstance(c["start_ms"], int) and c["start_ms"] >= 0
         # source_url: z.url().nullable().optional()
         assert c["source_url"] is None or re.match(r"https?://", c["source_url"])
+
+
+def test_a_topical_title_still_addresses_the_published_slug_and_url():
+    """The end-to-end point of #128, exercised by #139: a manifest for an ALREADY
+    PUBLISHED date carrying a brand-new topical title must still resolve the same R2
+    object and the same /podcast/<slug>/ permalink - which cortech.online republishes
+    as an isPermaLink <guid> and Spotify treats as the episode's identity. If this ever
+    fails, retitling duplicates the back catalogue."""
+    manifest = {
+        "title": "Anthropic's IPO path, MCP's roadmap, Uber's Dutch fine - August 23, 2026",
+        "date": "2026-08-23",
+    }
+    assert render.slug_for_date(render.resolve_slug_date(manifest)) == "daily-digest-august-23-2026"
+    assert (
+        render.r2_episode_mp3_url({"public_base_url": "https://clodcast.cortech.online"}, manifest)
+        == "https://clodcast.cortech.online/daily-digest-august-23-2026.mp3"
+    )

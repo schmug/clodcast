@@ -48,7 +48,9 @@ Already-written segments. Skip straight to rendering.
 
 ```json
 {
-  "title": "Daily Digest - May 22, 2026",  // display-only free text; does NOT key the slug/guid (see "Publishing to the web")
+  // Lead stories then the date, per "Episode title". Display-only free text: it does
+  // NOT key the slug/guid (see "Publishing to the web"), so it is safe to enrich.
+  "title": "Mojo goes open source, OpenAI's pause, Cursor vs GitHub - May 22, 2026",
   "summary": "Today's one-sentence hook.",
   "show_id": "spotify:show:...",
   "date": "2026-05-22",                    // optional ISO date; stamps the cover AND keys the web slug/guid. Omit to use today (re-renders of a dated manifest reproduce its date)
@@ -70,7 +72,7 @@ Already-written segments. Skip straight to rendering.
 4. Fetch missing content -> WebFetch for any item without `content`
 5. Write script          -> intro + one segment per item + outro; per template below
 6. Self-critique pass    -> tighten verbose segments; never reorder
-7. Render manifest       -> hand to render.py
+7. Render manifest       -> title per "Episode title"; hand to render.py
 8. render.py             -> TTS + concat + loudnorm + cover + upload + timeline + poll
 9. Update dedup log      -> render.py appends covered URLs with today's date + episode URI
 10. Report               -> single line: episode URI + voice used + chapter count
@@ -211,6 +213,79 @@ This is a show-notes line only. Nothing in the audio points at it: the sign-off
 rule above still stands, so never say "check the show notes" or read the source
 list aloud.
 
+## Episode title
+
+The title is **display text, never narration** — nothing in the audio refers to it. It is
+also the only thing a browsing listener sees before pressing play, so it names the day's
+lead stories instead of repeating the date.
+
+**Format** — 3 topics, then the date:
+
+```
+<topic>, <topic>, <topic> - <Month D, YYYY>
+```
+
+Worked example, for the episode of 2026-08-20 (T-Mobile cutting a cable to evict Salt
+Typhoon, CareCloud confirming a breach, five federal agencies warning on Siemens
+controllers):
+
+```
+Salt Typhoon, the CareCloud breach, Siemens PLC warnings - August 20, 2026
+```
+
+- **Topics first, date last.** Spotify publishes no maximum length for an episode title;
+  its *Podcast Delivery Specification* (v1.9, §4.3) says only that consumer-facing
+  elements are truncated at whatever the device can display. The front of the string is
+  therefore the budget that matters — and `Daily Digest - August 20, 2026` spent all of
+  it on 30 characters that were byte-identical across all 75 published episodes.
+- **The date stays**, in long form, matching the cover and the cold open. This is a daily
+  show and a listener orients by date; the RSS `<pubDate>` alone is easy to miss in a
+  Spotify list view. Putting it last is what makes truncation cost the least.
+- **Three topics, from the first three stories in the running order** — the ranked lead
+  stories, in that order. Fewer stories than that, name as many as there are.
+- **Each topic is a short noun phrase, 2-3 words**, naming the *subject* — the company,
+  product, incident or release — not a sentence and not a whole headline. The band is
+  measured, not guessed: at 2-4 words, three topics plus the date routinely overran the
+  ceiling and the third was dropped, losing a searchable keyword outright.
+- **Digits stay digits.** The narration rules (numbers under ten in words, spaced
+  abbreviations) exist for TTS; a title is read on a screen, where `3.75 million` scans
+  better than `three point seven five million`.
+- **Hyphens, never em dashes**, and no emoji or smart quotes — special characters render
+  inconsistently across podcast directories, which is why the public show's own title
+  dropped its em dash.
+- **"Report, don't instruct" applies here too** (step 5): name the subject, never the
+  technique. `Citrix NetScaler emergency patch`, not the mechanism of the flaw.
+- **100 characters** is the ceiling, and it is a runaway guard rather than a platform
+  limit — three short phrases never approach it. Over it, drop a whole trailing topic;
+  never cut a word in half.
+- **With nothing worth naming, fall back to `Daily Digest - August 20, 2026`** — the
+  title every published episode already carries. A blank title fails `validate_manifest`
+  and costs the whole episode over a cosmetic field.
+
+### Why retitling is safe, and what it cannot reach
+
+The R2 `slug` and the `isPermaLink` `<guid>` built from it come from
+`slug_for_date(<episode date>)` alone — see [`slug` is keyed on the date, never the
+title](#slug-is-keyed-on-the-date-never-the-title). Nothing may re-couple them. But the
+two Spotify surfaces differ, and only one is mutable:
+
+| Surface | Title comes from | Mutable after publish? |
+| --- | --- | --- |
+| Public show (RSS-ingested from cortech.online) | `title` in the R2 `manifest.json` entry | **Yes** — ordinary data, and guid-neutral since #128 |
+| Private Save-to-Spotify show | `upload --title` | **No.** Episode metadata is immutable after creation, and the show sits at its 60-episode cap, so delete-and-recreate would permanently destroy a published episode |
+
+So a format change reaches **new episodes only**. Pick one and hold it: every episode is
+frozen under whatever format shipped it, and a churn of formats reads worse to a browsing
+listener than one merely-adequate format held consistently. That is also why the title
+format is deliberately **not** part of the date-seeded rotation that varies the cold open,
+the segues and the segment shapes — variety is right for prose, wrong for a name.
+
+In `orchestrate.py` the composition is `episode_title()`, and the topic phrases come back
+from the same `claude -p` call that writes the intro, sign-off and summary — from titles
+only, so the one-body-per-request invariant is untouched. `TITLE_TOPIC_COUNT`,
+`TITLE_MAX_CHARS`, the fallback and the worked example above are pinned against this
+section by `test_skill_md_states_the_episode_title_format`.
+
 
 ## Voice selection
 
@@ -321,7 +396,7 @@ Every `render.py` run appends one JSON record to `~/.config/daily-podcast/runs.j
   "timestamp": "2026-06-03T06:00:12+00:00",  // ISO 8601 UTC
   "status": "ready",                         // "ready" | "dry-run" | "failed"
   "episode_uri": "spotify:episode:...",      // null unless ready
-  "title": "Daily Digest - ...",
+  "title": "Mojo open source, OpenAI's pause, Cursor vs GitHub - June 3, 2026",
   "voice": "house", "voice_mode": "clone",
   "chapter_count": 6, "duration_s": 412.3, "segment_count": 6,
   "workdir": "/var/folders/.../T/daily-podcast-xxxx",
@@ -478,7 +553,7 @@ You are an unattended invocation. Ship today's episode and exit. Be decisive, do
 
 6. **Self-critique pass** (silent): tighten segments over 900 chars or repetitive. Never reorder, never drop a segment.
 
-7. **Build the manifest** at `/tmp/daily-podcast-<date>/manifest.json` per the [manifest schema](#form-2--pre-built-manifest-manifestjson). Do **not** set `voice_instruct` (`"voice": "house"` resolves to the locked house voice) and do **not** set `show_id` (let `render.py` read it from config).
+7. **Build the manifest** at `/tmp/daily-podcast-<date>/manifest.json` per the [manifest schema](#form-2--pre-built-manifest-manifestjson). Title it per [Episode title](#episode-title) — the day's three lead stories, then the date, never the bare date. Do **not** set `voice_instruct` (`"voice": "house"` resolves to the locked house voice) and do **not** set `show_id` (let `render.py` read it from config).
 
 8. **Run the renderer** at the pinned plugin path. `${CLAUDE_PLUGIN_ROOT}` is set when this runs under a Claude Code plugin; if it is somehow unset, exit immediately with `FAILED CLAUDE_PLUGIN_ROOT unset` — do **not** search the filesystem for `render.py`.
 

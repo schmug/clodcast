@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import inspect
 import json
 import subprocess
 from pathlib import Path
@@ -377,7 +378,9 @@ def test_make_intro_outro_uses_llm_json():
         )
 
     out = orchestrate.make_intro_outro(["A", "B"], "June 4, 2026", runner=runner)
-    assert out == {"intro": "I", "outro": "O", "summary": "S"}
+    # `topics` (the episode title's material, #139) is always present; a reply that
+    # omits it yields [] rather than a missing key, so callers never have to guard.
+    assert out == {"intro": "I", "outro": "O", "summary": "S", "topics": []}
 
 
 def test_make_intro_outro_falls_back_on_garbage():
@@ -1013,3 +1016,161 @@ def test_skill_md_documents_every_transition_move():
     skill = (orchestrate.SKILL_DIR / "SKILL.md").read_text()
     for name in orchestrate.TRANSITION_MOVES:
         assert name in skill, f"SKILL.md never mentions the {name!r} segue"
+
+
+# --- Episode titles: topics first, date last (#139) ------------------------
+#
+# All 75 published episodes were titled `Daily Digest - <date>`, so nothing told a
+# browsing listener what any episode was about and the first ~30 characters of every
+# title were identical. #128 decoupled the slug from the title, which is what makes
+# retitling guid-neutral and therefore safe.
+#
+# The format is CODE, the content is the model — the same split the shape rotation
+# uses. `episode_title` composes; `make_intro_outro` supplies the topic phrases from
+# the running order of TITLES only, so the one-body-per-request invariant is untouched.
+
+
+def test_episode_title_leads_with_topics_and_ends_with_the_date():
+    assert (
+        orchestrate.episode_title(
+            ["Salt Typhoon", "the CareCloud breach", "Siemens PLC warnings"], "August 20, 2026"
+        )
+        == "Salt Typhoon, the CareCloud breach, Siemens PLC warnings - August 20, 2026"
+    )
+
+
+def test_episode_title_front_loads_the_topics_so_truncation_costs_least():
+    """Spotify states NO hard cap for an episode <title> and truncates per device
+    instead (Podcast Delivery Specification v1.9 §4.3), so the distinguishing words
+    have to come first. The date-only title spent that budget on 30 identical
+    characters. The date stays - a daily show's listener orients by it - but last,
+    where truncation costs the least."""
+    t = orchestrate.episode_title(["Mojo goes open source"], "August 19, 2026")
+    assert not t.startswith(orchestrate.LEGACY_TITLE_PREFIX)
+    assert t.index("Mojo") < t.index("August 19, 2026")
+    assert t.endswith("August 19, 2026")
+
+
+def test_episode_title_uses_at_most_the_topic_count():
+    assert orchestrate.episode_title(["A", "B", "C", "D", "E"], "June 4, 2026") == (
+        "A, B, C - June 4, 2026"
+    )
+
+
+def test_episode_title_drops_trailing_topics_rather_than_cutting_mid_word():
+    """The cap is a runaway guard, not a platform limit, so it must never leave a
+    half-word or a dangling comma in a title Spotify freezes at creation."""
+    overlong = "an overlong third topic that on its own pushes this title past the cap"
+    t = orchestrate.episode_title(["Salt Typhoon", "CareCloud", overlong], "June 4, 2026")
+    assert len(t) <= orchestrate.TITLE_MAX_CHARS
+    assert t == "Salt Typhoon, CareCloud - June 4, 2026"
+
+
+def test_episode_title_falls_back_to_the_legacy_date_only_title():
+    """Same posture as make_transitions degrading to hard cuts: a title that cannot be
+    built degrades to the known-good date-only one. It can never be empty -
+    validate_manifest dies on a blank title, which would cost the whole episode."""
+    legacy = "Daily Digest - June 4, 2026"
+    assert orchestrate.episode_title([], "June 4, 2026") == legacy
+    assert orchestrate.episode_title(None, "June 4, 2026") == legacy
+    assert orchestrate.episode_title(["  ", "", None, 7], "June 4, 2026") == legacy
+    assert orchestrate.episode_title(["z" * 200], "June 4, 2026") == legacy
+
+
+def test_episode_title_normalizes_dashes_that_render_inconsistently():
+    """cortech.online dropped the em dash from the public show title because special
+    characters render inconsistently across directories (docs/podcast-metadata.md).
+    Topic text is feed-derived, so enforce it here rather than asking for it."""
+    t = orchestrate.episode_title(["Citrix — an emergency patch"], "June 4, 2026")
+    assert "—" not in t and "–" not in t
+    assert t == "Citrix - an emergency patch - June 4, 2026"
+
+
+def test_episode_title_format_is_fixed_not_date_seeded():
+    """Unlike the cold open, the sign-off and the segment shapes, the title format is
+    deliberately NOT rotated. A browsing listener needs one recognizable shape; a churn
+    of title formats reads worse than one adequate format held consistently. Every
+    episode is frozen under whatever format shipped it, so the shape must not vary."""
+    params = inspect.signature(orchestrate.episode_title).parameters
+    assert "day_idx" not in params and "day" not in params
+
+
+def test_make_intro_outro_returns_the_title_topics():
+    def runner(cmd, **kw):
+        return SimpleNamespace(
+            stdout=(
+                '{"intro": "I", "outro": "O", "summary": "S", '
+                '"topics": ["Salt Typhoon", "CareCloud", "Siemens PLCs"]}'
+            ),
+            stderr="",
+            returncode=0,
+        )
+
+    out = orchestrate.make_intro_outro(["A", "B"], "June 4, 2026", runner=runner)
+    assert out["topics"] == ["Salt Typhoon", "CareCloud", "Siemens PLCs"]
+    assert out["intro"] == "I"
+
+
+def test_make_intro_outro_topics_are_additive_so_a_partial_reply_still_ships():
+    """The three prose fields are the contract; topics ride along. A reply without them
+    must still be used - throwing a good intro away over a missing title would cost the
+    episode far more than the date-only title fallback does."""
+
+    def runner(cmd, **kw):
+        return SimpleNamespace(
+            stdout='{"intro": "I", "outro": "O", "summary": "S"}', stderr="", returncode=0
+        )
+
+    out = orchestrate.make_intro_outro(["A", "B"], "June 4, 2026", runner=runner)
+    assert out["intro"] == "I"
+    assert out["topics"] == []
+
+
+def test_make_intro_outro_prompt_asks_for_the_title_topics():
+    captured = {}
+
+    def runner(cmd, **kw):
+        captured["prompt"] = cmd[2]
+        return SimpleNamespace(stdout="{}", stderr="", returncode=0)
+
+    orchestrate.make_intro_outro(["A", "B"], "June 4, 2026", runner=runner)
+    assert "TOPICS" in captured["prompt"]
+    assert str(orchestrate.TITLE_TOPIC_COUNT) in captured["prompt"]
+    # The word band is the knob that decides whether all three topics survive the cap,
+    # so it must reach the model rather than living only in SKILL.md.
+    assert f"{orchestrate.TITLE_TOPIC_WORDS} words" in captured["prompt"]
+
+
+def test_fallback_intro_outro_carries_no_topics():
+    assert orchestrate.fallback_intro_outro("June 4, 2026", 2)["topics"] == []
+
+
+def test_assemble_manifest_titles_the_episode_from_the_topics():
+    survivors = [{"title": "A", "segment": "seg a", "source_url": "u/a", "feed_name": "F1"}]
+    io = {
+        "intro": "I",
+        "outro": "O",
+        "summary": "S",
+        "topics": ["Salt Typhoon", "CareCloud", "Siemens PLCs"],
+    }
+    m = orchestrate.assemble_manifest("June 4, 2026", "2026-06-04", survivors, io)
+    assert m["title"] == "Salt Typhoon, CareCloud, Siemens PLCs - June 4, 2026"
+    # The slug keys on `date`, never the title - retitling must stay guid-neutral.
+    assert m["date"] == "2026-06-04"
+
+
+def test_skill_md_states_the_episode_title_format():
+    """SKILL.md is the production path - the scheduled run is a `claude -p` following
+    it, not orchestrate.py - so a title format stated only in code never reaches a real
+    episode. Pin the worked example, the fallback and the numbers so the two can't drift."""
+    skill = (orchestrate.SKILL_DIR / "SKILL.md").read_text()
+    example = orchestrate.episode_title(
+        ["Salt Typhoon", "the CareCloud breach", "Siemens PLC warnings"], "August 20, 2026"
+    )
+    assert example in skill, f"SKILL.md lost the worked title example {example!r}"
+    assert orchestrate.episode_title([], "August 20, 2026") in skill, (
+        "SKILL.md never states the date-only fallback title"
+    )
+    assert f"{orchestrate.TITLE_TOPIC_COUNT} topics" in skill
+    assert f"{orchestrate.TITLE_MAX_CHARS} characters" in skill
+    assert f"{orchestrate.TITLE_TOPIC_WORDS} words" in skill
