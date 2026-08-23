@@ -69,9 +69,13 @@ def repos_needing_release_check(
     repos: dict, now: dt.datetime, hours: int = 48, cap: int = 30
 ) -> list[str]:
     cutoff = now - dt.timedelta(hours=hours)
-    names = sorted(
+    names = [
         n for n, r in repos.items() if (ts := _parse_iso(r.get("pushed_at", ""))) and ts >= cutoff
-    )
+    ]
+    # Most-recently-pushed first (name as deterministic tiebreak): the cap must
+    # drop the least active repos, never the hottest one because its name sorts
+    # late alphabetically.
+    names.sort(key=lambda n: (_parse_iso(repos[n]["pushed_at"]), n), reverse=True)
     if len(names) > cap:
         fc_common.log(f"warn: release check capped at {cap} of {len(names)} recently-pushed repos")
         names = names[:cap]
@@ -88,7 +92,10 @@ def fetch_releases(
             rels = fc_common.run_gh(
                 ["api", f"repos/{org}/{name}/releases?per_page=5"], runner=runner
             )
-        except fc_common.GhError as e:
+        except (fc_common.GhError, subprocess.SubprocessError, OSError) as e:
+            # Not just GhError: run_gh(timeout=120) raises TimeoutExpired, and a
+            # missing gh binary raises FileNotFoundError — one repo's failure
+            # must never sink the rest of the release sweep.
             fc_common.log(f"warn: releases for {org}/{name} skipped: {e}")
             continue
         for rel in rels if isinstance(rels, list) else []:
@@ -125,7 +132,9 @@ def sweep_org(
         runner=runner,
     )
     return {
-        "fetched_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        # The single resolved clock — an injected `now` must be the timestamp
+        # recorded, or replayed/backfilled sweeps lie about when they ran.
+        "fetched_at": now.isoformat(timespec="seconds"),
         "repos": repos,
         "releases": releases,
     }
@@ -137,7 +146,11 @@ def build_snapshot(config: dict, date_iso: str, runner=subprocess.run) -> dict:
     for org_cfg in config["orgs"]:
         try:
             orgs[org_cfg["name"]] = sweep_org(org_cfg, config, runner=runner)
-        except fc_common.GhError as e:
+        except (fc_common.GhError, subprocess.SubprocessError, OSError) as e:
+            # Broad on purpose: run_gh(timeout=120) raises TimeoutExpired and a
+            # missing gh binary (the realistic launchd failure) raises
+            # FileNotFoundError — either escaping here would lose every healthy
+            # org's data for the day.
             errors[org_cfg["name"]] = str(e)
             fc_common.log(f"warn: org {org_cfg['name']} failed, continuing: {e}")
     if not orgs:
@@ -146,7 +159,14 @@ def build_snapshot(config: dict, date_iso: str, runner=subprocess.run) -> dict:
 
 
 def write_snapshot(snap: dict) -> Path:
-    path = fc_common.snapshot_dir() / f"{snap['date']}.json"
+    name = f"{snap.get('date') or ''}.json"
+    # The date lands verbatim in a filename, and the shared SNAPSHOT_RE is the
+    # same predicate prune_snapshots matches with — so a snapshot can neither
+    # escape snapshot_dir() (date='../escaped') nor be written under a
+    # non-canonical name ('2026-8-5', ISO datetimes) that retention never sees.
+    if not re.fullmatch(fc_common.SNAPSHOT_RE, name):
+        raise ValueError(f"snapshot date must be YYYY-MM-DD, got {snap.get('date')!r}")
+    path = fc_common.snapshot_dir() / name
     fc_common.atomic_write_json(path, snap)
     return path
 
@@ -160,7 +180,7 @@ def prune_snapshots(retention_days: int, today: dt.date) -> list[str]:
         return removed
     cutoff = today - dt.timedelta(days=retention_days)
     for p in sorted(d.iterdir()):
-        m = re.fullmatch(r"(\d{4}-\d{2}-\d{2})\.json", p.name)
+        m = re.fullmatch(fc_common.SNAPSHOT_RE, p.name)
         if not m:
             continue
         try:
