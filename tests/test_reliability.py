@@ -1234,3 +1234,30 @@ def test_skill_md_documents_the_description_footer():
     assert "github.com/schmug/donthype-me" not in skill
     # The placement rule is the whole point of the issue — keep it written down.
     assert "DESCRIPTION_FOOTER" in skill
+
+
+# --- host credit -----------------------------------------------------------
+#
+# The public Spotify show credits `Schmug` in its <itunes:author>, <itunes:owner>
+# and description (schmug/cortech.online#187, settled in #188). A listener who
+# hears one name and reads another cannot tell it is the same person, so the
+# documented config value and the spoken name have to agree. `host_name` is a
+# display/narration string only - nothing derives a slug, filename or id from it.
+
+
+def test_skill_md_documents_the_public_host_credit():
+    skill = (_repo_root() / "skills" / "daily-podcast" / "SKILL.md").read_text()
+
+    assert '"host_name": "Schmug"' in skill, "SKILL.md's config block credits a stale host"
+    assert '"host_name": "Cory"' not in skill
+
+
+def test_skill_md_routes_the_spoken_host_name_through_config():
+    """Documenting the value is not enough: before this, no line of prose or code
+    read `host_name`, so a writer naming the host had nothing to take it from and
+    the config key could never reach the audio."""
+    skill = (_repo_root() / "skills" / "daily-podcast" / "SKILL.md").read_text()
+
+    assert "`host_name`" in skill.split("## Show + dedup config")[0], (
+        "the script template never tells the writer where a spoken host name comes from"
+    )
