@@ -676,6 +676,20 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
     for field in ("voice_instruct", "show_id"):
         if manifest.get(field) is not None and not isinstance(manifest[field], str):
             die(f"manifest '{field}' must be a string")
+    # A second show publishes into the same R2 bucket; a bare-filename key keeps
+    # its web feed out of the daily show's manifest.json without touching episode
+    # object paths (#118). THREAT MODEL: the key names an R2 object the publish
+    # will overwrite, and manifests can be hand-authored — so this is a whitelist,
+    # not a blocklist. No path separators (a key like "../x.json" or "a/b.json"
+    # could never be a sibling manifest) and a forced ".json" suffix (so the
+    # no-cache JSON PUT can never clobber an episode mp3 or cover object).
+    r2_name = manifest.get("r2_manifest_name")
+    if r2_name is not None and (
+        not isinstance(r2_name, str) or not re.fullmatch(r"[A-Za-z0-9._-]+\.json", r2_name)
+    ):
+        die(
+            f"manifest 'r2_manifest_name' must be a bare filename ending in .json (got {r2_name!r})"
+        )
     if manifest.get("date"):  # treat "" as absent, matching resolve_cover_date
         try:
             dt.date.fromisoformat(manifest["date"])
@@ -2243,11 +2257,17 @@ def maybe_publish_r2(
         # writes like a local file), so the read-modify-write is safe without a temp
         # key. no-cache keeps the consumer's build-time fetch from reading a stale CDN
         # copy right after a deploy-hook rebuild.
-        entries = upsert_manifest(_r2_get_manifest(client, cfg["bucket"]), entry)
+        #
+        # A second show sharing this bucket names its own manifest object via the
+        # optional r2_manifest_name key (validate_manifest whitelists it to a bare
+        # *.json filename), keeping its web feed out of the daily show's
+        # manifest.json. Absent key -> "manifest.json", byte-identical to before.
+        manifest_key = manifest.get("r2_manifest_name") or "manifest.json"
+        entries = upsert_manifest(_r2_get_manifest(client, cfg["bucket"], manifest_key), entry)
         _r2_put(
             client,
             cfg["bucket"],
-            "manifest.json",
+            manifest_key,
             json.dumps(entries, indent=2).encode(),
             "application/json",
             cache_control="no-cache",

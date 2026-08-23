@@ -360,6 +360,13 @@ episode to a Cloudflare R2 bucket *after* the Spotify upload reaches `READY`:
   reads this at build time and renders `/podcast/` plus an iTunes RSS feed at
   `/podcast/rss.xml`.
 
+A manifest may set an optional `"r2_manifest_name"` — a bare filename matching
+`[A-Za-z0-9._-]+\.json` (no path separators; anything else fails validation) — to route
+its entry into a differently-named manifest object in the same bucket. This is how a
+second show sharing the bucket keeps its web feed out of the daily show's
+`manifest.json`. Unset means `manifest.json`; episode and cover object keys are
+unaffected either way.
+
 ### `slug` is keyed on the date, never the title
 
 `slug` comes from `slug_for_date(<episode date>)` alone — the manifest `title` is

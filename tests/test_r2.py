@@ -649,6 +649,81 @@ def test_publish_no_hook_when_unset(monkeypatch, tmp_path):
     assert fired == []
 
 
+# --- r2_manifest_name (second-show web feeds, #118) -------------------------
+#
+# A second show publishes into the same bucket; an optional bare-filename
+# manifest key routes its web feed away from the daily show's manifest.json.
+# The default-key test is the load-bearing one: with the key absent, the only
+# .json PUT is exactly "manifest.json" — the daily show's behavior untouched.
+
+
+def _publish_with_manifest(monkeypatch, tmp_path, manifest, s3=None):
+    s3 = s3 if s3 is not None else FakeS3()
+    _configured(monkeypatch, tmp_path, s3)
+    kwargs = _publish_kwargs(tmp_path)
+    kwargs["manifest"] = manifest
+    status = render.maybe_publish_r2(
+        {"r2_bucket": "clodcast", "r2_public_base_url": "https://audio.example"},
+        **kwargs,
+    )
+    return status, s3
+
+
+def test_publish_default_key_when_r2_manifest_name_absent(monkeypatch, tmp_path):
+    status, s3 = _publish_with_manifest(
+        monkeypatch, tmp_path, {"title": "Daily X", "summary": "S", "date": "2026-08-25"}
+    )
+    assert status == render.R2_PUBLISHED
+    json_keys = [k for k in s3.put_order if k.endswith(".json")]
+    assert json_keys == ["manifest.json"]
+
+
+def test_publish_routes_r2_manifest_name_and_leaves_default_alone(monkeypatch, tmp_path):
+    status, s3 = _publish_with_manifest(
+        monkeypatch,
+        tmp_path,
+        {
+            "title": "Frontier Commits",
+            "summary": "S",
+            "date": "2026-08-25",
+            "r2_manifest_name": "manifest-frontier-commits.json",
+        },
+    )
+    assert status == render.R2_PUBLISHED
+    assert "manifest-frontier-commits.json" in s3.put_order
+    assert "manifest.json" not in s3.put_order
+    # Episode/cover object keys are unaffected — only the manifest routes.
+    assert any(k.endswith(".mp3") for k in s3.put_order)
+    entries = json.loads(s3.objects["manifest-frontier-commits.json"])
+    # Slug is date-keyed (#128) — the "Frontier Commits" title cannot reach it.
+    assert [e["slug"] for e in entries] == ["daily-digest-august-25-2026"]
+
+
+def test_publish_appends_to_existing_r2_manifest_name_object(monkeypatch, tmp_path):
+    # The GET is threaded too: existing entries under the named key are read and
+    # upserted, not clobbered — and the default manifest.json is never touched.
+    s3 = FakeS3()
+    s3.objects["manifest-frontier-commits.json"] = json.dumps(
+        [{"slug": "older", "pubDate": "2026-05-01T12:00:00+00:00", "title": "Older"}]
+    ).encode()
+    status, s3 = _publish_with_manifest(
+        monkeypatch,
+        tmp_path,
+        {
+            "title": "Frontier Commits",
+            "summary": "S",
+            "date": "2026-08-25",
+            "r2_manifest_name": "manifest-frontier-commits.json",
+        },
+        s3=s3,
+    )
+    assert status == render.R2_PUBLISHED
+    entries = json.loads(s3.objects["manifest-frontier-commits.json"])
+    # Slug is date-keyed (#128) — the "Frontier Commits" title cannot reach it.
+    assert [e["slug"] for e in entries] == ["daily-digest-august-25-2026", "older"]
+    assert "manifest.json" not in s3.objects
+
+
 # --- resume-path R2 back-fill (#40) ----------------------------------------
 #
 # The --workdir resume tail (_resume) must also publish to R2, mirroring the fresh
