@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 This file is generated from conventional commits by [git-cliff](https://git-cliff.org).
 
+## [0.1.5](https://github.com/schmug/clodcast/compare/v0.1.4...v0.1.5) (2026-08-23)
+
+
+### Features
+
+* **script:** assign segues instead of requesting them ([#110](https://github.com/schmug/clodcast/issues/110)) ([d458373](https://github.com/schmug/clodcast/commit/d458373f380634132a48591f3954308c28023006))
+* **script:** replace the fixed script template with a date-seeded rotation ([#103](https://github.com/schmug/clodcast/issues/103)) ([fcb9300](https://github.com/schmug/clodcast/commit/fcb93007fcd6a2f53eaa22f4da08cfaf58f922ca))
+
+
+### Bug Fixes
+
+* **curation:** name the three duplicate-story shapes and drop weekly roundups ([#102](https://github.com/schmug/clodcast/issues/102)) ([b7b6639](https://github.com/schmug/clodcast/commit/b7b6639faa078154469c34d9aa6ca6daf2c9019d))
+* **script:** replace the shape stride with a Latin square ([#108](https://github.com/schmug/clodcast/issues/108)) ([f7ff6c3](https://github.com/schmug/clodcast/commit/f7ff6c3817d01a329f78ba051c85648c5d7ebbdf))
+
 ## [0.1.4](https://github.com/schmug/clodcast/compare/v0.1.3...v0.1.4) (2026-08-22)
 
 
