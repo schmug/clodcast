@@ -24,6 +24,8 @@
 - `render.py` stays single-file; the only render.py change in this plan is Task 12.
 - The unattended weekly procedure has exactly ONE home: the new SKILL.md's "Unattended weekly run" section. `prompts/weekly.md` is a stub pointing there; a drift test enforces it (Task 10).
 
+> **Post-review corrections (2026-08-23):** during the orchestrated build, adversarial critics on lanes n1 (PR #120) and n2 (PR #122) found defects in this plan's own code excerpts, since folded back into the text so it stays truthful: per-org failure isolation must catch `(GhError, SubprocessError, OSError)`, not `GhError` alone (a gh timeout or missing binary was killing the whole sweep); the release-check cap must sort by recency before truncating; `fetched_at` must use the injected clock; `write_snapshot` must validate the date before building the path; and `load_config` deep-merges `allowlist`/`denylist` per-org, validates the `orgs` container, and constrains org names to `[A-Za-z0-9-]+` (Task 1's excerpts predate those review fixes — the shipped `fc_common.py` on PR #120 is authoritative).
+
 ## File structure
 
 ```
@@ -671,7 +673,7 @@ def build_snapshot(config: dict, date_iso: str, runner=subprocess.run) -> dict:
     for org_cfg in config["orgs"]:
         try:
             orgs[org_cfg["name"]] = sweep_org(org_cfg, config, runner=runner)
-        except fc_common.GhError as e:
+        except (fc_common.GhError, subprocess.SubprocessError, OSError) as e:
             errors[org_cfg["name"]] = str(e)
             fc_common.log(f"warn: org {org_cfg['name']} failed, continuing: {e}")
     if not orgs:
@@ -680,6 +682,11 @@ def build_snapshot(config: dict, date_iso: str, runner=subprocess.run) -> dict:
 
 
 def write_snapshot(snap: dict) -> "Path":
+    # The writer and the pruner must agree on what a snapshot filename is —
+    # an unvalidated date here ('../escaped', '2026-8-5') either escapes the
+    # snapshot dir or writes a file the retention regex can never prune.
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", snap.get("date") or ""):
+        raise ValueError(f"snapshot date must be YYYY-MM-DD, got {snap.get('date')!r}")
     path = fc_common.snapshot_dir() / f"{snap['date']}.json"
     fc_common.atomic_write_json(path, snap)
     return path
@@ -731,7 +738,7 @@ git commit -m "feat(frontier-commits): org sweep, AI filter, atomic snapshot sto
 
 **Interfaces:**
 - Consumes: `fc_common.run_gh`, Task 2's `sweep_org`/`build_snapshot`.
-- Produces: `repos_needing_release_check(repos: dict[str, dict], now: dt.datetime, hours: int = 48) -> list[str]`; `fetch_releases(org: str, repo_names: list[str], window_days: int, now: dt.datetime, runner) -> list[dict]` (entries `{"repo", "tag", "published_at"}`). `sweep_org` gains a `now` param and fills `"releases"`; the per-org cap `releases_repo_cap_per_org` is enforced with a logged line when it truncates (no silent caps).
+- Produces: `repos_needing_release_check(repos: dict[str, dict], now: dt.datetime, hours: int = 48, cap: int = 30) -> list[str]` (recency-sorted before capping); `fetch_releases(org: str, repo_names: list[str], window_days: int, now: dt.datetime, runner) -> list[dict]` (entries `{"repo", "tag", "published_at"}`). `sweep_org` gains a `now` param and fills `"releases"`; the per-org cap `releases_repo_cap_per_org` is enforced with a logged line when it truncates (no silent caps).
 
 - [ ] **Step 1: Write the failing tests** (append to `tests/test_fc_snapshot.py`)
 
@@ -790,10 +797,13 @@ def _parse_iso(ts: str) -> dt.datetime | None:
 def repos_needing_release_check(repos: dict, now: dt.datetime,
                                 hours: int = 48, cap: int = 30) -> list[str]:
     cutoff = now - dt.timedelta(hours=hours)
-    names = sorted(
+    names = [
         n for n, r in repos.items()
         if (ts := _parse_iso(r.get("pushed_at", ""))) and ts >= cutoff
-    )
+    ]
+    # Recency first, THEN cap — an alphabetical cap would keep the 30
+    # alphabetically-first repos and drop the most-recently-pushed one.
+    names.sort(key=lambda n: (_parse_iso(repos[n]["pushed_at"]), n), reverse=True)
     if len(names) > cap:
         fc_common.log(f"warn: release check capped at {cap} of {len(names)} recently-pushed repos")
         names = names[:cap]
@@ -809,7 +819,7 @@ def fetch_releases(org: str, repo_names: list[str], window_days: int,
             rels = fc_common.run_gh(
                 ["api", f"repos/{org}/{name}/releases?per_page=5"], runner=runner
             )
-        except fc_common.GhError as e:
+        except (fc_common.GhError, subprocess.SubprocessError, OSError) as e:
             fc_common.log(f"warn: releases for {org}/{name} skipped: {e}")
             continue
         for rel in rels if isinstance(rels, list) else []:
@@ -820,7 +830,7 @@ def fetch_releases(org: str, repo_names: list[str], window_days: int,
     return out
 ```
 
-Wire into `sweep_org` (which gains `now: dt.datetime | None = None`, defaulting to `dt.datetime.now(dt.timezone.utc)`): after building `repos`, set `releases = fetch_releases(org_cfg["name"], repos_needing_release_check(repos, now, cap=config["releases_repo_cap_per_org"]), config["lookback_days"], now, runner=runner)`.
+Wire into `sweep_org` (which gains `now: dt.datetime | None = None`, defaulting to `dt.datetime.now(dt.timezone.utc)`): after building `repos`, set `releases = fetch_releases(org_cfg["name"], repos_needing_release_check(repos, now, cap=config["releases_repo_cap_per_org"]), config["lookback_days"], now, runner=runner)` — and switch `fetched_at` to the SAME resolved clock (`now.isoformat(timespec="seconds")`); a second wall-clock read there silently ignores an injected `now` and leaves the field untestable.
 
 - [ ] **Step 4: Run tests + suite + lint** — `pytest` all green, ruff clean.
 
