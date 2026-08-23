@@ -360,13 +360,21 @@ You are an unattended invocation. Ship today's episode and exit. Be decisive, do
 
    A security story is in scope when it can be told at a reporting altitude (a vulnerability was disclosed, a breach occurred, a patch shipped); out of scope when the item *is* the technique. Reporting on a disclosed vulnerability, a breach, or published security research is ordinary tech journalism — the line is operational how-to, not the security topic. Apply the keep/drop test to **the specific item, not its feed's reputation**: a mainstream security-news feed can still carry one write-up built around exploit detail, and that one gets dropped — while a clean disclosure / impact / response story from any feed is kept. When an item is borderline (newsworthy core wrapped around some operational detail), keep it and pull only the reporting-level summary in step 4; don't drop a whole feed to avoid one item.
 
+   Next, apply the **"same story, different URL"** test. Step 2 only dropped exact `link` matches against `covered.json`, so a story the show already ran arrives under a new URL and sails past it. Check each surviving item against `covered.json` *and* against the rest of today's candidate set; three shapes recur:
+
+   - **Primary ↔ commentary.** A link-blog post and the announcement it links to are one story, and both are in the OPML. Pick whichever has more to say and run it once — never both, and never on consecutive days.
+   - **Rumor → confirmation.** "X reportedly acquires Y" and Y's own announcement are one story. Cover it at confirmation unless the rumor itself was the news; if the rumor already shipped, the confirmation is only worth a segment when the terms changed.
+   - **Outlet B rewrites outlet A.** Match on the entity — CVE ID, company, product, incident — not the URL. The same flaw with the same framing a few days apart is re-coverage, whichever outlet carries it.
+
+   Then drop **weekly roundups and conference recaps** outright: for a *daily* show, a "week in review" is by construction a digest of what the show already ran. Match the item's `link` and `title` against the `roundup_patterns` list in [`blocked_sources.json`](blocked_sources.json) — separators are interchangeable, so `week-in-review` matches both "Week in review:" in a title and `/week-in-review-…/` in a path. That list is the pattern data; read it there rather than re-inlining it here, and note a `preferred` outlet's roundup is still a roundup.
+
    Then rank what remains, in order:
    1. Original reporting and analysis (e.g. Anthropic blog, Simon Willison) over aggregators
    2. Items naming specific products, releases, papers, findings, or numbers (concrete > abstract)
    3. Items from feeds not used in the past 3 days (variety across episodes)
    4. Newer over older within the lookback window
 
-   If you cannot find at least 5 items meeting the bar, ship a shorter episode rather than padding. Dropping out-of-scope items is normal and counts toward this — never pad to hit a count.
+   If you cannot find at least 5 items meeting the bar, ship a shorter episode rather than padding. Dropping out-of-scope, duplicate, and roundup items is normal and counts toward this — never pad to hit a count, and never raise `target_item_count` to compensate for the extra drops.
 
 4. **Fetch full content** for each selected item via `WebFetch`, at a **reporting altitude** — the who / what / impact / response. `WebFetch` is a summarizing fetch, so ask it for the news summary, not a verbatim dump. If an article embeds operational detail, **leave it out of what you save**. Extract the article body, not the homepage. Save to `/tmp/daily-podcast-<date>/item_NN.md`.
 
