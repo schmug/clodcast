@@ -1221,3 +1221,16 @@ def test_speech_rate_failure_classifies_as_a_tts_degeneration_incident():
         )
         == "tts-degeneration"
     )
+
+
+def test_skill_md_documents_the_description_footer():
+    """The credit line is appended by render.py, not written by the model. SKILL.md
+    has to say so, or the next session reads it as stray output and 'fixes' it."""
+    skill = (_repo_root() / "skills" / "daily-podcast" / "SKILL.md").read_text()
+
+    assert "https://cortech.online/podcast/sources.opml" in skill
+    assert "https://donthype.me" in skill
+    # The private repo must never be the linked destination (it 404s for listeners).
+    assert "github.com/schmug/donthype-me" not in skill
+    # The placement rule is the whole point of the issue — keep it written down.
+    assert "DESCRIPTION_FOOTER" in skill
