@@ -24,7 +24,10 @@ CONFIG_DIR = Path.home() / ".config" / "frontier-commits"
 # duplicating credentials; a frontier-commits secrets.json wins if it ever exists.
 DAILY_PODCAST_CONFIG_DIR = Path.home() / ".config" / "daily-podcast"
 
-SNAPSHOT_RE = r"\d{4}-\d{2}-\d{2}\.json"
+# The one definition of a snapshot filename. fc_snapshot's writer validates
+# against it and its pruner matches with it, so writer-accepted names are
+# exactly pruner-visible names — group 1 is the YYYY-MM-DD date.
+SNAPSHOT_RE = r"(\d{4}-\d{2}-\d{2})\.json"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "show_name": "Frontier Commits",
