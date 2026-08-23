@@ -1,5 +1,5 @@
 {
-  "_comment": "Outlets that cannot be fetched for article bodies during curation. Every entry traces to a run where a segment could not be written. `substitute` names a reliably-fetchable outlet covering the same beat; `strategy` names the recovery that worked. Consumed by render.load_blocked_sources()/is_blocked_domain and documented in incidents/webfetch-blocked-source.md.",
+  "_comment": "Outlets that cannot be fetched for article bodies during curation. Every entry traces to a run where a segment could not be written. `substitute` names a reliably-fetchable outlet covering the same beat; `strategy` names the recovery that worked. Consumed by render.load_blocked_sources()/is_blocked_domain and documented in incidents/webfetch-blocked-source.md. `roundup_patterns` is curation data, not fetch data: load_blocked_sources() returns only `domains`, so that list is read by the curating agent (SKILL.md step 3), never through that accessor.",
   "domains": {
     "wired.com": {
       "reason": "webfetch-blocked",
@@ -72,6 +72,14 @@
     "blog.cloudflare.com",
     "haveibeenpwned.com",
     "anthropic.com"
+  ],
+  "roundup_patterns": [
+    "week-in-review",
+    "weekly-recap",
+    "top-highlights",
+    "roundup",
+    "this week in",
+    "week in security"
   ],
   "non_article_hosts": {
     "_comment": "Feed items linking here are not articles; never attach one as a segment source_url.",
