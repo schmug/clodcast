@@ -179,7 +179,7 @@ Plus the two inherited house rules: **never manufacture a connection** between u
 
 ## Manifest
 
-A standard `render.py` manifest (the daily skill's Form 2) plus two keys: `show_id` — the Frontier Commits show, from `~/.config/frontier-commits/config.json` — and `"r2_manifest_name": "manifest-frontier-commits.json"`, which keeps this show's web feed beside, never inside, the daily show's `manifest.json`.
+A standard `render.py` manifest (the daily skill's Form 2) plus three keys: `show_id` — the Frontier Commits show, from `~/.config/frontier-commits/config.json`; `"r2_manifest_name": "manifest-frontier-commits.json"`, which keeps this show's web feed beside, never inside, the daily show's `manifest.json`; and `"r2_key_prefix": "frontier-commits/"`, which namespaces the episode/cover objects — the slug is date-keyed, so without the prefix a frontier episode publishing the same day as a daily episode would overwrite the daily show's `.mp3`/`.jpg` in the shared bucket (#142).
 
 ```json
 {
@@ -189,6 +189,7 @@ A standard `render.py` manifest (the daily skill's Form 2) plus two keys: `show_
   "date": "2026-08-24",
   "voice": "house",
   "r2_manifest_name": "manifest-frontier-commits.json",
+  "r2_key_prefix": "frontier-commits/",
   "segments": [
     {"text": "Cold open...", "source_url": null},
     {"text": "Lead story, 1100-1500 chars...", "source_url": "https://github.com/openai/git", "source_title": "openai/git"},

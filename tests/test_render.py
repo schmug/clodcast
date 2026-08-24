@@ -815,6 +815,34 @@ def test_validate_manifest_r2_manifest_name_rejects_paths_and_non_json(bad):
         render.validate_manifest(m)
 
 
+@pytest.mark.parametrize("prefix", ["frontier-commits/", "frontier-commits-", "fc"])
+def test_validate_manifest_r2_key_prefix_accepts_bare_forms(prefix):
+    # Folder-style ("x/"), dash-style ("x-"), and bare ("x") prefixes are all legal.
+    m = _valid_manifest()
+    m["r2_key_prefix"] = prefix
+    render.validate_manifest(m)  # no raise
+
+
+def test_validate_manifest_r2_key_prefix_allows_null():
+    m = _valid_manifest()
+    m["r2_key_prefix"] = None  # explicit null behaves like absent
+    render.validate_manifest(m)  # no raise
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["../x", "/abs", "a/b/c", "", 7, "..", "../", ".", "a b/"],
+)
+def test_validate_manifest_r2_key_prefix_rejects_paths_and_traversal(bad):
+    # Same whitelist posture as r2_manifest_name: the prefix lands in R2 object
+    # keys AND in public URLs (base_url + key), so a dot-only prefix like "../"
+    # would advertise a URL that normalizes back onto the default show's objects.
+    m = _valid_manifest()
+    m["r2_key_prefix"] = bad
+    with pytest.raises(SystemExit):
+        render.validate_manifest(m)
+
+
 # --- normalize_for_tts ----------------------------------------------------
 
 
