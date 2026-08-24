@@ -1,9 +1,9 @@
 # Frontier Commits episode cover — `ascii-git`
 
 **Date:** 2026-08-24
-**Status:** approved, not implemented
-**Depends on:** [#168](https://github.com/schmug/clodcast/pull/168) — every constant, helper and the
-`cover_style` whitelist this design extends arrives with it. Nothing here can land first.
+**Status:** approved; **revised after #168 landed** — see [What #168 actually shipped](#what-168-actually-shipped)
+**Base:** [#168](https://github.com/schmug/clodcast/pull/168) merged as `c4e841c`. This design was
+written against #168's pre-rebase shape and has been corrected against what is on `main`.
 **Scope:** this repo only — `render.py`'s cover renderer and the FC skill's manifest.
 **Sibling spec:** `schmug/cortech.online` → `docs/superpowers/specs/2026-08-24-fc-show-art-design.md`
 covers the 3000×3000 channel tile. The two documents describe **one picture**.
@@ -22,26 +22,71 @@ Frontier Commits bypasses `build_cover` entirely: its manifest sets
 2. **A copy rule instead of a build.** `skills/frontier-commits/SKILL.md` carries the instruction
    "if that art is ever redesigned, update both". That is a human-maintained invariant with no test
    behind it.
-3. **The two shows are about to diverge visually.** #168 gives the daily an ASCII cover and pins FC
-   to `cover_style: "gradient"` — a style FC does not even reach, since `cover_image` short-circuits
-   it. FC is now excluded from the house design twice over, by two different mechanisms.
+3. **The two shows have now diverged visually.** #168 gave the daily an ASCII cover. FC is on a
+   static JPEG. Two shows from one publisher, one with generated art that names the week's stories
+   and one with a fixed tile, sitting next to each other in the same client.
+
+## What #168 actually shipped
+
+This spec was written while #168 was open, against the shape it had then. It was **rebased before
+merging** and came out materially different. Recorded here because the original text assumed
+otherwise and an implementer reading only that would be wrong on four counts:
+
+| Assumed while #168 was open | On `main` at `c4e841c` |
+| --- | --- |
+| `cover_style` whitelist exists; this design adds a value | **Deleted during the rebase.** No `COVER_STYLES`, no `resolve_cover_style`, no `cover_style` key |
+| `_cover_gradient` frozen and still reachable | **Deleted.** `build_cover` draws exactly one design |
+| `_cover_ascii_horizon` is a sibling function to add beside | **No such name.** `build_cover` itself *is* the horizon renderer |
+| Pillow is not a CI dependency; render tests `importorskip` | **CI installs Pillow + `fonts-dejavu-core`.** Render tests run for real on Linux |
+
+The rebase rationale, from #168's own PR comment, was that `cover_image` strictly dominates
+`cover_style`: with FC on `cover_image`, `build_cover` is never called for that show, so
+`cover_style` would have been dead config and the gradient renderer dead code.
+
+**That reasoning is correct, and its premise is exactly what this change removes.** `cover_style`
+was dead *because* FC used `cover_image`. Once FC renders its own art, the key stops being dead —
+it becomes the thing that selects which art. So this design reintroduces the mechanism #168
+deleted, deliberately, and a reviewer is entitled to challenge that; the answer is that the
+deletion was conditional on a premise that no longer holds.
+
+The other half of that rationale — "supplying real art beats picking between two templates a show
+did not design" — does not apply either. This is not FC picking a template it did not design. It is
+FC getting its own design, generated per episode with the week and the topics, which a static
+`cover_image` structurally cannot do: one file means identical art forever.
+
+Surviving and reused unchanged: `_cover_face`, `_draw_tracked`, `_tracked_width`, `_cover_wrap`,
+`_fit_lockup`, `cover_headline`, `ASCII_SUN` and every `COVER_*` layout constant.
 
 ## Non-goals
 
 - The 3000×3000 channel tile. Different repo, sibling spec.
-- The daily show's `ascii-horizon` cover. Untouched.
-- `_cover_gradient`. It stays byte-identical and now becomes genuinely dead for FC; **do not delete
-  it** — the whitelist still accepts `"gradient"`, and #168's reason for freezing it (a proven
-  renderer nothing should perturb) is unchanged.
+- The daily show's cover **output**. Its rendering code moves — `build_cover`'s body becomes
+  `_cover_ascii_horizon` so a dispatcher can sit above it — but the JPEG it produces must not change
+  by one byte. Proven, not assumed.
+- Restoring `_cover_gradient`. #168 deleted it and it stays deleted; nothing here wants it.
 - The `cover_image` manifest key. It stays a supported feature; FC simply stops using it.
 - [#133](https://github.com/schmug/clodcast/issues/133), the `config.json` show-name mismatch. FC
   pins `show_name` in its manifest and is unaffected.
 
 ## The design
 
-A new cover style, `"ascii-git"`, selected through the existing `COVER_STYLES` whitelist. It reuses
-`ascii-horizon`'s entire board — margins, lockup, date line, full-bleed rule, bottom-anchored
-headline, footer — and changes three things: the glyph table, the accent, and the date semantics.
+Two steps, in order.
+
+**First, reintroduce the selector.** `build_cover`'s body moves verbatim into
+`_cover_ascii_horizon`, and `build_cover` becomes a dispatcher over a closed `COVER_STYLES`
+whitelist validated in `validate_manifest` — the mechanism #168 deleted, restored because its
+premise has changed (see above). This step must produce a byte-identical daily cover: it is a pure
+move plus a dispatch, no drawing changes.
+
+**Then add the second design.** `_cover_ascii_git` reuses the horizon's entire board — margins,
+lockup, date line, full-bleed rule, bottom-anchored headline, footer — and changes three things:
+the glyph table, the accent, and the date semantics.
+
+One helper needs widening rather than reusing as-is: `_fit_lockup` shrinks and truncates the show
+name against `COVER_LOCKUP_MAX_W`, which is defined as `COVER_SUN_X - COVER_MARGIN - 40` — the gap
+to the *sun*. The rail sits at a different x, so the budget becomes a parameter with the existing
+value as the default. Leave it hardcoded and FC's lockup gets the wrong budget, which is precisely
+the overflow bug #168's rebase had to fix once already.
 
 ### `ASCII_RAIL` — pinned, 11 × 40
 
@@ -161,12 +206,12 @@ handling both.
 
 ### On sharing helpers with `ascii-horizon`
 
-`_cover_ascii_git` **shares** `_cover_face`, `_draw_tracked`, `_cover_wrap` and the layout constants
-with `_cover_ascii_horizon`. This is the opposite of the posture #168 took with `_cover_gradient`,
-and the PR body should say so explicitly, because it is the first thing a reviewer will flag.
+`_cover_ascii_git` **shares** `_cover_face`, `_draw_tracked`, `_tracked_width`, `_cover_wrap`,
+`_fit_lockup` and the layout constants with `_cover_ascii_horizon`, and the PR body should say so
+explicitly, because a reviewer who remembers #168's frozen-gradient posture will flag it.
 
-The distinction: #168 froze a **legacy** renderer so a design nobody is maintaining cannot drift.
-These two are both live and are *supposed* to move together — they are one house design in two
+The distinction: #168 froze (then deleted) a **legacy** renderer so a design nobody maintains could
+not drift. These two are both live and are *supposed* to move together — they are one house design in two
 accents. Sharing is the mechanism that keeps them together, not the risk. If the daily's margin
 changes and FC's does not, that is the bug.
 
@@ -174,31 +219,34 @@ What is **not** shared: the date/headline logic, which genuinely forks per show.
 
 ## Testing
 
-Pillow is deliberately not a CI dependency, so everything except the render smoke test must be pure
-Python — which is why the drawing is split into a pinned table plus layout helpers.
+**CI installs Pillow and `fonts-dejavu-core`** (added with #164, confirmed in
+`.github/workflows/ci.yml` on `c4e841c`), so render tests run for real on Linux rather than
+skipping. No `importorskip`. The pure-Python table tests still matter — they are what makes the
+pinned art verifiable — but the rendering assertions are now enforced by CI, not just locally.
 
 - **`ASCII_RAIL` re-derived from its model**: lane count per fan row, one ramp band per step with
   the fan capped at three steps, exactly one root, the stub forking at its claimed column and
   merging back, trunk pinned to the rightmost column in every row below the fan. Same posture as
   `ASCII_SUN` and `orchestrate.SHAPE_ORDERS`.
-- **Dispatch**: `cover_style: "ascii-git"` routes to the rail; `"gradient"` still routes to the
-  frozen gradient; an unknown value dies in `validate_manifest` rather than falling through to a
-  default.
+- **Dispatch**: `cover_style: "ascii-git"` routes to the rail, absent/`"ascii-horizon"` routes to
+  the sun, and an unknown value dies in `validate_manifest` rather than falling through to a
+  default. Only two values exist — the gradient is gone.
 - **The date fork**: a title ending `" - Week of August 24, 2026"` strips to bare topics; a title
   with a mid-string dash keeps it; a title with the *daily's* ISO tail is untouched by the weekly
   strip. Assert the printed date line and the stripped suffix come from the same source.
 - **Headline line count**: the FC fixture that produces four lines today produces three after the
   strip.
-- **Render smoke test**, `importorskip("PIL")`: a real 1400×1400 JPEG, square, opaque, non-trivial
-  file size.
+- **Render smoke test**, no skip guard: a real 1400×1400 JPEG, square, opaque, non-trivial file
+  size. Runs in CI on Linux against DejaVu, which is the point of the font fallback chain.
 
 ## Acceptance
 
 - A real 1400×1400 cover renders and is **inspected**, not merely asserted — the pitch that makes
   the trunk read as a continuous line has only been validated in a browser so far.
-- The daily's cover is **byte-identical** before and after. Prove it the way #168 did, with
-  `shasum -a 256` on a cover rendered from `HEAD` and from the branch, and put the output in the PR
-  body. `_cover_gradient`'s output must also be unchanged.
+- The daily's cover is **byte-identical** before and after. This matters more here than it did in
+  #168, because this change physically moves `build_cover`'s body into a new function rather than
+  leaving it alone. Prove it the way #168 did — `shasum -a 256` on a cover rendered from `c4e841c`
+  and from the branch — and put the output in the PR body.
 - `ruff check .`, `ruff format --check .`, `pytest -q` all clean, with counts in the PR body.
 - The rendered cover downsampled to 176px and 88px still reads as a commit rail. This is the test
   that killed the first design.

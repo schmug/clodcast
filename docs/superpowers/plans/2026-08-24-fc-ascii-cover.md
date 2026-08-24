@@ -4,22 +4,24 @@
 
 **Goal:** Give Frontier Commits its own generated episode cover — a pinned ASCII commit rail on brand cyan — replacing the static `cover_image` byte-copy every episode ships today.
 
-**Architecture:** A new `cover_style` value, `"ascii-git"`, selected through the closed whitelist #168 introduces. It reuses `_cover_ascii_horizon`'s board (margins, lockup, date, full-bleed rule, bottom-anchored headline, footer) and changes exactly three things: a different pinned glyph table (`ASCII_RAIL`, 11×40, drawn full height instead of in a corner slot), a cyan accent, and a weekly date form that both the date line and the headline strip derive from. FC's manifest drops `cover_image`; `skills/frontier-commits/refs/cover.jpg` is deleted.
+**Architecture:** Two moves. First `build_cover`'s body becomes `_cover_ascii_horizon` under a new dispatcher over a closed `cover_style` whitelist — reintroducing the selector #168 deleted, whose deletion was conditional on FC using `cover_image`. Then `_cover_ascii_git` draws the second design: the horizon's board (margins, lockup, date, full-bleed rule, bottom-anchored headline, footer) with a different pinned glyph table (`ASCII_RAIL`, 11x40, full height rather than a corner slot), a cyan accent, and a weekly date form both the date line and the headline strip derive from. FC's manifest drops `cover_image`; `skills/frontier-commits/refs/cover.jpg` is deleted.
 
-**Tech Stack:** Python 3, Pillow (render only, **not** a CI dependency), pytest, ruff.
+**Tech Stack:** Python 3, Pillow (installed in CI alongside `fonts-dejavu-core`), pytest, ruff.
 
 **Spec:** [docs/superpowers/specs/2026-08-24-fc-ascii-cover-design.md](../specs/2026-08-24-fc-ascii-cover-design.md)
 
 ## Global Constraints
 
-- **Branch off #168, not `main`.** `COVER_STYLES`, `COVER_STYLE_ASCII`, `_cover_face`, `_draw_tracked`, `_cover_wrap`, `cover_headline`, `resolve_cover_style` and every `COVER_*` layout constant arrive with [#168](https://github.com/schmug/clodcast/pull/168). If #168 has merged, branch off `main`; otherwise branch off `claude/cortech-daily-art-redesign-52405c`. Verify with `grep -n "COVER_STYLES" skills/daily-podcast/render.py` before starting — an empty result means you are on the wrong base.
-- **Pillow is not a CI dependency.** Every test except the render smoke test must be pure Python. The smoke test uses `pytest.importorskip("PIL")`.
-- **The daily show's cover must not move by one byte.** `_cover_ascii_horizon` and `_cover_gradient` are both frozen by this work. Task 5 proves it.
+- **Branch off `main` at `c4e841c`** — [#168](https://github.com/schmug/clodcast/pull/168) has merged.
+- **`cover_style` does NOT exist and this change introduces it.** #168 was rebased before merging and the whitelist was deleted along with `_cover_gradient`; `build_cover` now draws exactly one design. Verify before starting: `git grep -c COVER_STYLES origin/main -- skills/daily-podcast/render.py` must return **nothing**. If it returns a count, someone has already added the selector and this plan needs re-reading, not executing. The spec's "What #168 actually shipped" section has the full delta and the argument for reintroducing the mechanism — read it before writing the PR body, because a reviewer will challenge exactly this.
+- **Pillow IS a CI dependency.** `.github/workflows/ci.yml` installs `Pillow` and `fonts-dejavu-core` (#164). Render tests run for real on Linux — do **not** guard them with `importorskip`.
+- **The daily show's cover must not move by one byte.** This work physically moves `build_cover`'s body into `_cover_ascii_horizon`, so byte-identity is a live risk here, not a formality. Task 3 proves it at the moment of the move; Task 6 proves it again at the end.
+- **Baseline suite is 894 passing** (`pytest -q` on `c4e841c`). Every task reports its delta against that.
+- **Reuse, do not re-implement:** `_cover_face`, `_draw_tracked`, `_tracked_width`, `_cover_wrap`, `_fit_lockup`, `cover_headline`, `resolve_font` and every `COVER_*` constant all survive on `main`.
 - **`render.py` stays a single file.** See the repo CLAUDE.md; `tests/conftest.py` puts `skills/daily-podcast/` on `sys.path` so `import render` works.
 - **Palette, exact values:** ground `#10141d` → `(16, 20, 29)`, cyan `#5ee3d1` → `(94, 227, 209)`, paper `#f2efe6` → `(242, 239, 230)`, muted `#7b7e8a` → `(123, 126, 138)`, footer ink `(76, 82, 97)`.
-- **The ramp is `"@#*+=-"`**, densest first — the same `ASCII_SUN_RAMP` value #168 pins.
+- **The ramp is `"@#*+=-"`**, densest first — the same `ASCII_SUN_RAMP` value on `main`.
 - **Conventional commits.** `feat(render):`, `test(cover):`, `docs(frontier-commits):`. git-cliff parses these.
-- **Do not delete `_cover_gradient`.** The whitelist still accepts `"gradient"`.
 
 ---
 
@@ -32,7 +34,7 @@
 
 **Interfaces:**
 
-- Consumes: nothing from earlier tasks. `ASCII_SUN_RAMP` from #168.
+- Consumes: nothing from earlier tasks. `ASCII_SUN_RAMP`, already on `main`.
 - Produces: `render.ASCII_RAIL` (`tuple[str, ...]`, 40 rows × 11 cols), `render.ASCII_RAIL_COLS = 11`, `render.ASCII_RAIL_ROWS = 40`, `render.ASCII_RAIL_LANES = 6`, `render.ASCII_RAIL_FAN_ROWS = 10`, `render.ASCII_RAIL_FAN_STEPS = 3`, `render.ASCII_RAIL_NODE_EVERY = 4`, `render.ASCII_RAIL_STUB_ROW = 18`.
 
 - [ ] **Step 1: Write the failing test**
@@ -389,7 +391,168 @@ git commit -m "feat(render): weekly date form and its matching headline strip"
 
 ---
 
-### Task 3: The `ascii-git` renderer and its dispatch
+### Task 3: Reintroduce the style selector, byte-identically
+
+**Files:**
+
+- Modify: `skills/daily-podcast/render.py` — `validate_manifest`, the cover section, `build_cover`
+- Test: `tests/test_cover.py`
+
+**Interfaces:**
+
+- Consumes: nothing from Tasks 1–2.
+- Produces: `render.COVER_STYLE_ASCII = "ascii-horizon"`, `render.COVER_STYLES`, `render.resolve_cover_style(manifest) -> str`, `render._cover_ascii_horizon(out_path, show_name, date_str, title_hint) -> None`, and `build_cover(..., style=COVER_STYLE_ASCII)`. Task 4 adds the second style to `COVER_STYLES`.
+
+**Context:** #168 shipped `build_cover` as a single renderer, having deleted its own `cover_style` whitelist during a rebase — correctly, because with FC on `cover_image` the key would have been dead config. Task 5 removes that premise, so the selector comes back. This task is a **pure refactor**: the drawing does not change, and the daily's JPEG must come out identical.
+
+- [ ] **Step 1: Capture the baseline cover before touching anything**
+
+```bash
+python3 - <<'PY'
+import sys, pathlib
+sys.path.insert(0, "skills/daily-podcast")
+import render
+render.build_cover(pathlib.Path("/tmp/horizon-before.jpg"), "Cortech Daily", "2026-08-24",
+                   "Cloudflare ships Workers AI batch - 2026-08-24")
+PY
+shasum -a 256 /tmp/horizon-before.jpg
+```
+
+Keep that hash. It is the thing Step 6 has to reproduce.
+
+- [ ] **Step 2: Write the failing test**
+
+Append to `tests/test_cover.py`:
+
+```python
+# --- style dispatch --------------------------------------------------------
+#
+# #168 deleted its own cover_style whitelist during the rebase, because with
+# Frontier Commits on cover_image the key would have been dead config and the
+# second renderer dead code. Task 5 of this plan takes FC off cover_image, which
+# removes that premise — so the selector comes back, with the SAME closed-whitelist
+# posture ship_mode has: how a show looks is a property of the show, and a typo
+# must die at validation rather than silently restyle a published feed.
+
+
+def test_cover_styles_is_a_closed_whitelist():
+    assert render.COVER_STYLE_ASCII == "ascii-horizon"
+    assert render.COVER_STYLE_ASCII in render.COVER_STYLES
+
+
+def test_resolve_cover_style_defaults_to_the_house_design():
+    # Absent means the daily show's design — every existing manifest omits the key
+    # and must keep rendering exactly what it renders today.
+    assert render.resolve_cover_style({}) == render.COVER_STYLE_ASCII
+    assert render.resolve_cover_style({"cover_style": None}) == render.COVER_STYLE_ASCII
+    assert render.resolve_cover_style({"cover_style": "ascii-horizon"}) == "ascii-horizon"
+
+
+def test_unknown_cover_style_dies_at_validation():
+    with pytest.raises(SystemExit):
+        render.validate_manifest({"title": "t", "segments": [], "cover_style": "acsii-horizon"})
+
+
+def test_build_cover_dispatches_to_the_horizon_renderer(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(render, "_cover_ascii_horizon", lambda *a, **k: calls.append("horizon"))
+    render.build_cover(tmp_path / "c.jpg", "S", "2026-08-24", "t")
+    render.build_cover(tmp_path / "c.jpg", "S", "2026-08-24", "t", style="ascii-horizon")
+    assert calls == ["horizon", "horizon"]
+```
+
+- [ ] **Step 3: Run the test to verify it fails**
+
+Run: `pytest tests/test_cover.py -k "cover_style or dispatch" -v`
+Expected: `AttributeError: module 'render' has no attribute 'COVER_STYLE_ASCII'`.
+
+- [ ] **Step 4: Do the split**
+
+Rename `build_cover` to `_cover_ascii_horizon` — **body untouched, not one line reflowed** — and add above it:
+
+```python
+# Two cover designs live here, selected per SHOW rather than per invocation. The
+# selector is a closed whitelist for the same reason ship_mode is: how a show looks
+# is a property of the show, and a typo must die at validation rather than quietly
+# restyle a published feed.
+#
+# #168 shipped without this, having deleted its own whitelist during a rebase —
+# right at the time, because Frontier Commits was on cover_image and build_cover
+# was never called for it, so the key would have been dead config. That premise is
+# what this change removes: once a show renders its own art, the key is the thing
+# that picks which art.
+COVER_STYLE_ASCII = "ascii-horizon"
+COVER_STYLES = (COVER_STYLE_ASCII,)  # Task 4 adds "ascii-git"
+
+
+def resolve_cover_style(manifest: dict[str, Any]) -> str:
+    """Cover design for this manifest. validate_manifest whitelists the value, so
+    anything reaching here is already known-good. Absent means the house design —
+    every manifest written before this key existed must keep rendering what it
+    renders today."""
+    return manifest.get("cover_style") or COVER_STYLE_ASCII
+```
+
+Then add the dispatcher where `build_cover` used to be:
+
+```python
+def build_cover(
+    out_path: Path,
+    show_name: str,
+    date_str: str,
+    title_hint: str,
+    style: str = COVER_STYLE_ASCII,
+) -> None:
+    """Render this episode's cover in the show's cover style."""
+    _cover_ascii_horizon(out_path, show_name, date_str, title_hint)
+```
+
+In `validate_manifest`, beside the `ship_mode` check:
+
+```python
+    # cover_style: closed whitelist, same posture as ship_mode. A typo must die
+    # rather than fall through to the default and quietly restyle a published show.
+    style = manifest.get("cover_style")
+    if style is not None and style not in COVER_STYLES:
+        die(f"manifest 'cover_style' must be one of {', '.join(COVER_STYLES)} (got {style!r})")
+```
+
+And at the `# 4: cover` call site in `_render`:
+
+```python
+    build_cover(cover, show_name, cover_date, title, style=resolve_cover_style(manifest))
+```
+
+- [ ] **Step 5: Run the tests**
+
+Run: `pytest tests/test_cover.py -v && pytest -q`
+Expected: the four new tests pass; total is 894 + 4 + (Tasks 1–2's additions).
+
+- [ ] **Step 6: Prove the daily's cover did not move**
+
+```bash
+python3 - <<'PY'
+import sys, pathlib
+sys.path.insert(0, "skills/daily-podcast")
+import render
+render.build_cover(pathlib.Path("/tmp/horizon-after.jpg"), "Cortech Daily", "2026-08-24",
+                   "Cloudflare ships Workers AI batch - 2026-08-24")
+PY
+shasum -a 256 /tmp/horizon-before.jpg /tmp/horizon-after.jpg
+```
+
+Expected: **identical hashes.** If they differ, the body was not moved verbatim — something got reflowed, a constant got inlined, or the dispatcher is passing different arguments. Fix it before continuing; this is the one step that makes the refactor safe, and a diff here is a real regression in a published show's art.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add skills/daily-podcast/render.py tests/test_cover.py
+git commit -m "refactor(render): dispatch covers through a cover_style whitelist"
+```
+
+---
+
+### Task 4: The `ascii-git` renderer and its dispatch
 
 **Files:**
 
@@ -398,7 +561,7 @@ git commit -m "feat(render): weekly date form and its matching headline strip"
 
 **Interfaces:**
 
-- Consumes: `ASCII_RAIL` and its constants (Task 1); `week_label`, `cover_headline_weekly` (Task 2); from #168: `COVER_SIZE`, `COVER_MARGIN`, `COVER_GROUND`, `COVER_PAPER`, `COVER_MUTED`, `COVER_FOOTER_INK`, `COVER_FOOTER`, `COVER_LOCKUP_Y`, `COVER_LOCKUP_SIZE`, `COVER_LOCKUP_TRACKING`, `COVER_DATE_Y`, `COVER_DATE_SIZE`, `COVER_RULE_Y`, `COVER_RULE_H`, `COVER_HEADLINE_*`, `COVER_FOOTER_SIZE`, `COVER_FOOTER_Y`, `COVER_SANS_BOLD_FACES`, `COVER_SANS_TEXT_FACES`, `COVER_MONO_FACES`, `_cover_face`, `_draw_tracked`, `_cover_wrap`, `resolve_cover_style`.
+- Consumes: `ASCII_RAIL` and its constants (Task 1); `week_label`, `cover_headline_weekly` (Task 2); from `main`: `COVER_SIZE`, `COVER_MARGIN`, `COVER_GROUND`, `COVER_PAPER`, `COVER_MUTED`, `COVER_FOOTER_INK`, `COVER_FOOTER`, `COVER_LOCKUP_Y`, `COVER_LOCKUP_SIZE`, `COVER_LOCKUP_TRACKING`, `COVER_DATE_Y`, `COVER_DATE_SIZE`, `COVER_RULE_Y`, `COVER_RULE_H`, `COVER_HEADLINE_*`, `COVER_FOOTER_SIZE`, `COVER_FOOTER_Y`, `COVER_SANS_BOLD_FACES`, `COVER_SANS_TEXT_FACES`, `COVER_MONO_FACES`, `_cover_face`, `_draw_tracked`, `_tracked_width`, `_cover_wrap`, `_fit_lockup`, `COVER_LOCKUP_MIN_SIZE`; and from Task 3: `COVER_STYLES`, `resolve_cover_style`, `_cover_ascii_horizon`.
 - Produces: `render.COVER_STYLE_ASCII_GIT = "ascii-git"`; `render._cover_ascii_git(out_path, show_name, date_str, title_hint) -> None`; `build_cover(..., style=...)` dispatching to it.
 
 - [ ] **Step 1: Write the failing test**
@@ -428,19 +591,19 @@ def test_resolve_cover_style_reads_the_manifest():
 
 def test_build_cover_dispatches_each_style_to_its_own_renderer(monkeypatch, tmp_path):
     calls = []
-    for name in ("_cover_ascii_horizon", "_cover_ascii_git", "_cover_gradient"):
+    for name in ("_cover_ascii_horizon", "_cover_ascii_git"):
         monkeypatch.setattr(
             render, name, lambda *a, _n=name, **k: calls.append(_n), raising=True
         )
     out = tmp_path / "c.jpg"
     render.build_cover(out, "S", "2026-08-24", "t", style=render.COVER_STYLE_ASCII)
     render.build_cover(out, "S", "2026-08-24", "t", style=render.COVER_STYLE_ASCII_GIT)
-    render.build_cover(out, "S", "2026-08-24", "t", style=render.COVER_STYLE_GRADIENT)
-    assert calls == ["_cover_ascii_horizon", "_cover_ascii_git", "_cover_gradient"]
+    assert calls == ["_cover_ascii_horizon", "_cover_ascii_git"]
 
 
 def test_ascii_git_renders_a_real_cover(tmp_path):
-    pytest.importorskip("PIL")
+    # No importorskip: CI installs Pillow and fonts-dejavu-core (#164), so this
+    # runs for real on Linux against the DejaVu fallback.
     from PIL import Image
 
     out = tmp_path / "fc.jpg"
@@ -463,11 +626,11 @@ Expected: `AttributeError: module 'render' has no attribute 'COVER_STYLE_ASCII_G
 
 - [ ] **Step 3: Write the minimal implementation**
 
-Extend the style constants #168 added:
+Extend Task 3's style constants:
 
 ```python
 COVER_STYLE_ASCII_GIT = "ascii-git"
-COVER_STYLES = (COVER_STYLE_ASCII, COVER_STYLE_ASCII_GIT, COVER_STYLE_GRADIENT)
+COVER_STYLES = (COVER_STYLE_ASCII, COVER_STYLE_ASCII_GIT)
 ```
 
 Add the accent next to the other brand tokens:
@@ -492,7 +655,19 @@ COVER_RAIL_CELL_W = 30.4
 COVER_RAIL_CELL_H = 30.4  # square cells: the `|` glyphs must abut to read as a line
 COVER_RAIL_SIZE = 46  # font size > cell height on purpose, so the spine is continuous
 COVER_RAIL_HEADLINE_MAX_W = 1050  # keep the headline off the trunk
+COVER_RAIL_LOCKUP_MAX_W = COVER_RAIL_X - COVER_MARGIN - 40  # the gap to the rail
 ```
+
+Widen `_fit_lockup` to take the budget as a parameter, defaulting to today's value so the
+horizon renderer is unchanged:
+
+```python
+def _fit_lockup(draw, image_font, text: str, max_w: float = COVER_LOCKUP_MAX_W):
+```
+
+and replace the two `COVER_LOCKUP_MAX_W` references in its body with `max_w`. The horizon
+renderer keeps calling it with three arguments and must still produce a byte-identical cover —
+Task 6 re-checks that.
 
 Add the renderer after `_cover_ascii_horizon`:
 
@@ -503,9 +678,9 @@ def _cover_ascii_git(out_path: Path, show_name: str, date_str: str, title_hint: 
     Shares ascii-horizon's board — margins, lockup, date, rule, bottom-anchored
     headline, footer — because these two are ONE house design in two accents and
     are supposed to move together. That is the opposite of the posture
-    _cover_gradient gets, deliberately: that one is frozen legacy, these two are
-    live siblings, and a shared helper is what keeps them from drifting apart
-    rather than how they drift.
+    _cover_gradient got before #168 deleted it: that one was frozen legacy, these
+    two are live siblings, and a shared helper is what keeps them from drifting
+    apart rather than how they drift.
 
     What is NOT shared is the date: this show's titles end
     " - Week of <Month D, YYYY>", so it uses week_label / cover_headline_weekly.
@@ -516,7 +691,6 @@ def _cover_ascii_git(out_path: Path, show_name: str, date_str: str, title_hint: 
     d = ImageDraw.Draw(img)
 
     mono = _cover_face(ImageFont, COVER_MONO_FACES, COVER_RAIL_SIZE)
-    lockup_font = _cover_face(ImageFont, COVER_SANS_BOLD_FACES, COVER_LOCKUP_SIZE, "Bold")
     date_font = _cover_face(ImageFont, COVER_SANS_TEXT_FACES, COVER_DATE_SIZE)
     footer_font = _cover_face(ImageFont, COVER_SANS_TEXT_FACES, COVER_FOOTER_SIZE)
 
@@ -534,10 +708,15 @@ def _cover_ascii_git(out_path: Path, show_name: str, date_str: str, title_hint: 
                 fill=COVER_CYAN,
             )
 
+    # _fit_lockup shrinks then truncates so the name always clears the art. Its
+    # default budget is the gap to the SUN; the rail sits elsewhere, hence the
+    # explicit max_w. Getting this wrong is how a long show name ends up running
+    # under the art in a published feed — the bug #168's rebase had to fix once.
+    lockup, lockup_font = _fit_lockup(d, ImageFont, show_name.upper(), COVER_RAIL_LOCKUP_MAX_W)
     _draw_tracked(
         d,
         (COVER_MARGIN, COVER_LOCKUP_Y),
-        show_name.upper(),
+        lockup,
         lockup_font,
         COVER_CYAN,
         COVER_LOCKUP_TRACKING,
@@ -586,9 +765,7 @@ def build_cover(
     style: str = COVER_STYLE_ASCII,
 ) -> None:
     """Render this episode's cover in the show's cover style."""
-    if style == COVER_STYLE_GRADIENT:
-        _cover_gradient(out_path, show_name, date_str, title_hint)
-    elif style == COVER_STYLE_ASCII_GIT:
+    if style == COVER_STYLE_ASCII_GIT:
         _cover_ascii_git(out_path, show_name, date_str, title_hint)
     else:
         _cover_ascii_horizon(out_path, show_name, date_str, title_hint)
@@ -628,7 +805,7 @@ git commit -m "feat(render): ascii-git cover style for Frontier Commits"
 
 ---
 
-### Task 4: Move Frontier Commits onto the style and delete the copied asset
+### Task 5: Move Frontier Commits onto the style and delete the copied asset
 
 **Files:**
 
@@ -700,7 +877,7 @@ In `skills/frontier-commits/SKILL.md`, `## Manifest`:
 
 - Change the intro from "plus six keys, all six required" to "plus six keys, all six required" → keep the count accurate: `cover_image` leaves and `cover_style` arrives, so it stays **six**.
 - Delete the `cover_image` bullet entirely.
-- Replace the `cover_style` bullet (#168 added one pinning `"gradient"`) with:
+- Add a `cover_style` bullet (there is none on `main` — Task 3 introduced the key):
 
 ```markdown
 - `"cover_style": "ascii-git"` — this show's own generated episode art: an ASCII commit rail on brand cyan, stamped with the week and the episode's topics (#168 follow-up). `render.py` defaults every cover to the DAILY show's `ascii-horizon` design, so the opt-in has to be explicit — drop the key and the next weekly episode silently restyles, in a public feed, into art nobody has looked at. The value is whitelisted, so a typo fails validation rather than falling back to the default. Replaces the bundled `refs/cover.jpg` that every episode used to ship verbatim (#164), and with it the requirement to keep that file in sync with cortech.online's `public/frontier-commits-cover.jpg` by hand. **The rail table is still duplicated** — `render.ASCII_RAIL` here, `scripts/frontier-cover-art.ts` there — and each file's header names the other.
@@ -745,7 +922,7 @@ git commit -m "feat(frontier-commits): render the ascii-git cover, drop the copi
 
 ---
 
-### Task 5: Prove the daily show did not move, then open the PR
+### Task 6: Prove the daily show did not move, then open the PR
 
 **Files:**
 
@@ -769,9 +946,6 @@ import render
 render.build_cover(pathlib.Path("/tmp/old-horizon.jpg"), "Cortech Daily", "2026-08-24",
                    "Cloudflare ships Workers AI batch - 2026-08-24",
                    style=render.COVER_STYLE_ASCII)
-render.build_cover(pathlib.Path("/tmp/old-gradient.jpg"), "Cortech Daily", "2026-08-24",
-                   "Cloudflare ships Workers AI batch - 2026-08-24",
-                   style=render.COVER_STYLE_GRADIENT)
 PY
 ```
 
@@ -787,16 +961,13 @@ import render
 render.build_cover(pathlib.Path("/tmp/new-horizon.jpg"), "Cortech Daily", "2026-08-24",
                    "Cloudflare ships Workers AI batch - 2026-08-24",
                    style=render.COVER_STYLE_ASCII)
-render.build_cover(pathlib.Path("/tmp/new-gradient.jpg"), "Cortech Daily", "2026-08-24",
-                   "Cloudflare ships Workers AI batch - 2026-08-24",
-                   style=render.COVER_STYLE_GRADIENT)
 PY
 ```
 
 - [ ] **Step 3: Compare and capture the output**
 
-Run: `shasum -a 256 /tmp/old-horizon.jpg /tmp/new-horizon.jpg /tmp/old-gradient.jpg /tmp/new-gradient.jpg`
-Expected: the two horizon hashes match, and the two gradient hashes match. **If they do not, stop** — a shared helper was edited rather than added to, and the daily show's published art has moved. Paste this output verbatim into the PR body.
+Run: `shasum -a 256 /tmp/old-horizon.jpg /tmp/new-horizon.jpg`
+Expected: **identical.** This is the second time the plan checks it — Task 3 checked it at the moment of the move, this checks it after every later task has touched the shared helpers (`_fit_lockup` gained a parameter, and both renderers use it). **If they differ, stop**: a shared helper was changed rather than widened, and a published show's art has moved. Paste the output verbatim into the PR body.
 
 Clean up: `git worktree remove /tmp/cover-base`
 
@@ -818,19 +989,32 @@ deliberately untouched.
 
 Since #164/#166 FC bypasses `build_cover` entirely via `cover_image`, so every
 episode ships byte-identical art and SKILL.md carries an untested "update both"
-copy rule against cortech.online's asset. #168 then pins FC to `"gradient"` — a
-style it never even reaches. This closes both.
+copy rule against cortech.online's asset. Meanwhile #168 gave the daily show
+generated ASCII art, so the two shows now look like two different publishers.
+
+It also reintroduces the `cover_style` whitelist #168 deleted during its rebase.
+That deletion was correct and its stated reason was that with FC on `cover_image`,
+`build_cover` is never called for that show, so the key would be dead config.
+**This PR removes that premise.** Once FC renders its own art, the key stops being
+dead — it becomes the thing that picks which art. The other half of that rationale,
+"supplying real art beats picking between two templates a show did not design",
+does not apply either: FC is not picking a template it did not design, it is getting
+its own design, generated per episode with the week and the topics, which one static
+JPEG structurally cannot do.
 
 `refs/cover.jpg` and the `cover_image` key are gone; the copy rule with them.
 
 ## The shared helpers are deliberate
 
-`_cover_ascii_git` SHARES `_cover_face` / `_draw_tracked` / `_cover_wrap` and the
-layout constants with `_cover_ascii_horizon` — the opposite of what #168 did with
-`_cover_gradient`, and the first thing worth flagging. The distinction: #168
-froze a LEGACY renderer so an unmaintained design cannot drift. These two are
-live siblings, one house design in two accents, and are supposed to move
-together. Sharing is what keeps them together.
+`_cover_ascii_git` SHARES `_cover_face` / `_draw_tracked` / `_tracked_width` /
+`_cover_wrap` / `_fit_lockup` and the layout constants with `_cover_ascii_horizon`.
+A reviewer who remembers #168's frozen-gradient posture will flag this. The
+distinction: that posture protected a LEGACY renderer nobody maintained. These two
+are live siblings — one house design in two accents — and are supposed to move
+together. Sharing is what keeps them together, not how they drift.
+
+`build_cover`'s body moved verbatim into `_cover_ascii_horizon` so a dispatcher
+could sit above it. The daily show's JPEG is byte-identical; see below.
 
 ## The date fork
 
@@ -844,11 +1028,11 @@ strip deliberately does NOT match it (it would leave the headline reading
 
 ## The daily show did not move
 
-<!-- paste the shasum output from Task 5 Step 3 -->
+<!-- paste the shasum output from Task 6 Step 3 -->
 
 ## Gates
 
-<!-- paste ruff + pytest output from Task 5 Step 4 -->
+<!-- paste ruff + pytest output from Task 6 Step 4 -->
 
 ## Not in this PR
 
@@ -878,17 +1062,20 @@ This stacks on #168. Land #168 first, rebase, confirm the gates are still green,
 | Branch stub forks and merges | 1 (`test_rail_has_exactly_one_branch_that_forks_and_merges`) |
 | Weekly date form; strip and date line share a source | 2 |
 | Legacy em-dash titles untouched, pinned by test | 2 |
-| `cover_style: "ascii-git"` on the closed whitelist; typo dies | 3 |
-| Cyan accent from `global.css` | 3 (`COVER_CYAN`) |
-| Trunk crosses the horizon; art runs full height | 3 (`COVER_RAIL_*`) |
-| Shared helpers with `ascii-horizon`, argued in the PR | 3, 5 |
-| `cover_image` and `refs/cover.jpg` removed | 4 |
-| SKILL.md drift tests updated | 4 |
-| Daily cover byte-identical, proven with `shasum` | 5 |
-| Render smoke test with `importorskip` | 3 |
-| Thumbnail check at 176/88px | **gap → see below** |
+| `cover_style` whitelist reintroduced; default unchanged; typo dies | 3 |
+| `build_cover` split into dispatcher + `_cover_ascii_horizon` | 3 |
+| `cover_style: "ascii-git"` added to the whitelist | 4 |
+| Cyan accent from `global.css` | 4 (`COVER_CYAN`) |
+| Trunk crosses the horizon; art runs full height | 4 (`COVER_RAIL_*`) |
+| `_fit_lockup` budget parameterized for the rail | 4 |
+| Shared helpers with `ascii-horizon`, argued in the PR | 4, 6 |
+| `cover_image` and `refs/cover.jpg` removed | 5 |
+| SKILL.md drift tests updated | 5 |
+| Daily cover byte-identical, proven with `shasum` | 3 (at the move), 6 (at the end) |
+| Render smoke test (no skip guard — Pillow is in CI) | 4 |
+| Thumbnail check at 176/88px | 4 Step 5 (see the note below) |
 
-**Gap found and closed:** the spec's acceptance criteria include "the rendered cover downsampled to 176px and 88px still reads as a commit rail — this is the test that killed the first design", and no task covered it. Task 3 Step 5 checks the full-size render only. Add to Task 3 Step 5 as a fourth check:
+**Gap found and closed:** the spec's acceptance criteria include "the rendered cover downsampled to 176px and 88px still reads as a commit rail — this is the test that killed the first design", and no task covered it. Task 4 Step 5 checks the full-size render only. Add to Task 4 Step 5 as a fourth check:
 
 ```bash
 python3 - <<'PY'
