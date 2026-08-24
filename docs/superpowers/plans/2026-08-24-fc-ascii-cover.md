@@ -852,7 +852,7 @@ strip deliberately does NOT match it (it would leave the headline reading
 
 ## Not in this PR
 
-The 3000x3000 channel tile is generated in `schmug/portfolio` by
+The 3000x3000 channel tile is generated in `schmug/cortech.online` by
 `scripts/generate-frontier-cover.ts`; that half ships separately and draws the
 same table. Spec: `docs/superpowers/specs/2026-08-24-fc-ascii-cover-design.md`.
 

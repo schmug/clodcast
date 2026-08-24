@@ -5,7 +5,7 @@
 **Depends on:** [#168](https://github.com/schmug/clodcast/pull/168) — every constant, helper and the
 `cover_style` whitelist this design extends arrives with it. Nothing here can land first.
 **Scope:** this repo only — `render.py`'s cover renderer and the FC skill's manifest.
-**Sibling spec:** `schmug/portfolio` → `docs/superpowers/specs/2026-08-24-fc-show-art-design.md`
+**Sibling spec:** `schmug/cortech.online` → `docs/superpowers/specs/2026-08-24-fc-show-art-design.md`
 covers the 3000×3000 channel tile. The two documents describe **one picture**.
 
 ## Problem
