@@ -128,6 +128,42 @@ def test_slug_for_date_falls_back_on_an_unparseable_date():
     assert render.slug_for_date(None) == "episode-none"
 
 
+# --- per-show slug prefix (#162) --------------------------------------------
+#
+# The slug's literal prefix is the only per-show part: a second show sets the
+# manifest key `slug_prefix` so its permalinks and guids stop carrying the daily
+# show's name, while the DATE-keyed, title-blind property (#128) is untouched.
+# The default is the daily show's historical literal, so every published slug
+# stays byte-identical — the parametrized fixture test above runs the one-arg
+# form and is the lock.
+
+
+def test_slug_for_date_takes_a_per_show_prefix():
+    assert render.slug_for_date("2026-08-23", "week-of") == "week-of-august-23-2026"
+    # Same unpadded-day shape as the default show, just a different literal.
+    assert render.slug_for_date("2026-06-01", "week-of") == "week-of-june-1-2026"
+
+
+def test_slug_prefix_defaults_to_the_daily_shows_literal():
+    sig = inspect.signature(render.slug_for_date)
+    assert sig.parameters["prefix"].default == "daily-digest"
+    assert render.DEFAULT_SLUG_PREFIX == "daily-digest"
+
+
+def test_slug_fallback_stays_prefix_blind():
+    """The unparseable-date fallback predates the per-show prefix and is pinned
+    above; branding it per-show would change the daily show's fallback shape for
+    no benefit — r2_key_prefix already isolates the objects, and each show's
+    permalinks live in its own manifest."""
+    assert render.slug_for_date("22 May 2026", "week-of") == "episode-22-may-2026"
+
+
+def test_resolve_slug_prefix_reads_the_manifest_key():
+    assert render.resolve_slug_prefix({}) == "daily-digest"
+    assert render.resolve_slug_prefix({"slug_prefix": None}) == "daily-digest"
+    assert render.resolve_slug_prefix({"slug_prefix": "week-of"}) == "week-of"
+
+
 def test_resolve_slug_date_prefers_an_explicit_manifest_date():
     """Mirrors resolve_pubdate: a back-fill or archive re-render reproduces its
     historical slug rather than stamping the day it happened to be re-rendered."""
@@ -739,6 +775,7 @@ _FRONTIER_MANIFEST = {
     "date": "2026-08-23",
     "r2_manifest_name": "manifest-frontier-commits.json",
     "r2_key_prefix": "frontier-commits/",
+    "slug_prefix": "week-of",
 }
 
 
@@ -770,8 +807,8 @@ def test_publish_prefixed_keys_are_disjoint_from_a_same_day_default_publish(monk
     assert status == render.R2_PUBLISHED
     frontier_keys = s3.put_order[len(daily_keys) :]
     assert set(frontier_keys).isdisjoint(daily_keys)
-    assert "frontier-commits/daily-digest-august-23-2026.mp3" in frontier_keys
-    assert "frontier-commits/daily-digest-august-23-2026.jpg" in frontier_keys
+    assert "frontier-commits/week-of-august-23-2026.mp3" in frontier_keys
+    assert "frontier-commits/week-of-august-23-2026.jpg" in frontier_keys
 
 
 def test_publish_prefix_reaches_the_web_feed_urls_but_not_the_slug(monkeypatch, tmp_path):
@@ -779,10 +816,22 @@ def test_publish_prefix_reaches_the_web_feed_urls_but_not_the_slug(monkeypatch, 
     assert status == render.R2_PUBLISHED
     entry = json.loads(s3.objects["manifest-frontier-commits.json"])[0]
     base = "https://audio.example"
-    assert entry["mp3_url"] == f"{base}/frontier-commits/daily-digest-august-23-2026.mp3"
-    assert entry["cover_url"] == f"{base}/frontier-commits/daily-digest-august-23-2026.jpg"
-    # The slug is the /podcast/<slug>/ permalink guid — the prefix must not reach it.
-    assert entry["slug"] == "daily-digest-august-23-2026"
+    assert entry["mp3_url"] == f"{base}/frontier-commits/week-of-august-23-2026.mp3"
+    assert entry["cover_url"] == f"{base}/frontier-commits/week-of-august-23-2026.jpg"
+    # The slug is the /podcast/<slug>/ permalink guid — r2_key_prefix must not
+    # reach it; renaming the slug itself is slug_prefix's job (#162).
+    assert entry["slug"] == "week-of-august-23-2026"
+
+
+def test_frontier_manifest_slug_carries_no_daily_digest(monkeypatch, tmp_path):
+    """#162's acceptance: a frontier manifest must never mint a slug — the
+    /frontier-commits/<slug>/ permalink and the isPermaLink guid — carrying the
+    daily show's name."""
+    status, s3 = _publish_with_manifest(monkeypatch, tmp_path, dict(_FRONTIER_MANIFEST))
+    assert status == render.R2_PUBLISHED
+    entry = json.loads(s3.objects["manifest-frontier-commits.json"])[0]
+    assert "daily-digest" not in entry["slug"]
+    assert all("daily-digest" not in key for key in s3.put_order)
 
 
 def test_dry_run_preview_url_carries_the_prefix(monkeypatch, tmp_path):
@@ -800,7 +849,7 @@ def test_dry_run_preview_url_carries_the_prefix(monkeypatch, tmp_path):
     assert render.maybe_publish_r2(cfg_config, **kwargs) == render.R2_PUBLISHED
     published = json.loads(s3.objects["manifest-frontier-commits.json"])[0]["mp3_url"]
     assert preview == published
-    assert preview == "https://audio.example/frontier-commits/daily-digest-august-23-2026.mp3"
+    assert preview == "https://audio.example/frontier-commits/week-of-august-23-2026.mp3"
 
 
 # --- resume-path R2 back-fill (#40) ----------------------------------------
