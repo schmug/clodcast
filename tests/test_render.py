@@ -707,6 +707,165 @@ def test_cover_still_uses_config_show_name_when_the_manifest_omits_it(monkeypatc
     )
 
 
+# --- supplied cover image (#164) -------------------------------------------
+#
+# build_cover draws ONE template for every show render.py renders — the daily
+# show's episode look. #157 swapped the NAME on it, which left a second show's
+# episodes wearing the daily show's visual identity in every podcast client that
+# renders per-episode art. `cover_image` lets a show supply its own art instead
+# of generating one; absent, nothing changes.
+
+
+def _write_image(path, size=(1400, 1400), fmt="JPEG"):
+    from PIL import Image
+
+    Image.new("RGB", size, (12, 18, 30)).save(path, fmt)
+    return path
+
+
+def test_resolve_cover_image_returns_none_when_the_key_is_absent(tmp_path):
+    assert render.resolve_cover_image({}, tmp_path / "manifest.json") is None
+
+
+def test_resolve_cover_image_keeps_an_absolute_path(tmp_path):
+    art = _write_image(tmp_path / "art.jpg")
+    got = render.resolve_cover_image({"cover_image": str(art)}, tmp_path / "manifest.json")
+    assert got == art
+
+
+def test_resolve_cover_image_resolves_a_relative_path_against_the_manifest(tmp_path):
+    # The workdir manifest is the only anchor a caller can count on: the CWD of a
+    # scheduled run is not the plugin root, and CLAUDE_PLUGIN_ROOT is unset under
+    # the cron.
+    art = _write_image(tmp_path / "art.jpg")
+    got = render.resolve_cover_image({"cover_image": "art.jpg"}, tmp_path / "manifest.json")
+    assert got == art
+
+
+def test_check_cover_image_accepts_square_1400px_art(tmp_path):
+    assert render.check_cover_image(_write_image(tmp_path / "art.jpg"))["ok"] is True
+
+
+def test_check_cover_image_rejects_a_missing_file(tmp_path):
+    result = render.check_cover_image(tmp_path / "nope.jpg")
+    assert result["ok"] is False
+    assert "not found" in result["detail"]
+
+
+def test_check_cover_image_rejects_non_square_art(tmp_path):
+    # Apple Podcasts and Spotify both require square art; a directory rejects the
+    # whole feed, so this must fail pre-flight rather than at submission.
+    result = render.check_cover_image(_write_image(tmp_path / "wide.jpg", size=(1400, 800)))
+    assert result["ok"] is False
+    assert "square" in result["detail"]
+
+
+def test_check_cover_image_rejects_art_under_the_1400px_floor(tmp_path):
+    result = render.check_cover_image(_write_image(tmp_path / "small.jpg", size=(600, 600)))
+    assert result["ok"] is False
+    assert "1400" in result["detail"]
+
+
+def test_check_cover_image_rejects_a_file_that_is_not_an_image(tmp_path):
+    bad = tmp_path / "art.jpg"
+    bad.write_text("definitely not a jpeg")
+    assert render.check_cover_image(bad)["ok"] is False
+
+
+def test_apply_cover_image_copies_a_jpeg_byte_for_byte(tmp_path):
+    # No re-encode on the common path: the supplied art is already JPEG and a
+    # generation loss per episode is pure downside.
+    src = _write_image(tmp_path / "art.jpg")
+    out = tmp_path / "cover.jpg"
+    render.apply_cover_image(src, out)
+    assert out.read_bytes() == src.read_bytes()
+
+
+def test_apply_cover_image_converts_a_png_to_jpeg(tmp_path):
+    # The R2 publish hardcodes the <slug>.jpg key and image/jpeg content-type, so
+    # a PNG passed through verbatim would be served under a lying content type.
+    from PIL import Image
+
+    src = _write_image(tmp_path / "art.png", fmt="PNG")
+    out = tmp_path / "cover.jpg"
+    render.apply_cover_image(src, out)
+    assert Image.open(out).format == "JPEG"
+
+
+def _run_dry(monkeypatch, tmp_path, manifest_extra: dict) -> tuple[list, Path]:
+    """Dry-run main() over a minimal manifest; return (build_cover calls, workdir)."""
+    manifest = {
+        "title": "An episode",
+        "summary": "hook",
+        "segments": [{"text": "story", "source_url": "https://example.com/a"}],
+        "show_id": "spotify:show:1",
+        **manifest_extra,
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+    workdir = tmp_path / "wd"
+
+    generated: list[str] = []
+    monkeypatch.setattr(render, "load_config", lambda: {"show_id": "spotify:show:1"})
+    monkeypatch.setattr(render, "render_segments", lambda *a, **k: [tmp_path / "seg_01.mp3"])
+    monkeypatch.setattr(render, "plan_silences", lambda paths: [0])
+    monkeypatch.setattr(
+        render, "concat_and_normalize", lambda *a, **k: (tmp_path / "episode.mp3", None)
+    )
+    monkeypatch.setattr(
+        render, "build_cover", lambda out, show_name, *a, **k: generated.append(show_name)
+    )
+    monkeypatch.setattr(
+        render,
+        "build_timeline_and_description",
+        lambda *a, **k: ({"items": [{"chapter": {"title": "A", "start_time_ms": 0}}]}, "<p>d</p>"),
+    )
+    monkeypatch.setattr(render, "mp3_duration_ms", lambda p: 60_000)
+    monkeypatch.setattr(render, "verify_artifact", lambda *a, **k: [])
+    monkeypatch.setattr(render, "probe_audio_profile", lambda p: {})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "render.py",
+            "--manifest",
+            str(manifest_path),
+            "--workdir",
+            str(workdir),
+            "--dry-run",
+            "--skip-preflight",
+        ],
+    )
+    assert render.main() == 0
+    return generated, workdir
+
+
+def test_supplied_cover_image_replaces_the_generated_cover(monkeypatch, tmp_path):
+    art = _write_image(tmp_path / "art.jpg")
+    generated, workdir = _run_dry(monkeypatch, tmp_path, {"cover_image": str(art)})
+    assert generated == [], "build_cover must not run when the manifest supplies art"
+    assert (workdir / "cover.jpg").read_bytes() == art.read_bytes()
+
+
+def test_the_generated_cover_is_unchanged_when_cover_image_is_absent(monkeypatch, tmp_path):
+    # Default path stays byte-identical to pre-#164 behaviour.
+    generated, _ = _run_dry(monkeypatch, tmp_path, {"show_name": "Daily Digest"})
+    assert generated == ["Daily Digest"]
+
+
+def test_preflight_gates_a_supplied_cover_image(tmp_path):
+    ok, checks = render.preflight(
+        {}, show_id=None, dry_run=True, web_only=True, cover_image=tmp_path / "missing.jpg"
+    )
+    assert not ok
+    assert any(c["name"] == "cover-image" and not c["ok"] for c in checks)
+
+
+def test_preflight_skips_the_cover_check_when_no_art_is_supplied():
+    _, checks = render.preflight({}, show_id=None, dry_run=True, web_only=True)
+    assert not any(c["name"] == "cover-image" for c in checks)
+
+
 # --- resume (idempotent post-upload) --------------------------------------
 
 
@@ -966,6 +1125,29 @@ def test_validate_manifest_rejects_a_blank_or_non_string_show_name(bad):
     # is exactly the bug the key exists to fix (#157).
     m = _valid_manifest()
     m["show_name"] = bad
+    with pytest.raises(SystemExit):
+        render.validate_manifest(m)
+
+
+def test_validate_manifest_cover_image_accepts_a_path():
+    m = _valid_manifest()
+    m["cover_image"] = "/plugin/skills/frontier-commits/refs/cover.jpg"
+    render.validate_manifest(m)  # no raise
+
+
+def test_validate_manifest_cover_image_allows_null():
+    m = _valid_manifest()
+    m["cover_image"] = None  # explicit null behaves like absent
+    render.validate_manifest(m)  # no raise
+
+
+@pytest.mark.parametrize("bad", ["", "   ", 7, ["cover.jpg"]])
+def test_validate_manifest_rejects_a_blank_or_non_string_cover_image(bad):
+    # Same posture as show_name: a blank value is a typo, not a request for the
+    # generated cover. Falling through would silently ship the daily show's
+    # episode art on a show that has its own (#164).
+    m = _valid_manifest()
+    m["cover_image"] = bad
     with pytest.raises(SystemExit):
         render.validate_manifest(m)
 

@@ -54,6 +54,7 @@ Already-written segments. Skip straight to rendering.
   "summary": "Today's one-sentence hook.",
   "show_id": "spotify:show:...",
   "show_name": "Daily Digest",             // optional; overrides config.json's show_name on the COVER only (big title + top label). Set it when rendering a SECOND show — render.py reads one config for every show it renders, so without this its covers carry the daily show's branding
+  "cover_image": "/path/to/cover.jpg",     // optional; use this image as the episode cover instead of generating one. Absolute, or relative to the MANIFEST's directory (never the CWD). Must be square, 1400-3000px — pre-flight fails the run otherwise. Set it when a show has DESIGNED art: show_name only changes the name on the generated gradient, which is this show's look
   "date": "2026-05-22",                    // optional ISO date; stamps the cover AND keys the web slug/guid. Omit to use today (re-renders of a dated manifest reproduce its date)
   "voice": "house",                        // default; or "random" / preset name; set voice_instruct for custom VoiceDesign
   "ship_mode": "spotify",                  // optional; "spotify" (default) or "web". "web" skips save-to-spotify entirely and makes the R2 publish the ship — see "Web-only shipping"
