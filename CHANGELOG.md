@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 This file is generated from conventional commits by [git-cliff](https://git-cliff.org).
 
+## [0.1.7](https://github.com/schmug/clodcast/compare/v0.1.6...v0.1.7) (2026-08-24)
+
+
+### Features
+
+* **render:** per-show description footer via manifest description_footer_text ([#152](https://github.com/schmug/clodcast/issues/152)) ([#160](https://github.com/schmug/clodcast/issues/160)) ([fca7eb3](https://github.com/schmug/clodcast/commit/fca7eb331db179fe5820e7e5814efa1268c48bf7))
+* **render:** web-only ship mode publishes to R2/RSS without save-to-spotify ([#155](https://github.com/schmug/clodcast/issues/155)) ([#156](https://github.com/schmug/clodcast/issues/156)) ([7f043a9](https://github.com/schmug/clodcast/commit/7f043a9a32e73016a25f82ad43c9c9c7af7e0e38))
+
+
+### Bug Fixes
+
+* **render:** manifest show_name overrides the cover's show branding ([#157](https://github.com/schmug/clodcast/issues/157)) ([#159](https://github.com/schmug/clodcast/issues/159)) ([24a48e3](https://github.com/schmug/clodcast/commit/24a48e3d206afe7862967d5359f909e2a1229658))
+
 ## [0.1.6](https://github.com/schmug/clodcast/compare/v0.1.5...v0.1.6) (2026-08-24)
 
 
