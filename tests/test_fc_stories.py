@@ -367,27 +367,29 @@ def test_release_stage_embeds_tag_verbatim_even_with_colon():
     # The key is an opaque exact-match token, never parsed — so a tag with ':'
     # is embedded VERBATIM. Sanitizing instead would collide distinct tags
     # ("v1:beta" vs "v1_beta") into one key and silently skip a mention.
+    # (Two repos, one tag each: the per-repo release-train collapse means a
+    # single repo only ever emits its newest release per run.)
     snap = {
         "orgs": {
             "acme": {
                 "repos": {},
                 "releases": [
                     {"repo": "big", "tag": "v1:beta", "published_at": "2026-08-22T00:00:00Z"},
-                    {"repo": "big", "tag": "v1_beta", "published_at": "2026-08-22T00:00:00Z"},
+                    {"repo": "second", "tag": "v1_beta", "published_at": "2026-08-22T00:00:00Z"},
                 ],
             }
         }
     }
-    cur = {"acme": {"big": _repo(stars=900)}}
+    cur = {"acme": {"big": _repo(stars=900), "second": _repo(stars=900)}}
     got = fc_stories.detect_releases(snap, "2026-08-18", cur, _cfg())
     keys = [s["key"] for s in got]
     assert "RELEASE:acme/big:v1:beta" in keys
-    assert "RELEASE:acme/big:v1_beta" in keys
+    assert "RELEASE:acme/second:v1_beta" in keys
     assert len(set(keys)) == 2  # no collision
     # and the colon key round-trips through the mention-once state
     fc_stories.mark_reported(["RELEASE:acme/big:v1:beta"], "2026-08-25", "spotify:episode:e1")
     left = fc_stories.filter_new(got, fc_stories.load_reported())
-    assert [s["key"] for s in left] == ["RELEASE:acme/big:v1_beta"]
+    assert [s["key"] for s in left] == ["RELEASE:acme/second:v1_beta"]
 
 
 def test_release_skips_empty_tags_unsafe_names_and_malformed_entries():
@@ -671,3 +673,25 @@ def test_cli_mark_dies_on_malformed_stories_file(tmp_path):
     with pytest.raises(SystemExit):
         fc_stories.main(["mark", "--stories", str(no_date), "--episode-uri", "u"])
     assert fc_stories.load_reported() == {}  # nothing was partially marked
+
+
+def test_release_train_collapses_to_the_newest_tag_per_repo():
+    snap = {
+        "orgs": {
+            "acme": {
+                "repos": {},
+                "releases": [
+                    {"repo": "train", "tag": "v2.1.237", "published_at": "2026-08-21T00:00:00Z"},
+                    {"repo": "train", "tag": "v2.1.239", "published_at": "2026-08-22T12:00:00Z"},
+                    {"repo": "train", "tag": "v2.1.238", "published_at": "2026-08-22T00:00:00Z"},
+                    {"repo": "solo", "tag": "v1", "published_at": "2026-08-22T00:00:00Z"},
+                ],
+            }
+        }
+    }
+    cur = {"acme": {"train": _repo(stars=900), "solo": _repo(stars=900)}}
+    got = fc_stories.detect_releases(snap, "2026-08-18", cur, _cfg())
+    assert [s["key"] for s in got] == [
+        "RELEASE:acme/solo:v1",
+        "RELEASE:acme/train:v2.1.239",
+    ]
