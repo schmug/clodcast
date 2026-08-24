@@ -249,3 +249,18 @@ def test_skill_md_pins_the_frontier_key_prefix():
     # Without the prefix, a frontier publish mints the daily show's same-day
     # <slug>.mp3/<slug>.jpg keys in the shared bucket and overwrites them (#142).
     assert '"r2_key_prefix": "frontier-commits/"' in _skill_text()
+
+
+def test_skill_md_title_style_is_topic_first():
+    # The episode title names the week's lead stories, never the generic
+    # "Frontier Commits — Week of ..." form (show name is already on every
+    # directory listing; the first ~30 chars are the browsing budget).
+    text = _skill_text()
+    assert "<topic>, <topic>, <topic> - Week of <Month D, YYYY>" in text
+    import re
+
+    example = re.search(r'"title": "([^"]+)"', text)
+    assert example, "Manifest example lost its title line"
+    assert not example.group(1).startswith("Frontier Commits"), (
+        "the Manifest example's title regressed to the generic show-name form"
+    )
