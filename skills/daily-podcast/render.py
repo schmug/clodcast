@@ -10,7 +10,7 @@ Consumes a manifest.json that already contains the written segments, then:
   3. Concatenates with fixed inter-segment silences, padded only when a segment
      is short enough to put two chapter starts under Spotify's 5s minimum gap
   4. Loudnorm via ffmpeg
-  5. Builds a date-stamped Pillow cover
+  5. Installs the manifest's cover_image, or builds a date-stamped Pillow cover
   6. Builds timeline.json (chapter per segment + link companion when present)
   7. Builds HTML description (summary + timestamped chapters + source links)
   7b. ARTIFACT GATE: local conformance + refusal to re-upload bytes Spotify already
@@ -683,6 +683,27 @@ def resolve_show_name(manifest: dict[str, Any], config: dict[str, Any]) -> str:
     return manifest.get("show_name") or config.get("show_name") or "Daily Digest"
 
 
+def resolve_cover_image(manifest: dict[str, Any], manifest_path: Path) -> Path | None:
+    """
+    Path to a supplied cover image, or None to generate one with build_cover.
+
+    #157 let a second show put its own NAME on the cover; the ART stayed the daily
+    show's gradient template, which is what a podcast client renders as per-episode
+    artwork — under a channel image that is the other show's real cover. A show with
+    designed art supplies it here instead.
+
+    Relative values resolve against the MANIFEST's directory, never the CWD: a
+    scheduled run's working directory is arbitrary and CLAUDE_PLUGIN_ROOT is unset
+    under the cron, so the manifest is the only anchor a caller can count on. Pure:
+    resolves a path, never touches the file (check_cover_image does that).
+    """
+    raw = manifest.get("cover_image")
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    return path if path.is_absolute() else manifest_path.parent / path
+
+
 # --- input safety ----------------------------------------------------------
 
 
@@ -792,6 +813,13 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         not isinstance(cover_show_name, str) or not cover_show_name.strip()
     ):
         die(f"manifest 'show_name' must be a non-empty string (got {cover_show_name!r})")
+    # Supplied episode art (#164). Same posture as show_name: a blank value is a
+    # typo, not a request for the generated cover — falling through would ship the
+    # daily show's gradient on a show that has its own art. Existence and shape are
+    # checked at pre-flight (check_cover_image), not here: validate_manifest is pure.
+    cover_image = manifest.get("cover_image")
+    if cover_image is not None and (not isinstance(cover_image, str) or not cover_image.strip()):
+        die(f"manifest 'cover_image' must be a non-empty path string (got {cover_image!r})")
     # Per-show source credit (#152). A blank value is a typo, not a request for
     # the default (same posture as show_name). Plain text by contract: the value
     # is html.escape()d into the footer <p>, so markup here would reach the
@@ -1256,6 +1284,57 @@ def resolve_font() -> str:
         "no cover font found. Install Futura (macOS) or DejaVu/Liberation (Linux), "
         "or set DAILY_PODCAST_FONT=/path/to/font.ttf"
     )
+
+
+# Apple Podcasts and Spotify both require square art, 1400-3000px. A directory
+# rejects the whole FEED over a bad image, not just the episode, so supplied art is
+# gated at pre-flight rather than discovered at submission. build_cover's own output
+# is 1400x1400 by construction, which is where these numbers come from.
+COVER_MIN_PX = 1400
+COVER_MAX_PX = 3000
+
+
+def check_cover_image(path: Path) -> dict[str, Any]:
+    """Pre-flight gate for a manifest-supplied cover: readable, square, in range.
+
+    Returns the {"ok", "detail"} shape preflight's _check consumes. Never raises —
+    an unreadable or corrupt file is a FAIL with a reason, not a traceback."""
+    if not path.is_file():
+        return {"ok": False, "detail": f"{path}: not found"}
+    try:
+        from PIL import Image
+
+        with Image.open(path) as im:
+            w, h = im.size
+            fmt = im.format
+    except Exception as e:
+        return {"ok": False, "detail": f"{path}: not a readable image ({e})"}
+    if w != h:
+        return {"ok": False, "detail": f"{path}: must be square (got {w}x{h})"}
+    if not COVER_MIN_PX <= w <= COVER_MAX_PX:
+        return {
+            "ok": False,
+            "detail": f"{path}: must be {COVER_MIN_PX}-{COVER_MAX_PX}px square (got {w}px)",
+        }
+    return {"ok": True, "detail": f"{path} ({fmt} {w}x{h})"}
+
+
+def apply_cover_image(src: Path, out_path: Path) -> None:
+    """Install supplied art as the workdir cover, normalized to JPEG.
+
+    The R2 publish hardcodes a `<slug>.jpg` key and an `image/jpeg` content-type
+    (and save-to-spotify's --image expects a real image), so a PNG passed through
+    verbatim would be served under a lying content type. An input that is ALREADY
+    JPEG is byte-copied rather than re-encoded: the art is fixed for the life of
+    the show, so a generation loss on every episode is pure downside."""
+    from PIL import Image
+
+    with Image.open(src) as im:
+        already_jpeg = im.format == "JPEG"
+        if not already_jpeg:
+            im.convert("RGB").save(out_path, "JPEG", quality=88, optimize=True)
+    if already_jpeg:
+        shutil.copyfile(src, out_path)
 
 
 def build_cover(out_path: Path, show_name: str, date_str: str, title_hint: str) -> None:
@@ -3132,6 +3211,7 @@ def preflight(
     dry_run: bool,
     record: dict[str, Any] | None = None,
     web_only: bool = False,
+    cover_image: Path | None = None,
 ) -> tuple[bool, list[dict[str, Any]]]:
     """Verify everything the run depends on BEFORE spending a render on it.
 
@@ -3141,7 +3221,10 @@ def preflight(
 
     `web_only` (#155) drops every Spotify-shaped gate — show id, auth probe, episode
     capacity — because that mode never talks to save-to-spotify at all, and flips the
-    R2 check from optional to required. What remains is the local subset plus R2."""
+    R2 check from optional to required. What remains is the local subset plus R2.
+
+    `cover_image` (#164) is checked only when the manifest supplies one — a local
+    check, so a --dry-run rehearsal gates the same art a real run would ship."""
     checks: list[dict[str, Any]] = []
     log("preflight: verifying dependencies, credentials, and capacity...")
 
@@ -3175,6 +3258,10 @@ def preflight(
     )
 
     checks.append(_tts_module_check())
+
+    if cover_image is not None:
+        art = check_cover_image(cover_image)
+        checks.append(_check("cover-image", art["ok"], art["detail"]))
 
     if not web_only:
         checks.append(
@@ -3565,6 +3652,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
         # meaningless — drop it rather than let it reach a gate or an API call.
         show_id = None
     show_name = resolve_show_name(manifest, config)
+    cover_image = resolve_cover_image(manifest, Path(args.manifest))
 
     # PRE-FLIGHT: verify everything the run depends on before spending a render on
     # it. Capacity is the headline — the cap-429 auto-prune only ever fired *after*
@@ -3578,6 +3666,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
             dry_run=args.dry_run,
             record=record,
             web_only=web_only,
+            cover_image=cover_image,
         )
         if not ok:
             failed = ", ".join(c["name"] for c in checks if not c["ok"])
@@ -3616,9 +3705,15 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
     record["loudnorm"] = loudnorm
     mark_stage(workdir, "concat", loudnorm=loudnorm)
 
-    # 4: cover
+    # 4: cover. Supplied art wins over the generated template — a show with its own
+    # designed cover should not wear the daily show's gradient in a podcast client
+    # (#164). build_cover remains the default for every show without one.
     cover = workdir / "cover.jpg"
-    build_cover(cover, show_name, cover_date, title)
+    if cover_image:
+        apply_cover_image(cover_image, cover)
+        log(f"cover: {cover_image} (supplied)")
+    else:
+        build_cover(cover, show_name, cover_date, title)
     mark_stage(workdir, "cover")
 
     # 5: timeline + description

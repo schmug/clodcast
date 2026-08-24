@@ -133,6 +133,7 @@ def test_render_py_honors_the_documented_manifest_keys():
         "ship_mode",
         "show_name",
         "description_footer_text",
+        "cover_image",
     ):
         assert key in render_src, (
             f"SKILL.md's manifest promises {key} but render.py never mentions it"
@@ -157,6 +158,34 @@ def test_skill_md_pins_the_shows_own_cover_name():
         "SKILL.md's manifest example must set show_name; without it every cover "
         "renders with the daily show's name"
     )
+
+
+def test_skill_md_pins_the_shows_own_episode_art():
+    # #157 swapped the NAME on the daily show's cover template; the ART stayed the
+    # daily show's — its purple/orange gradient reached every podcast client that
+    # renders per-episode images, under a channel image that is this show's real
+    # cover. cover_image points render.py at the bundled art instead (#164).
+    # Section-scoped like the other cover pin: the Manifest example is what the
+    # weekly run copies.
+    assert '"cover_image"' in _section("## Manifest"), (
+        "SKILL.md's manifest example must set cover_image; without it every episode "
+        "ships the daily show's generated gradient as its artwork"
+    )
+
+
+def test_the_bundled_show_art_is_a_valid_podcast_cover():
+    # The asset is a copy of cortech.online's public/frontier-commits-cover.jpg —
+    # bundled, not fetched, because a render must not depend on the network for a
+    # local artifact (same posture as the house-voice ref clip). Apple Podcasts and
+    # Spotify both require square art, 1400-3000px.
+    from PIL import Image
+
+    art = FC_DIR / "refs" / "cover.jpg"
+    assert art.exists(), "the bundled Frontier Commits show art is missing"
+    with Image.open(art) as im:
+        assert im.format == "JPEG"
+        assert im.width == im.height, f"show art must be square (got {im.size})"
+        assert 1400 <= im.width <= 3000, f"show art must be 1400-3000px (got {im.width})"
 
 
 def test_skill_md_pins_the_shows_own_source_credit_footer():

@@ -33,11 +33,22 @@ jobs:
       # boto3 is the exception: it installs cleanly on Linux and the R2 tests
       # (tests/test_r2.py) import botocore at module top to build/catch ClientError,
       # so CI pulls it in to run the R2 invariant tests (slug/upsert/schema-conformance).
+      # Pillow is the second: cover rendering is pure Pillow and resolve_font is
+      # written to run off macOS precisely so this job can exercise it (#164). Without
+      # it every cover test either fails or silently skips, and the cover ships to a
+      # PUBLIC feed where a directory rejects the whole feed over bad art.
       # ruff is pinned exactly so CI matches the version validated locally and in
       # .pre-commit-config.yaml — a floating ruff can promote rules and redden CI.
       # Keep this in lockstep with the pre-commit rev and pyproject's `dev` extra.
       - name: Install dev tools
-        run: python -m pip install "ruff==0.14.10" "pytest>=8.0" boto3 defusedxml
+        run: python -m pip install "ruff==0.14.10" "pytest>=8.0" boto3 defusedxml Pillow
+
+      # resolve_font's Linux fallbacks are DejaVu and Liberation. Installed
+      # explicitly rather than assumed from the runner image: which fonts ship in
+      # a hosted image is not a contract, and the cover test would otherwise go
+      # red (or, worse, quietly stop covering anything) on an image refresh.
+      - name: Install a cover font
+        run: sudo apt-get install -y --no-install-recommends fonts-dejavu-core
 
       - name: Ruff lint
         run: ruff check .
