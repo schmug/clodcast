@@ -765,6 +765,25 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             "manifest 'r2_key_prefix' must be a bare object-key prefix "
             f"([A-Za-z0-9._-]+ with an optional trailing '/') (got {prefix!r})"
         )
+    # Per-show slug prefix (#162). The slug is the /podcast/<slug>/ permalink and
+    # the isPermaLink <guid> — a second show must not publish under the daily
+    # show's daily-digest-<date> name. Whitelist posture again, tighter than
+    # r2_key_prefix because the value lands VERBATIM in the published slug: it
+    # must already match the consumer schema's ^[a-z0-9-]+$ with no edge or
+    # doubled hyphens (the kebab normalizer would silently rewrite those, making
+    # the stored key and the minted slug disagree), and 62 chars keeps prefix +
+    # the longest date tail ("-september-30-2026", 18 chars) inside the schema's
+    # 80-char cap — a truncated tail would let two dates share one slug/guid.
+    slug_prefix = manifest.get("slug_prefix")
+    if slug_prefix is not None and (
+        not isinstance(slug_prefix, str)
+        or not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", slug_prefix)
+        or len(slug_prefix) > 62
+    ):
+        die(
+            "manifest 'slug_prefix' must be a lowercase kebab literal "
+            f"([a-z0-9]+(-[a-z0-9]+)*, at most 62 chars) or unset (got {slug_prefix!r})"
+        )
     # Cover branding override (#157). A blank value is a typo, not a request for
     # the default: falling through to config would stamp the daily show's name on a
     # second show's cover, which is the exact bug this key exists to fix.
@@ -2109,7 +2128,13 @@ _LEGACY_TITLE_MONTHS = (
 )
 
 
-def slug_for_date(date: str) -> str:
+# The daily show's historical slug literal. The default keeps every published
+# daily slug byte-identical (tests/data/published_slugs.tsv); a second show
+# renames only this literal via the manifest's `slug_prefix` key (#162).
+DEFAULT_SLUG_PREFIX = "daily-digest"
+
+
+def slug_for_date(date: str, prefix: str = DEFAULT_SLUG_PREFIX) -> str:
     """Lowercase kebab slug matching the consumer schema's ^[a-z0-9-]+$. It keys both
     the R2 object (<slug>.mp3) and the /podcast/<slug>/ permalink, which cortech.online
     republishes as an isPermaLink <guid> — and Spotify treats a changed guid as a
@@ -2121,16 +2146,21 @@ def slug_for_date(date: str) -> str:
     were minted by running the old date-only titles ("Daily Digest - August 23, 2026")
     through the kebab normalizer below. Hence the historical prefix, the unpadded day
     and the comma. tests/data/published_slugs.tsv pins every live one byte-for-byte.
+
+    `prefix` is the only per-show part (#162): validate_manifest guarantees it is
+    already kebab, so a second show's slugs come out `<prefix>-<month>-<d>-<yyyy>`
+    while the date-keyed, title-blind property stays untouched.
     """
     try:
         d = dt.datetime.strptime(date, "%Y-%m-%d").date()
-        legacy_title = f"Daily Digest - {_LEGACY_TITLE_MONTHS[d.month - 1]} {d.day}, {d.year}"
+        raw = f"{prefix} - {_LEGACY_TITLE_MONTHS[d.month - 1]} {d.day}, {d.year}"
     except (TypeError, ValueError):
         # validate_manifest never checked `date`, so a malformed one must still yield a
         # deterministic schema-valid slug rather than crash the publish. Same shape as
-        # the empty-title fallback this replaced.
-        legacy_title = f"episode-{date}"
-    return re.sub(r"[^a-z0-9]+", "-", legacy_title.lower()).strip("-")[:80].strip("-")
+        # the empty-title fallback this replaced. Deliberately prefix-blind: the
+        # fallback predates the per-show prefix and is pinned by tests.
+        raw = f"episode-{date}"
+    return re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")[:80].strip("-")
 
 
 def resolve_slug_date(manifest: dict[str, Any]) -> str:
@@ -2138,6 +2168,13 @@ def resolve_slug_date(manifest: dict[str, Any]) -> str:
     resolve_pubdate: a back-fill or archive re-render must reproduce that date's
     historical slug, not stamp the day it happened to be re-rendered."""
     return manifest.get("date") or dt.date.today().isoformat()
+
+
+def resolve_slug_prefix(manifest: dict[str, Any]) -> str:
+    """The slug's per-show literal (#162), DEFAULT_SLUG_PREFIX when unset — the daily
+    show's slugs stay byte-identical. validate_manifest whitelists the value; only
+    the literal varies per show, the date-keying (#128) is slug_for_date's own."""
+    return manifest.get("slug_prefix") or DEFAULT_SLUG_PREFIX
 
 
 def resolve_pubdate(manifest: dict[str, Any]) -> str:
@@ -2395,7 +2432,8 @@ def r2_episode_mp3_url(cfg: dict[str, Any], manifest: dict[str, Any]) -> str:
     real publish both resolve it here, so a rehearsal can never advertise a URL the
     publish would not actually write (#128)."""
     base = cfg["public_base_url"].rstrip("/")
-    return f"{base}/{_r2_key_prefix(manifest)}{slug_for_date(resolve_slug_date(manifest))}.mp3"
+    slug = slug_for_date(resolve_slug_date(manifest), resolve_slug_prefix(manifest))
+    return f"{base}/{_r2_key_prefix(manifest)}{slug}.mp3"
 
 
 def maybe_publish_r2(
@@ -2421,7 +2459,7 @@ def maybe_publish_r2(
     try:
         client = r2_client(cfg)
         title = manifest["title"]
-        slug = slug_for_date(resolve_slug_date(manifest))
+        slug = slug_for_date(resolve_slug_date(manifest), resolve_slug_prefix(manifest))
         base = cfg["public_base_url"].rstrip("/")
         immutable = "public, max-age=31536000, immutable"
 

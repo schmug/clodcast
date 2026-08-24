@@ -181,11 +181,12 @@ Plus the two inherited house rules: **never manufacture a connection** between u
 
 ## Manifest
 
-A standard `render.py` manifest (the daily skill's Form 2) plus five keys, all five required for this show:
+A standard `render.py` manifest (the daily skill's Form 2) plus six keys, all six required for this show:
 
 - `"ship_mode": "web"` — the web-only ship (#155). The R2 publish *is* the ship: no upload, no timeline set, no readiness poll, and `save-to-spotify` is never invoked. **Omitting this key is not a degraded run — it is a different one**, because render.py defaults to a Spotify upload. In this mode R2 configuration is *required* (absent fails pre-flight, before any render), a failed publish fails the run, and `covered.json` is written only after the publish succeeds.
 - `"r2_manifest_name": "manifest-frontier-commits.json"` — keeps this show's web feed beside, never inside, the daily show's `manifest.json` (#118).
 - `"r2_key_prefix": "frontier-commits/"` — namespaces the episode/cover objects. The slug is date-keyed, so without the prefix a frontier episode publishing the same day as a daily episode would overwrite the daily show's `.mp3`/`.jpg` in the shared bucket (#142).
+- `"slug_prefix": "week-of"` — renames the slug's literal so this show's episodes mint `week-of-<month>-<d>-<yyyy>` (e.g. `week-of-august-24-2026`, echoing the title's "Week of" tail) instead of the daily show's `daily-digest-<date>` (#162). The slug is the `/frontier-commits/<slug>/` permalink and the `isPermaLink` guid, so without this key every frontier permalink and guid carries the daily show's name — and is immutable once published. It stays keyed on the manifest `date` alone (#128): the prefix swaps the literal, it never re-couples the slug to the title.
 - `"show_name": "Frontier Commits"` — the name stamped on the generated cover. `render.py` reads `~/.config/daily-podcast/config.json` for every show it renders (see the warning below), so without this key every episode's cover carries the daily show's branding (#157).
 - `"description_footer_text": "Sources: the labs' public GitHub — every story links its repo above. More at cortech.online/frontier-commits."` — replaces the daily show's credit footer on the episode description (#152). The default footer credits the OPML feeds curated in Don't Hype Me — wrong attribution for this show, in show notes that land verbatim in the public RSS feed. PLAIN TEXT by contract: `render.py` escapes it into one `<p>` and rejects markup; links aren't supported here — every story's repo is already linked on its own chapter line.
 
@@ -203,6 +204,7 @@ A standard `render.py` manifest (the daily skill's Form 2) plus five keys, all f
   "show_name": "Frontier Commits",
   "r2_manifest_name": "manifest-frontier-commits.json",
   "r2_key_prefix": "frontier-commits/",
+  "slug_prefix": "week-of",
   "description_footer_text": "Sources: the labs' public GitHub — every story links its repo above. More at cortech.online/frontier-commits.",
   "segments": [
     {"text": "Cold open...", "source_url": null, "title": "Cold open"},

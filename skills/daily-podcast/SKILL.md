@@ -493,6 +493,13 @@ otherwise mint identical keys and the later publish would overwrite the earlier
 show's objects (#142). Unset means no prefix — the daily show's keys byte-identical
 to before. The `slug` field itself (the permalink guid) is never prefixed.
 
+The slug's own literal is per-show: an optional `"slug_prefix"` — lowercase kebab
+matching `[a-z0-9]+(-[a-z0-9]+)*`, at most 62 chars; anything else fails validation —
+replaces the historical `daily-digest` literal in `<slug>` (#162), so a second show's
+permalinks and guids stop carrying this show's name. Unset means `daily-digest` and
+every published daily slug stays byte-identical. The slug remains keyed on the date
+alone (#128): the prefix swaps a literal and can never re-couple the slug to the title.
+
 ### Web-only shipping (`"ship_mode": "web"`)
 
 A manifest may set `"ship_mode"` to `"spotify"` (the default when the key is absent)
@@ -535,7 +542,9 @@ never derive the slug from anything but the date.
 The slug's shape (`daily-digest-august-23-2026`) is a compatibility artifact — it
 reproduces the slugs minted from the old date-only titles, hence the historical
 `daily-digest-` prefix, the unpadded day, and the year. `tests/data/published_slugs.tsv`
-pins every live slug byte-for-byte; append to it, never edit it. The date resolves the
+pins every live slug byte-for-byte; append to it, never edit it. The `daily-digest`
+literal is only the default `slug_prefix` (#162) — a second show swaps the literal,
+nothing else about the shape. The date resolves the
 same way `resolve_pubdate` does (explicit manifest `date` wins), so a back-fill
 re-render reproduces its historical slug and upserts the same R2 object instead of
 minting a second one. `--dry-run` prints the URL through the same resolver the real

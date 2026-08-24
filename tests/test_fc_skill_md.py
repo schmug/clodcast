@@ -129,6 +129,7 @@ def test_render_py_honors_the_documented_manifest_keys():
     for key in (
         "r2_manifest_name",
         "r2_key_prefix",
+        "slug_prefix",
         "ship_mode",
         "show_name",
         "description_footer_text",
@@ -167,6 +168,17 @@ def test_skill_md_pins_the_shows_own_source_credit_footer():
     assert '"description_footer_text"' in _section("## Manifest"), (
         "SKILL.md's manifest example must set description_footer_text; without it "
         "every episode's public show notes credit the daily show's sources"
+    )
+
+
+def test_skill_md_pins_the_shows_own_slug_prefix():
+    # The slug is the /frontier-commits/<slug>/ permalink and the isPermaLink
+    # guid; without this key every frontier episode publishes under the daily
+    # show's daily-digest-<date> name (#162). Section-scoped like the other
+    # pins: the Manifest example is what the weekly run copies.
+    assert '"slug_prefix": "week-of"' in _section("## Manifest"), (
+        "SKILL.md's manifest example must set slug_prefix; without it every "
+        "frontier permalink and guid carries the daily show's daily-digest name"
     )
 
 

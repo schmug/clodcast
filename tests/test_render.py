@@ -947,6 +947,51 @@ def test_validate_manifest_r2_key_prefix_rejects_paths_and_traversal(bad):
         render.validate_manifest(m)
 
 
+@pytest.mark.parametrize("prefix", ["week-of", "frontier", "a", "show-2", "x" * 62])
+def test_validate_manifest_slug_prefix_accepts_kebab_literals(prefix):
+    # The 62-char case pins the length boundary: the longest date tail
+    # ("-september-30-2026", 18 chars) lands the slug exactly on the consumer
+    # schema's 80-char cap without truncation.
+    m = _valid_manifest()
+    m["slug_prefix"] = prefix
+    render.validate_manifest(m)  # no raise
+
+
+def test_validate_manifest_slug_prefix_allows_null():
+    m = _valid_manifest()
+    m["slug_prefix"] = None  # explicit null behaves like absent
+    render.validate_manifest(m)  # no raise
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "",
+        "Week-Of",
+        "week_of",
+        "week of",
+        "week-of-",
+        "-week-of",
+        "week--of",
+        "a/b",
+        "../x",
+        "w.of",
+        7,
+        "x" * 63,
+    ],
+)
+def test_validate_manifest_slug_prefix_rejects_non_slug_literals(bad):
+    # Whitelist, not blocklist: the prefix lands VERBATIM in the published slug —
+    # the /podcast/<slug>/ permalink and the isPermaLink guid — so it must already
+    # be schema-shaped kebab (^[a-z0-9-]+$ with no edge or doubled hyphens, which
+    # the normalizer would otherwise silently rewrite) and short enough that the
+    # 80-char consumer cap can never truncate the date tail off a minted slug.
+    m = _valid_manifest()
+    m["slug_prefix"] = bad
+    with pytest.raises(SystemExit):
+        render.validate_manifest(m)
+
+
 def test_validate_manifest_show_name_accepts_a_second_shows_name():
     m = _valid_manifest()
     m["show_name"] = "Frontier Commits"
