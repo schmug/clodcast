@@ -347,6 +347,7 @@ def detect_releases(snap: dict, cutoff_date: str, cur: dict, config: dict) -> li
     if not isinstance(orgs, dict):
         return []
     out = []
+    best: dict = {}
     for org, view in orgs.items():
         if not _safe_name(org) or not isinstance(view, dict):
             continue
@@ -374,20 +375,37 @@ def detect_releases(snap: dict, cutoff_date: str, cur: dict, config: dict) -> li
             rec = cur.get(org, {}).get(name, {})
             if rec.get("stars", 0) < config["release_min_stars"] and name not in allow:
                 continue
-            out.append(
-                story(
-                    "RELEASE",
-                    org,
-                    name,
-                    tag,
-                    {
-                        "tag": tag,
-                        "published_at": rel.get("published_at", ""),
-                        "stars": rec.get("stars", 0),
-                        "description": rec.get("description", ""),
-                    },
-                )
+            # A release train (v2.1.237/238/239 inside one window) must not take
+            # one story slot per tag — collapse to the newest release per repo.
+            # Stage stays the tag, so a NEWER tag next week re-nominates once.
+            key = (org, name)
+            prev = best.get(key)
+            marker = (rel.get("published_at", ""), tag)
+            if prev is not None and marker <= (prev.get("published_at", ""), prev.get("tag", "")):
+                continue
+            best[key] = {
+                "rel": rel,
+                "published_at": rel.get("published_at", ""),
+                "tag": tag,
+                "org": org,
+                "name": name,
+                "rec": rec,
+            }
+    for entry in best.values():
+        out.append(
+            story(
+                "RELEASE",
+                entry["org"],
+                entry["name"],
+                entry["tag"],
+                {
+                    "tag": entry["tag"],
+                    "published_at": entry["published_at"],
+                    "stars": entry["rec"].get("stars", 0),
+                    "description": entry["rec"].get("description", ""),
+                },
             )
+        )
     return sorted(out, key=lambda s: (s["org"], s["repo"], s["key"]))
 
 
