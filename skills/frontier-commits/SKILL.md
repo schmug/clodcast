@@ -1,13 +1,15 @@
 ---
 id: frontier-commits
 name: frontier-commits
-description: Use when the user asks to ship the Frontier Commits weekly podcast — turns the frontier labs' GitHub org activity (new repos, releases, archivals, star trends) into a speculation-forward Spotify episode via the daily snapshot store and render.py. Skips the standard production interview because defaults are pre-set.
+description: Use when the user asks to ship the Frontier Commits weekly podcast — turns the frontier labs' GitHub org activity (new repos, releases, archivals, star trends) into a speculation-forward episode published to the public RSS feed via the daily snapshot store and render.py. Skips the standard production interview because defaults are pre-set.
 enabled: true
 ---
 
 # Frontier Commits
 
-A weekly show reading the frontier AI labs' **public GitHub activity**: new repos and what they might mean, notable releases, archivals, staleness, and star-velocity trends. Sibling to the daily digest — same house voice, same `render.py` production stack, its own Spotify show and its own web feed.
+A weekly show reading the frontier AI labs' **public GitHub activity**: new repos and what they might mean, notable releases, archivals, staleness, and star-velocity trends. Sibling to the daily digest — same house voice, same `render.py` production stack, its own web feed.
+
+**This show is RSS-first.** Its canonical channel is the public feed on cortech.online, and it ships through `render.py`'s web-only mode (`"ship_mode": "web"`): render → artifact gate → R2 publish → deploy hook → dedup. `save-to-spotify` is never invoked, the show has no episode cap to prune against, and there is no readiness poll to wait on. Public Spotify listing, if wanted, comes from submitting the RSS feed — not from the deprecated save-to-spotify show.
 
 The genre is *informed speculation*: "OpenAI forked git and it's actively pushed — probably a staging fork for upstream patches, but if it's more, here's what that would mean." Speculation is a feature, not a bug — but it is always labeled as speculation and anchored to observable facts. The [Speculation rules](#speculation-rules) below are hard rules, not style advice.
 
@@ -25,7 +27,7 @@ References are relative to the skill directory:
 - `./prompts/write_story.md` — the per-story segment prompt (placeholder contract `<<TYPE>>/<<TITLE>>/<<URL>>/<<FACTS>>/<<SHAPE>>/<<MIN_CHARS>>/<<MAX_CHARS>>`)
 - `./launchd/com.cortech.frontier-commits-snapshot.plist` — the daily snapshot job (see [Setup](#setup))
 
-The episode renderer is **not** in this skill: manifests are handed to the daily skill's [`render.py`](../daily-podcast/render.py) — TTS, concat, cover, upload, timeline, polling, and all of its reliability layer are reused as-is.
+The episode renderer is **not** in this skill: manifests are handed to the daily skill's [`render.py`](../daily-podcast/render.py) — TTS, concat, cover, timeline, R2 publish, and all of its reliability layer (pre-flight, artifact gate, durable state, incident capture) are reused as-is. Only the Spotify-shaped tail — upload, timeline set, readiness poll, episode-cap pruning — is skipped, because `ship_mode` is `web`.
 
 ## Data layer
 
@@ -179,15 +181,23 @@ Plus the two inherited house rules: **never manufacture a connection** between u
 
 ## Manifest
 
-A standard `render.py` manifest (the daily skill's Form 2) plus three keys: `show_id` — the Frontier Commits show, from `~/.config/frontier-commits/config.json`; `"r2_manifest_name": "manifest-frontier-commits.json"`, which keeps this show's web feed beside, never inside, the daily show's `manifest.json`; and `"r2_key_prefix": "frontier-commits/"`, which namespaces the episode/cover objects — the slug is date-keyed, so without the prefix a frontier episode publishing the same day as a daily episode would overwrite the daily show's `.mp3`/`.jpg` in the shared bucket (#142).
+A standard `render.py` manifest (the daily skill's Form 2) plus three keys, all three required for this show:
+
+- `"ship_mode": "web"` — the web-only ship (#155). The R2 publish *is* the ship: no upload, no timeline set, no readiness poll, and `save-to-spotify` is never invoked. **Omitting this key is not a degraded run — it is a different one**, because render.py defaults to a Spotify upload. In this mode R2 configuration is *required* (absent fails pre-flight, before any render), a failed publish fails the run, and `covered.json` is written only after the publish succeeds.
+- `"r2_manifest_name": "manifest-frontier-commits.json"` — keeps this show's web feed beside, never inside, the daily show's `manifest.json` (#118).
+- `"r2_key_prefix": "frontier-commits/"` — namespaces the episode/cover objects. The slug is date-keyed, so without the prefix a frontier episode publishing the same day as a daily episode would overwrite the daily show's `.mp3`/`.jpg` in the shared bucket (#142).
+
+**No `show_id`.** There is no Spotify show to upload to; render.py ignores the key in this mode and pre-flight does not ask for one.
+
+⚠️ **The R2 bucket and credentials for the EPISODE publish come from the daily skill's config**, i.e. `~/.config/daily-podcast/config.json` + `secrets.json` + env — never from `~/.config/frontier-commits/config.json`. That file's `r2_bucket` / `r2_public_base_url` drive only `fc_snapshot`'s `labs.json` publish. The two live in different config roots on purpose: `render.py` owns the episode bucket for every show it renders. Do not "fix" render.py to read the frontier config — it would silently change which bucket published episodes land in.
 
 ```json
 {
   "title": "Frontier Commits — Week of August 24, 2026",
   "summary": "This week's one-sentence hook.",
-  "show_id": "spotify:show:<frontier-commits-show>",
   "date": "2026-08-24",
   "voice": "house",
+  "ship_mode": "web",
   "r2_manifest_name": "manifest-frontier-commits.json",
   "r2_key_prefix": "frontier-commits/",
   "segments": [
@@ -209,13 +219,13 @@ A standard `render.py` manifest (the daily skill's Form 2) plus three keys: `sho
 
 State lives under `~/.config/frontier-commits/`:
 
-- `config.json` — orgs, filters, thresholds, show id; schema in [Setup](#setup). `fc_common.load_config` dies if it is missing.
+- `config.json` — orgs, filters, thresholds; schema in [Setup](#setup). `fc_common.load_config` dies if it is missing.
 - `snapshots/YYYY-MM-DD.json` — daily org state, the star-history substitute. A malformed day is treated as absent, never fatal.
-- `reported.json` — story-key → `{date, episode_uri}` mention-once log. Written by `fc_stories.py mark` **only after the render reports READY** (the same post-success discipline as `covered.json`); malformed → `{}` — worst case a repeated mention one week.
+- `reported.json` — story-key → `{date, episode_uri}` mention-once log. Written by `fc_stories.py mark` **only after the R2 publish succeeds** (the same post-success discipline as `covered.json` — the success condition is the publish, since that is the ship here); malformed → `{}` — worst case a repeated mention one week. The recorded `episode_uri` is the published mp3 URL: this show has no Spotify episode URI, and the URL is the episode's durable identity.
 - `labs_json.sha256` — the destination-keyed publish-gate record (`{bucket, key, sha256}`).
 - `secrets.json` — optional (0600). R2 keys, `PAGES_DEPLOY_HOOK_URL`, and `GH_TOKEN` resolve env-first, then this file, then `~/.config/daily-podcast/secrets.json` — the daily skill's secrets file is the durable fallback tier so credentials have one home per host.
 
-Shared with the daily show (unchanged semantics): `~/.config/daily-podcast/covered.json` — `render.py`'s URL dedup, written post-READY; GitHub repo URLs and news-article URLs don't collide — and `runs.jsonl`, where this show's runs appear with their own manifest path and show id.
+Shared with the daily show: `~/.config/daily-podcast/covered.json` — `render.py`'s URL dedup, written **after the R2 publish** on this show's web-only runs (post-READY on the daily show's); GitHub repo URLs and news-article URLs don't collide — and `runs.jsonl`, where this show's runs appear with their own manifest path, `"status": "web-ready"`, and the published `mp3_url`. The episode bucket and credentials are the daily skill's too — see the warning in [Manifest](#manifest).
 
 ## Unattended weekly run
 
@@ -227,22 +237,19 @@ Shared with the daily show (unchanged semantics): `~/.config/daily-podcast/cover
 4. **Get the script plan:** `python3 fc_script_plan.py plan --date <today> --stories <n>` → `<workdir>/plan.json`.
 5. **Write each story in its own subagent context** — one story's material per context, the weekly analogue of the daily show's one-body-per-request invariant. Per story: read `prompts/write_story.md`, fill `<<TYPE>>/<<TITLE>>/<<URL>>/<<FACTS>>/<<SHAPE>>/<<MIN_CHARS>>/<<MAX_CHARS>>` from `stories.json` + `plan.json`, research the repo first (README via `gh api repos/<org>/<repo>/readme`, recent commits/releases), write the segment, return the JSON contract. A refused/failed story is dropped and logged; if survivors fall below `min_stories_per_episode` → print `SKIPPED thin-week after drops` and exit 0.
 6. **Write the frame:** the intro (assigned mode), the segues (assigned moves — `cold` means no segue text at all), the trend-watch close (from today's `labs.json`), and the outro (assigned mode).
-7. **Assemble `<workdir>/manifest.json`** per [Manifest](#manifest) and render in the **background**: `python3 <root>/skills/daily-podcast/render.py --manifest <workdir>/manifest.json --workdir <workdir>` — the 10-minute foreground Bash cap SIGTERMs a poll mid-wait; monitor the render log instead. Never pass `--dry-run` (this is a real episode) and never pass `--skip-preflight`.
-8. **On render success (READY):** `python3 fc_stories.py mark --stories <workdir>/stories.json --episode-uri <uri>`. (`mark` reads the date from the file's `run_date`; there is no `--date` flag.)
-9. **Report once and exit.** Single-line stdout: `SHIPPED <uri> - <title> - <n> chapters - <dur>s - r2=<ok|skipped|FAILED>` on success (`r2=FAILED` means the episode is live on Spotify but the web-feed publish errored — still a successful run), `SKIPPED <reason>` for a thin week, `FAILED <reason>` on genuine failure.
+7. **Assemble `<workdir>/manifest.json`** per [Manifest](#manifest) — including `"ship_mode": "web"`, without which this ships to the wrong place — and render in the **background**: `python3 <root>/skills/daily-podcast/render.py --manifest <workdir>/manifest.json --workdir <workdir>` — the 10-minute foreground Bash cap SIGTERMs a long render; monitor the render log instead. Never pass `--dry-run` (this is a real episode) and never pass `--skip-preflight`.
+8. **On a successful publish** — exit 0 and a final JSON object with `"status": "web-ready"` and `"r2_status": "published"` — take its `mp3_url` and run `python3 fc_stories.py mark --stories <workdir>/stories.json --episode-uri <mp3_url>`. (`mark` reads the date from the file's `run_date`; there is no `--date` flag.) A nonzero exit means nothing was published: do **not** mark, and report `FAILED`. The renderer leaves the sources unmarked in `covered.json` too, so the next run re-selects them.
+9. **Report once and exit.** Single-line stdout: `SHIPPED <mp3_url> - <title> - <n> chapters - <dur>s - r2=ok` on success (all four values come from the renderer's final JSON: `mp3_url`, `title`, `chapter_count`, `duration_s`), `SKIPPED <reason>` for a thin week, `FAILED <reason>` on genuine failure. `r2=ok` is the only success value here — a publish that did not succeed is a failed run, not a degraded one.
 
 ## Setup
 
 One-time, in order.
 
-**1. Config.** `fc_common.load_config` refuses to run without `~/.config/frontier-commits/config.json`. Every key except `show_id` has a default (`fc_common.DEFAULT_CONFIG`) — the file only needs the keys you override, plus `show_id` to ship:
+**1. Config.** `fc_common.load_config` refuses to run without `~/.config/frontier-commits/config.json`. Every key has a default (`fc_common.DEFAULT_CONFIG`), so the file only needs the keys you override — an empty `{}` is a valid start:
 
 ```jsonc
 // ~/.config/frontier-commits/config.json
 {
-  "show_id": "spotify:show:...",        // REQUIRED to ship; no default. Copied into the weekly
-                                        //   manifest so render.py uploads to this show, never
-                                        //   the daily one.
   "show_name": "Frontier Commits",
   "host_name": "Cory",
   "orgs": [                             // each entry {"name", "filter"}; names must match
@@ -270,15 +277,21 @@ One-time, in order.
   "surge_min_ratio": 0.20,              // ...or 20% of the baseline stars, whichever is larger
   "snapshot_retention_days": 400,       // snapshot pruning window (> a year, for YoY trends)
   "releases_repo_cap_per_org": 30,      // per-org cap on release API calls per sweep
-  "r2_bucket": null,                    // set to enable the labs.json publish (see Data layer)
-  "r2_public_base_url": null,           // public base URL for the bucket
+  "r2_bucket": null,                    // labs.json publish ONLY (see Data layer). The EPISODE
+  "r2_public_base_url": null,           //   bucket is the daily skill's config — see Manifest.
   "labs_manifest_name": "labs.json"     // object key for the dashboard data
 }
 ```
 
 R2/GH credentials never go in `config.json` — env first, then `~/.config/frontier-commits/secrets.json`, then the daily skill's `secrets.json` (see [Show + state config](#show--state-config)).
 
-**2. Show.** Create or pick the Spotify show: `save-to-spotify --json shows` lists existing ones; copy the URI into `show_id`. Keep it distinct from the daily show — the episode cap and capacity pruning are per-show.
+**2. Episode R2 (required to ship).** The weekly episode publishes through `render.py`, which resolves the bucket from `~/.config/daily-podcast/config.json` (`r2_bucket`, `r2_public_base_url`) and the credentials from env or `~/.config/daily-podcast/secrets.json` — **not** from the frontier config above. Set `PAGES_DEPLOY_HOOK_URL` there too, or cortech.online will hold the bucket's new episode without rebuilding around it. Web-only mode makes these mandatory: pre-flight refuses the run when R2 is absent, so a misconfigured host fails in seconds instead of after a full render. Verify with a rehearsal:
+
+```bash
+python3 ../daily-podcast/render.py --manifest <a-frontier-manifest>.json --dry-run
+```
+
+which prints the exact `[r2] dry-run: would publish <url>` the real run would write. There is **no Spotify show to create** — this show ships to the RSS feed, and public Spotify listing (if wanted) comes from submitting that feed.
 
 **3. Daily snapshot job (launchd).** Install `launchd/com.cortech.frontier-commits-snapshot.plist` from this skill directory (it runs `fc_snapshot.py` daily at 06:15 local with the repo clone's path — edit the path if your clone lives elsewhere):
 

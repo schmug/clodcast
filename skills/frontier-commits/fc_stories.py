@@ -520,7 +520,13 @@ def main(argv: list[str] | None = None) -> int:
     ap_detect.add_argument("--lookback-days", type=int, help="override config lookback_days")
     ap_mark = sub.add_parser("mark", help="mark a detect output's stories as reported")
     ap_mark.add_argument("--stories", required=True, help="path to a detect-output JSON file")
-    ap_mark.add_argument("--episode-uri", required=True, help="spotify episode URI to record")
+    ap_mark.add_argument(
+        "--episode-uri",
+        required=True,
+        # Free-form on purpose: this show ships web-only (#155), so the identity is
+        # the published mp3 URL, not an episode URI on any platform.
+        help="episode identity to record (the published mp3 URL for a web-only ship)",
+    )
     args = ap.parse_args(argv)
 
     if args.cmd == "detect":

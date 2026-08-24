@@ -459,7 +459,7 @@ def save_covered(data: dict[str, Any]) -> None:
 # never reshape #18's schema. Keep additions here null-by-default.
 RUN_LOG_FIELDS: tuple[str, ...] = (
     "timestamp",  # ISO 8601 UTC
-    "status",  # "ready" | "dry-run" | "failed"
+    "status",  # "ready" | "web-ready" (#155) | "dry-run" | "failed"
     "episode_uri",
     "title",
     "voice",
@@ -478,6 +478,7 @@ RUN_LOG_FIELDS: tuple[str, ...] = (
     "resumed",
     "preflight",  # {ok, checks:[{name, ok, detail}]} or null when skipped
     "abandoned_episodes",  # [{episode_uri, title, source_urls}] on a poison-pill give-up
+    "mp3_url",  # public R2 URL on a web-only ship, else null (#155)
 )
 
 
@@ -610,6 +611,33 @@ def resolve_voice_mode(voice_instruct: str | None, ref_audio: str | None) -> str
     return "preset"
 
 
+# --- ship mode (#155) ------------------------------------------------------
+#
+# Which channel an episode ships to. The daily show ships to Spotify (with the R2
+# web feed as an additive extra); Frontier Commits is RSS-first, so its R2 publish
+# IS the ship and save-to-spotify is never invoked at all.
+#
+# The mode lives on the MANIFEST rather than the command line on purpose: the
+# distribution channel is a property of the show, and re-running the same manifest
+# must ship the same way. A flag can go missing on one invocation — and the failure
+# mode of a missing flag here is an episode uploaded to a deprecated Spotify show.
+SHIP_MODE_SPOTIFY = "spotify"
+SHIP_MODE_WEB = "web"
+SHIP_MODES = (SHIP_MODE_SPOTIFY, SHIP_MODE_WEB)
+
+
+def resolve_ship_mode(manifest: dict[str, Any]) -> str:
+    """The manifest's ship mode, defaulting to Spotify. validate_manifest has
+    already whitelisted the value, so an absent/empty key is the only fallback."""
+    return manifest.get("ship_mode") or SHIP_MODE_SPOTIFY
+
+
+def is_web_only(manifest: dict[str, Any]) -> bool:
+    """True when this manifest ships to the web feed only — no Spotify upload, no
+    timeline set, no readiness poll, and R2 config REQUIRED rather than optional."""
+    return resolve_ship_mode(manifest) == SHIP_MODE_WEB
+
+
 def resolve_cover_date(manifest: dict[str, Any]) -> str:
     """
     Date for the cover subtitle. Prefer the manifest's ISO `date` so re-rendering a
@@ -707,6 +735,13 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             "manifest 'r2_key_prefix' must be a bare object-key prefix "
             f"([A-Za-z0-9._-]+ with an optional trailing '/') (got {prefix!r})"
         )
+    # Ship mode is a closed set (#155): an unrecognized value must never fall back
+    # to the Spotify default, because for an RSS-first show that means uploading to
+    # a deprecated show instead of failing. Typos ("webb", "WEB") die here.
+    ship_mode = manifest.get("ship_mode")
+    if ship_mode is not None and ship_mode not in SHIP_MODES:
+        shown = "{" + ", ".join(f'"{m}"' for m in SHIP_MODES) + "}"
+        die(f"manifest 'ship_mode' must be one of {shown} or unset (got {ship_mode!r})")
     if manifest.get("date"):  # treat "" as absent, matching resolve_cover_date
         try:
             dt.date.fromisoformat(manifest["date"])
@@ -1885,18 +1920,121 @@ def _resume(
     return 0
 
 
+def _ship_web_only(
+    config: dict[str, Any],
+    *,
+    manifest: dict[str, Any],
+    workdir: Path,
+    episode_mp3: Path,
+    cover: Path,
+    timeline: dict[str, Any],
+    description: str,
+    segments: list[dict],
+    title: str,
+    voice: str,
+    voice_mode: str,
+    loudnorm: dict[str, Any] | None,
+    episode_duration_ms: int,
+    record: dict[str, Any],
+) -> int:
+    """Ship an episode to the web feed only: publish to R2, then dedup. No upload,
+    no timeline set, no readiness poll — save-to-spotify is never invoked (#155).
+
+    Two inversions of the default path, both deliberate:
+
+    * **The publish is load-bearing, not additive.** On the Spotify path a failed R2
+      publish only warns, because the episode is already live where it counts. Here
+      R2 is the only channel, so anything short of R2_PUBLISHED fails the run.
+      `maybe_publish_r2` keeps its never-raises contract; the fatality is the
+      caller's call, which is why this branch checks the status rather than the
+      publisher changing behavior by mode.
+    * **covered.json is written after the PUBLISH, not after READY.** Same
+      only-after-success posture, new success condition: a failed publish must leave
+      those source URLs in the pool for the next run to re-select.
+
+    The dedup log records the public mp3 URL where the Spotify path records an
+    episode URI — it is the episode's durable identity in this mode, and a null
+    would lose the trail from a covered URL back to the episode that covered it."""
+    # Belt and braces: pre-flight already required R2 here, but --skip-preflight can
+    # bypass it, and a web-only render that "succeeds" while publishing nowhere is
+    # the exact silent miss this mode exists to prevent.
+    r2_cfg = load_r2_config(config)
+    if r2_cfg is None:
+        die(
+            "ship_mode=web requires R2 (bucket, public base URL, and credentials) but "
+            "none resolved; nothing was published and covered.json is untouched"
+        )
+    mp3_url = r2_episode_mp3_url(r2_cfg, manifest)
+
+    r2_status = maybe_publish_r2(
+        config,
+        episode_mp3=episode_mp3,
+        cover=cover,
+        timeline=timeline,
+        manifest=manifest,
+        description=description,
+        # No Spotify episode exists in this mode, so the web-feed entry carries no
+        # spotify_uri (build_manifest_entry omits the field rather than nulling it).
+        episode_uri=None,
+    )
+    record["r2_status"] = r2_status
+    mark_stage(workdir, "r2", status=r2_status)
+    if r2_status != R2_PUBLISHED:
+        die(
+            f"web-only publish did not succeed (r2={r2_status}); covered.json is "
+            "untouched, so these sources return to the pool for the next run"
+        )
+
+    _save_dedup(segments, mp3_url)
+    mark_stage(workdir, "dedup", urls=len(_segment_urls(segments)))
+
+    chapter_count = sum(1 for it in timeline["items"] if "chapter" in it)
+    duration_s = episode_duration_ms / 1000
+    record.update(
+        status="web-ready",
+        mp3_url=mp3_url,
+        chapter_count=chapter_count,
+        duration_s=duration_s,
+        resumed=False,
+    )
+    print(
+        json.dumps(
+            {
+                "status": "web-ready",
+                "mp3_url": mp3_url,
+                "title": title,
+                "voice": voice,
+                "voice_mode": voice_mode,
+                "chapter_count": chapter_count,
+                "duration_s": duration_s,
+                "loudnorm": loudnorm,
+                "r2_status": r2_status,
+                "resumed": False,
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 # --- r2 publish ------------------------------------------------------------
 #
 # After Spotify (the canonical artifact) confirms READY, also publish the mp3 + a
 # manifest entry to a Cloudflare R2 bucket. cortech.online reads that manifest at
 # build time and renders /podcast/ + an iTunes RSS feed (schmug/cortech.online#131).
 #
-# This is strictly additive: R2 is never allowed to block the dedup-log write or
-# fail the run. A missing config no-ops; any publish error warns and continues.
-# Runs on BOTH the fresh path and the resume path (#40): each publishes after
-# READY and before the dedup-log write. The resume path stays config-free — it
-# passes an empty config so R2 settings resolve from env / secrets.json only and
-# never call load_config (pinned by test_resume_skips_upload_and_runs_idempotent_tail).
+# On the DEFAULT path this is strictly additive: R2 is never allowed to block the
+# dedup-log write or fail the run. A missing config no-ops; any publish error warns
+# and continues. Runs on BOTH the fresh path and the resume path (#40): each
+# publishes after READY and before the dedup-log write. The resume path stays
+# config-free — it passes an empty config so R2 settings resolve from env /
+# secrets.json only and never call load_config (pinned by
+# test_resume_skips_upload_and_runs_idempotent_tail).
+#
+# Under `ship_mode: "web"` (#155) the SAME publisher is the ship itself, and its
+# failure is fatal — but that decision lives in _ship_web_only, not here.
+# maybe_publish_r2 never raises and never varies by mode; only the caller's
+# treatment of R2_FAILED differs.
 
 
 # Spelled out rather than taken from strftime("%B"), which is LC_TIME-dependent: these
@@ -2306,7 +2444,12 @@ def maybe_publish_r2(
             fire_pages_hook(hook)
         return R2_PUBLISHED
     except Exception as e:
-        log(f"[r2] publish failed (non-fatal, Spotify episode is live): {e}")
+        # Deliberately says nothing about consequences: whether a failed publish is
+        # survivable depends on the ship mode, and only the caller knows. The old
+        # "non-fatal, Spotify episode is live" reassurance became a lie under
+        # ship_mode=web, printed at exactly the moment an operator is deciding
+        # whether to panic. The caller's next line carries the meaning.
+        log(f"[r2] publish failed: {e}")
         return R2_FAILED
 
 
@@ -2790,13 +2933,18 @@ def wait_for_readiness(
 # --- pre-flight ------------------------------------------------------------
 
 
-def check_r2_credentials(config: dict[str, Any]) -> dict[str, Any]:
+def check_r2_credentials(config: dict[str, Any], *, required: bool = False) -> dict[str, Any]:
     """Three-state R2 readiness: configured / absent / partial.
 
     `absent` is a PASS — the web feed is optional and a show without one must still
     ship. `partial` is a FAIL, and that asymmetry is the whole point: a half-configured
     R2 is exactly the 2026-07-28 shape where the episode ships to Spotify and silently
-    never reaches the website, which is only noticed days later."""
+    never reaches the website, which is only noticed days later.
+
+    `required=True` (web-only mode, #155) collapses that asymmetry: with R2 as the
+    only channel, `absent` becomes a FAIL too — otherwise a misconfigured host pays
+    for a full TTS render and ships the episode precisely nowhere. `partial` stays a
+    FAIL either way."""
     secrets = _load_r2_secrets()
     fields = {
         "R2_ACCOUNT_ID": secrets.get("R2_ACCOUNT_ID"),
@@ -2811,6 +2959,13 @@ def check_r2_credentials(config: dict[str, Any]) -> dict[str, Any]:
     if not missing:
         return {"ok": True, "state": "configured", "detail": "all R2 settings resolved"}
     if len(missing) == len(fields):
+        if required:
+            return {
+                "ok": False,
+                "state": "absent",
+                "detail": "R2 not configured, but this manifest is web-only "
+                "(ship_mode=web) and the R2 publish is the ship",
+            }
         return {"ok": True, "state": "absent", "detail": "R2 not configured (web feed disabled)"}
     return {
         "ok": False,
@@ -2885,12 +3040,17 @@ def preflight(
     show_id: str | None,
     dry_run: bool,
     record: dict[str, Any] | None = None,
+    web_only: bool = False,
 ) -> tuple[bool, list[dict[str, Any]]]:
     """Verify everything the run depends on BEFORE spending a render on it.
 
     Ordered so the cheap local checks fail fast and the network ones only run when
     they can matter. `--dry-run` runs the local subset only: by contract a dry run
-    never calls Spotify and never prunes."""
+    never calls Spotify and never prunes.
+
+    `web_only` (#155) drops every Spotify-shaped gate — show id, auth probe, episode
+    capacity — because that mode never talks to save-to-spotify at all, and flips the
+    R2 check from optional to required. What remains is the local subset plus R2."""
     checks: list[dict[str, Any]] = []
     log("preflight: verifying dependencies, credentials, and capacity...")
 
@@ -2925,14 +3085,15 @@ def preflight(
 
     checks.append(_tts_module_check())
 
-    checks.append(
-        _check("show-id", bool(show_id), show_id or "no show_id in manifest or config.json")
-    )
+    if not web_only:
+        checks.append(
+            _check("show-id", bool(show_id), show_id or "no show_id in manifest or config.json")
+        )
 
-    r2 = check_r2_credentials(config)
+    r2 = check_r2_credentials(config, required=web_only)
     checks.append(_check("r2-credentials", r2["ok"], r2["detail"]))
 
-    if not dry_run:
+    if not dry_run and not web_only:
         checks.append(_spotify_auth_check())
         if show_id:
             cap = preflight_capacity(show_id, config, dry_run=dry_run, record=record)
@@ -3223,6 +3384,23 @@ def main() -> int:
         _RUN_CTX = None
 
 
+def _cleanup_auto_workdir(workdir: Path, eligible: bool) -> None:
+    """Delete the run's workdir on a clean finish (#21). Only AUTO-created workdirs
+    are eligible — deleting an explicit --workdir would break the documented
+    same-workdir resume/no-op path, so an explicit one is always kept. A failed run
+    never reaches this call, so failures keep their workdir for debugging
+    automatically. Best-effort: a cleanup error is logged, not fatal (the episode is
+    already shipped + deduped). The resume path never calls this, preserving its
+    idempotent re-run."""
+    if not eligible:
+        return
+    try:
+        shutil.rmtree(workdir)
+        log(f"deleted workdir {workdir} (pass --keep-workdir to retain)")
+    except OSError as e:
+        log(f"warn: could not delete workdir {workdir}: {e}")
+
+
 def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
     # Disk hygiene first (#21): prune stale auto-workdirs BEFORE creating this run's
     # own, so the active workdir (created just below) can't exist yet and is therefore
@@ -3244,6 +3422,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
     title = manifest["title"]
     summary = manifest["summary"]
     segments = manifest["segments"]
+    web_only = is_web_only(manifest)
     record["title"] = title
     record["segment_count"] = len(segments)
 
@@ -3258,7 +3437,12 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
 
     # Resume: a prior run already uploaded into this workdir, so skip render + upload
     # and re-run only the idempotent tail. Never for --dry-run (which never uploads).
-    if marker.exists() and not args.dry_run:
+    # Never for a web-only manifest either (#155): that tail is set_timeline +
+    # poll_ready, and a stale marker from an earlier Spotify-mode run in the same
+    # workdir must not drag an RSS-first show back onto save-to-spotify. A web-only
+    # re-run is already idempotent on its own — the R2 PUTs replace and the manifest
+    # entry upserts by slug — so it simply renders again (off the TTS cache).
+    if marker.exists() and not args.dry_run and not web_only:
         log(f"workdir: {workdir}")
         # Config is resolved HERE (not inside _resume) so the R2 back-fill can see
         # r2_bucket / r2_public_base_url and stop silently skipping the web feed on
@@ -3276,13 +3460,19 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
     # its URLs covered so curation here can't re-select them — closing the duplicate
     # gap the per-workdir uploaded.json marker can't reach. Skipped for --dry-run,
     # which by contract never uploads, calls Spotify, or mutates covered.json.
-    if not args.dry_run:
+    # Skipped for web-only too: reconciliation reads an episode's readiness off
+    # save-to-spotify, and this mode never uploads one to leave in flight (#155).
+    if not args.dry_run and not web_only:
         _recover_inflight()
 
     config = load_config()
     show_id = manifest.get("show_id") or config.get("show_id")
-    if not show_id:
+    if not show_id and not web_only:
         die("show_id required (in manifest or ~/.config/daily-podcast/config.json)")
+    if web_only:
+        # An RSS-first show has no Spotify show to upload to, so a show_id here is
+        # meaningless — drop it rather than let it reach a gate or an API call.
+        show_id = None
     show_name = config.get("show_name") or "Daily Digest"
 
     # PRE-FLIGHT: verify everything the run depends on before spending a render on
@@ -3291,7 +3481,13 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
     if args.skip_preflight:
         log("preflight: skipped (--skip-preflight)")
     else:
-        ok, checks = preflight(config, show_id=show_id, dry_run=args.dry_run, record=record)
+        ok, checks = preflight(
+            config,
+            show_id=show_id,
+            dry_run=args.dry_run,
+            record=record,
+            web_only=web_only,
+        )
         if not ok:
             failed = ", ".join(c["name"] for c in checks if not c["ok"])
             die(f"preflight failed ({failed}); nothing was rendered or uploaded")
@@ -3406,6 +3602,30 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
         )
         return 0
 
+    # 6w: web-only ship (#155). The R2 publish replaces upload/set_timeline/poll_ready
+    # entirely for an RSS-first show, and covered.json moves behind it. Everything
+    # above this line — render, cover, timeline, artifact gate — is shared verbatim.
+    if web_only:
+        rc = _ship_web_only(
+            config,
+            manifest=manifest,
+            workdir=workdir,
+            episode_mp3=episode_mp3,
+            cover=cover,
+            timeline=timeline,
+            description=description,
+            segments=segments,
+            title=title,
+            voice=voice,
+            voice_mode=voice_mode,
+            loudnorm=loudnorm,
+            episode_duration_ms=episode_duration_ms,
+            record=record,
+        )
+        write_run_log(record)
+        _cleanup_auto_workdir(workdir, auto_workdir and not args.keep_workdir)
+        return rc
+
     # 6: upload, then immediately record the upload — BEFORE the failure-prone tail
     # (set_timeline / poll_ready). If either fails, a re-run with the same --workdir
     # resumes from here instead of re-uploading a duplicate episode.
@@ -3502,18 +3722,8 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
         )
     )
 
-    # 9: workdir hygiene (#21). Only auto-created workdirs are eligible — deleting an
-    # explicit --workdir would break the documented same-workdir resume/no-op path, so
-    # an explicit one is always kept. A failed run never reaches here, so failures keep
-    # their workdir for debugging automatically. Best-effort: a cleanup error is logged,
-    # not fatal (the episode is already live + deduped). The resume path keeps its
-    # workdir untouched (it never auto-deletes), preserving the idempotent re-run.
-    if auto_workdir and not args.keep_workdir:
-        try:
-            shutil.rmtree(workdir)
-            log(f"deleted workdir {workdir} (pass --keep-workdir to retain)")
-        except OSError as e:
-            log(f"warn: could not delete workdir {workdir}: {e}")
+    # 9: workdir hygiene (#21).
+    _cleanup_auto_workdir(workdir, auto_workdir and not args.keep_workdir)
 
     return 0
 

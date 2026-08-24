@@ -19,7 +19,8 @@ Ships an executable `render.py` and a self-contained `claude -p` prompt so the w
 The second show, **`frontier-commits`** ([skills/frontier-commits/](skills/frontier-commits/)), reads the
 frontier AI labs' **public GitHub activity** — new repos, releases, archivals, staleness, star
 velocity — into a speculation-forward **weekly** episode (Mondays), shipped through the same
-`render.py`. A daily launchd collector (pure Python + the `gh` CLI, no Claude credential)
+`render.py` in its **web-only mode**: this show is RSS-first, so the R2/RSS publish is the ship
+and `save-to-spotify` is never involved. A daily launchd collector (pure Python + the `gh` CLI, no Claude credential)
 accumulates per-org snapshots; a deterministic detector diffs them into typed, mention-once
 story candidates; the weekly run researches each story in an isolated context and writes the
 segments. The same snapshot data feeds `labs.json`, which powers a `/labs/` dashboard on
@@ -172,7 +173,9 @@ failure modes this pipeline has actually hit in production:
 - **Pre-flight** — ffmpeg/ffprobe, encoder profile, house voice, TTS module,
   `show_id`, R2 credentials, Spotify auth, and **episode capacity** (pre-pruning a
   slot at the 60-episode cap so a 429 never costs a wasted render). A failure
-  aborts before a single TTS segment. `--skip-preflight` bypasses it.
+  aborts before a single TTS segment. `--skip-preflight` bypasses it. A web-only
+  manifest (`"ship_mode": "web"`) drops the three Spotify checks and instead
+  *requires* R2, since there the publish is the ship.
 - **Artifact gate** — after render, before upload: local conformance checks plus a
   refusal to re-upload bytes Spotify already rejected.
 - **Durable state** — a deterministic per-date workdir plus `state.json`, so an

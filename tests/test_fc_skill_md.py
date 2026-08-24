@@ -28,6 +28,18 @@ def _skill_text():
     return (FC_DIR / "SKILL.md").read_text()
 
 
+def _section(heading: str) -> str:
+    """The text of one `## ...` section, up to the next same-level heading.
+
+    Section-scoped rather than whole-file: "this section must not mention Spotify"
+    is only meaningful if a mention elsewhere in the document can't satisfy it.
+    """
+    text = _skill_text()
+    start = text.index(heading)
+    end = text.find("\n## ", start + len(heading))
+    return text[start : end if end != -1 else len(text)]
+
+
 def _first_table_after(marker: str) -> list[list[str]]:
     """Cell-parse the first markdown table after the line containing `marker`.
 
@@ -93,7 +105,10 @@ def test_skill_md_setup_documents_every_default_config_key():
     assert m, "SKILL.md lost its Setup section"
     setup = m.group(1)
     documented = set(re.findall(r'^\s{1,3}"(\w+)"\s*:', setup, re.M))
-    expected = set(fc_common.DEFAULT_CONFIG) | {"show_id", "show_name", "host_name"}
+    # Every key is a DEFAULT_CONFIG key now. `show_id` used to be the one extra —
+    # required, no default — and left with #155: an RSS-first show has no Spotify
+    # show to upload to, so documenting one invites an operator to create it.
+    expected = set(fc_common.DEFAULT_CONFIG)
     missing = expected - documented
     assert not missing, f"Setup config example is missing config keys: {sorted(missing)}"
     phantom = documented - expected
@@ -111,10 +126,50 @@ def test_fc_snapshot_cli_exists_and_matches_the_documented_contract():
 
 def test_render_py_honors_the_documented_manifest_keys():
     render_src = RENDER_PY.read_text()
-    for key in ("r2_manifest_name", "r2_key_prefix"):
+    for key in ("r2_manifest_name", "r2_key_prefix", "ship_mode"):
         assert key in render_src, (
             f"SKILL.md's manifest promises {key} but render.py never mentions it"
         )
+
+
+# --- web-only shipping (#155) ----------------------------------------------
+#
+# Frontier Commits is RSS-first: the R2/RSS publish IS the ship and the show's
+# save-to-spotify show is deprecated. SKILL.md is the production path — the
+# scheduled weekly run is a Claude invocation following it — so a mode that
+# exists only in render.py never reaches a real episode.
+
+
+def test_skill_md_pins_the_web_only_ship_mode():
+    assert '"ship_mode": "web"' in _skill_text(), (
+        "SKILL.md's manifest example must set ship_mode=web; without it render.py "
+        "defaults to a Spotify upload against the deprecated show"
+    )
+
+
+def test_render_py_defaults_to_spotify_so_the_daily_show_is_unaffected():
+    import render
+
+    assert render.resolve_ship_mode({}) == render.SHIP_MODE_SPOTIFY
+    assert render.is_web_only({"ship_mode": "web"}) is True
+
+
+def test_weekly_run_section_ships_to_the_web_and_never_polls_spotify():
+    section = _section("## Unattended weekly run")
+    assert "r2=ok" in section, "the report line must pin r2=ok — the publish is the ship"
+    assert "<mp3_url>" in section, "the SHIPPED line reports the public mp3 URL"
+    for stale in ("READY", "save-to-spotify", "spotify:show:"):
+        assert stale not in section, (
+            f"the weekly run still references {stale!r}; this show does not ship to Spotify"
+        )
+
+
+def test_setup_no_longer_tells_the_operator_to_create_a_spotify_show():
+    setup = _section("## Setup")
+    assert "save-to-spotify --json shows" not in setup, (
+        "Setup still walks the operator through creating a Spotify show, which is "
+        "obsolete for an RSS-first show"
+    )
 
 
 def test_skill_md_relative_paths_resolve():

@@ -650,6 +650,30 @@ def test_cli_detect_prints_contract_and_mark_round_trips(tmp_path, capsys):
     assert marked["date"] == "2026-08-25"  # the file's run_date, not a second clock read
 
 
+def test_mark_records_a_web_only_mp3_url_as_the_episode_identity(tmp_path, capsys):
+    """This show ships web-only (#155), so the identity `mark` records is the
+    published mp3 URL — the CLI must not describe or constrain it to a Spotify URI."""
+    fc_common.atomic_write_json(
+        fc_common.config_path(), {"orgs": [{"name": "acme", "filter": "none"}]}
+    )
+    _write_snap("2026-08-25", {"acme": {"n": _repo(created_at="2026-08-22T00:00:00Z")}})
+    fc_stories.main(["detect", "--date", "2026-08-25"])
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    f = tmp_path / "stories.json"
+    f.write_text(json.dumps(out))
+    url = "https://audio.example/frontier-commits/daily-digest-august-24-2026.mp3"
+
+    assert fc_stories.main(["mark", "--stories", str(f), "--episode-uri", url]) == 0
+
+    assert fc_stories.load_reported()[out["stories"][0]["key"]]["episode_uri"] == url
+    with pytest.raises(SystemExit):
+        fc_stories.main(["mark", "--stories", str(f), "--help"])
+    help_text = capsys.readouterr().out
+    assert "spotify" not in help_text.lower(), (
+        "--episode-uri still advertises a Spotify URI; the weekly run passes an mp3 URL"
+    )
+
+
 def test_cli_detect_rejects_bad_date_and_lookback(tmp_path):
     fc_common.atomic_write_json(
         fc_common.config_path(), {"orgs": [{"name": "acme", "filter": "none"}]}
