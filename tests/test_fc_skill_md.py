@@ -126,7 +126,13 @@ def test_fc_snapshot_cli_exists_and_matches_the_documented_contract():
 
 def test_render_py_honors_the_documented_manifest_keys():
     render_src = RENDER_PY.read_text()
-    for key in ("r2_manifest_name", "r2_key_prefix", "ship_mode", "show_name"):
+    for key in (
+        "r2_manifest_name",
+        "r2_key_prefix",
+        "ship_mode",
+        "show_name",
+        "description_footer_text",
+    ):
         assert key in render_src, (
             f"SKILL.md's manifest promises {key} but render.py never mentions it"
         )
@@ -149,6 +155,18 @@ def test_skill_md_pins_the_shows_own_cover_name():
     assert '"show_name": "Frontier Commits"' in _section("## Manifest"), (
         "SKILL.md's manifest example must set show_name; without it every cover "
         "renders with the daily show's name"
+    )
+
+
+def test_skill_md_pins_the_shows_own_source_credit_footer():
+    # render.py appends the DAILY show's credit line (the OPML feeds, curated in
+    # Don't Hype Me) to every description unless the manifest overrides it
+    # (#152) — factually wrong attribution in this show's public RSS show notes,
+    # whose sources are GitHub orgs linked per chapter. Section-scoped like the
+    # cover-name pin: the Manifest example is what the weekly run copies.
+    assert '"description_footer_text"' in _section("## Manifest"), (
+        "SKILL.md's manifest example must set description_footer_text; without it "
+        "every episode's public show notes credit the daily show's sources"
     )
 
 

@@ -2353,3 +2353,210 @@ def test_description_footer_escaping_round_trips(tmp_path, monkeypatch):
     stripped = re.sub(r"<[^>]+>", "", footer_text)
     assert "'" not in stripped and '"' not in stripped
     assert "Don't Hype Me" in html.unescape(stripped)
+
+
+# --- per-show description footer (#152) -------------------------------------
+#
+# DESCRIPTION_FOOTER credits the DAILY show's sources (the OPML feeds, curated
+# in Don't Hype Me). Appended to every show's description it is factually wrong
+# attribution — Frontier Commits' sources are GitHub orgs, linked per chapter —
+# and lands verbatim in that show's public RSS show notes. A manifest may
+# therefore replace it with `description_footer_text`: PLAIN TEXT by contract,
+# escaped and wrapped in one <p> by render.py itself (never an operator-authored
+# HTML fragment). Absent → the daily footer, byte-identical.
+
+FRONTIER_FOOTER_TEXT = (
+    "Sources: the labs' public GitHub — every story links its repo above. "
+    "More at cortech.online/frontier-commits."
+)
+
+
+def test_resolve_description_footer_defaults_to_the_daily_credit():
+    # Absent and explicit-null both mean "the daily footer", byte-identical.
+    assert render.resolve_description_footer({}) == render.DESCRIPTION_FOOTER
+    assert (
+        render.resolve_description_footer({"description_footer_text": None})
+        == render.DESCRIPTION_FOOTER
+    )
+
+
+def test_resolve_description_footer_builds_an_escaped_paragraph():
+    footer = render.resolve_description_footer(
+        {"description_footer_text": 'Rick & Morty\'s "sources" list'}
+    )
+    assert footer == "<p>Rick &amp; Morty&#x27;s &quot;sources&quot; list</p>"
+
+
+def test_custom_footer_replaces_the_daily_credit(tmp_path, monkeypatch):
+    segments = [
+        {"title": "First", "source_url": "https://example.com/a"},
+        {"title": "Second", "source_url": "https://example.com/b"},
+    ]
+    paths = _paths(tmp_path, 2)
+    episode = tmp_path / "episode.mp3"
+    durations = {p: 40_000 for p in paths}
+    durations[episode] = 95_000
+    _patch_durations(monkeypatch, durations)
+
+    footer = render.resolve_description_footer({"description_footer_text": FRONTIER_FOOTER_TEXT})
+    _, description = render.build_timeline_and_description(
+        segments,
+        paths,
+        silences_ms=[800, 0],
+        summary="hook",
+        episode_mp3=episode,
+        footer_html=footer,
+    )
+
+    # The custom credit is genuinely LAST, appears once, and the daily credit
+    # is gone entirely — no OPML link, no Don't Hype Me.
+    assert description.endswith(footer)
+    assert description.count(footer) == 1
+    assert "sources.opml" not in description
+    assert "donthype.me" not in description
+    blocks = _blocks(description)
+    assert not CHAPTER_LINE.match(blocks[-1])
+    assert _lead_summary(description) == ["hook"]
+
+
+def test_default_footer_path_is_byte_identical_when_the_key_is_absent(tmp_path, monkeypatch):
+    segments = [{"title": "First", "source_url": "https://example.com/a"}]
+    paths = _paths(tmp_path, 1)
+    episode = tmp_path / "episode.mp3"
+    durations = {paths[0]: 40_000, episode: 45_000}
+    _patch_durations(monkeypatch, durations)
+
+    build = lambda **kw: render.build_timeline_and_description(  # noqa: E731
+        segments, paths, silences_ms=[0], summary="hook", episode_mp3=episode, **kw
+    )
+    _, resolved = build(footer_html=render.resolve_description_footer({}))
+    _, legacy = build()  # pre-#152 call shape
+
+    assert resolved == legacy
+    assert resolved.endswith(render.DESCRIPTION_FOOTER)
+
+
+def test_custom_footer_survives_cap_truncation(tmp_path, monkeypatch):
+    # The cap-trimmer must pin THIS episode's footer last — not the daily
+    # constant — when dropping trailing chapter blocks.
+    n = 80
+    fat = "X" * 200
+    segments = [{"title": f"{fat}-{i}", "source_url": f"https://example.com/{i}"} for i in range(n)]
+    paths = _paths(tmp_path, n)
+    episode = tmp_path / "episode.mp3"
+    durations = {p: 40_000 for p in paths}
+    durations[episode] = n * 41_000
+    _patch_durations(monkeypatch, durations)
+
+    footer = render.resolve_description_footer({"description_footer_text": FRONTIER_FOOTER_TEXT})
+    _, description = render.build_timeline_and_description(
+        segments,
+        paths,
+        silences_ms=[800] * (n - 1) + [0],
+        summary="hook",
+        episode_mp3=episode,
+        footer_html=footer,
+    )
+
+    assert len(description) <= render.SPOTIFY_SUMMARY_MAX_CHARS
+    assert description.startswith("<p>hook</p>")
+    assert description.endswith(footer)
+    assert "donthype.me" not in description
+
+
+def _footer_seen_by_description_builder(monkeypatch, tmp_path, manifest_extra: dict):
+    """Dry-run main() over a minimal manifest and return the footer_html that
+    build_timeline_and_description received (None when it wasn't passed one)."""
+    manifest = {
+        "title": "An episode",
+        "summary": "hook",
+        "segments": [{"text": "story", "source_url": "https://example.com/a"}],
+        **manifest_extra,
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+
+    seen: list = []
+
+    def fake_build(*args, **kwargs):
+        seen.append(kwargs.get("footer_html"))
+        return ({"items": [{"chapter": {"title": "A", "start_time_ms": 0}}]}, "<p>d</p>")
+
+    monkeypatch.setattr(render, "load_config", lambda: {"show_id": "spotify:show:1"})
+    monkeypatch.setattr(render, "render_segments", lambda *a, **k: [tmp_path / "seg_01.mp3"])
+    monkeypatch.setattr(render, "plan_silences", lambda paths: [0])
+    monkeypatch.setattr(
+        render, "concat_and_normalize", lambda *a, **k: (tmp_path / "episode.mp3", None)
+    )
+    monkeypatch.setattr(render, "build_cover", lambda *a, **k: None)
+    monkeypatch.setattr(render, "build_timeline_and_description", fake_build)
+    monkeypatch.setattr(render, "mp3_duration_ms", lambda p: 60_000)
+    monkeypatch.setattr(render, "preflight", lambda *a, **k: (True, []))
+    monkeypatch.setattr(render, "verify_artifact", lambda *a, **k: [])
+    monkeypatch.setattr(render, "probe_audio_profile", lambda p: {})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "render.py",
+            "--manifest",
+            str(manifest_path),
+            "--workdir",
+            str(tmp_path / "wd"),
+            "--dry-run",
+        ],
+    )
+
+    assert render.main() == 0
+    assert len(seen) == 1
+    return seen[0]
+
+
+def test_manifest_footer_text_reaches_the_description(monkeypatch, tmp_path):
+    assert _footer_seen_by_description_builder(
+        monkeypatch, tmp_path, {"description_footer_text": FRONTIER_FOOTER_TEXT}
+    ) == render.resolve_description_footer({"description_footer_text": FRONTIER_FOOTER_TEXT})
+
+
+def test_description_still_gets_the_daily_footer_when_the_manifest_omits_it(monkeypatch, tmp_path):
+    assert (
+        _footer_seen_by_description_builder(monkeypatch, tmp_path, {}) == render.DESCRIPTION_FOOTER
+    )
+
+
+def test_validate_manifest_accepts_description_footer_text():
+    m = _valid_manifest()
+    m["description_footer_text"] = FRONTIER_FOOTER_TEXT
+    render.validate_manifest(m)  # no raise
+
+
+def test_validate_manifest_description_footer_text_allows_null():
+    m = _valid_manifest()
+    m["description_footer_text"] = None  # explicit null behaves like absent
+    render.validate_manifest(m)  # no raise
+
+
+@pytest.mark.parametrize("bad", [7, "", "   ", ["Sources"]])
+def test_validate_manifest_rejects_non_string_or_blank_footer_text(bad):
+    # A blank value is a typo, not a request for the default (same posture as
+    # show_name): falling through would stamp the daily show's credit on a show
+    # this key exists to distinguish.
+    m = _valid_manifest()
+    m["description_footer_text"] = bad
+    with pytest.raises(SystemExit):
+        render.validate_manifest(m)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["<p>Sources</p>", 'Sources: <a href="https://x">x</a>', "a <script> b", "x > y"],
+)
+def test_validate_manifest_rejects_markup_in_footer_text(bad, capsys):
+    # Plain text by contract: the value is html.escape()d into the footer <p>,
+    # so markup here would reach the public show notes as literal angle
+    # brackets. Die early with a message that says so.
+    m = _valid_manifest()
+    m["description_footer_text"] = bad
+    with pytest.raises(SystemExit):
+        render.validate_manifest(m)
+    assert "plain text" in capsys.readouterr().err

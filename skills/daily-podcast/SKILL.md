@@ -57,6 +57,7 @@ Already-written segments. Skip straight to rendering.
   "date": "2026-05-22",                    // optional ISO date; stamps the cover AND keys the web slug/guid. Omit to use today (re-renders of a dated manifest reproduce its date)
   "voice": "house",                        // default; or "random" / preset name; set voice_instruct for custom VoiceDesign
   "ship_mode": "spotify",                  // optional; "spotify" (default) or "web". "web" skips save-to-spotify entirely and makes the R2 publish the ship — see "Web-only shipping"
+  "description_footer_text": "Sources: …", // optional; replaces the standard credit footer on the episode description (see "Episode description footer"). PLAIN TEXT: render.py escapes it into one <p> and rejects markup. Set it when rendering a SECOND show — the default footer credits the daily show's feeds
   "segments": [
     {"text": "Intro segment...",            "source_url": null},
     {"text": "Item 1 segment, 600+ chars.", "source_url": "https://...", "source_title": "..."},
@@ -214,6 +215,17 @@ Two things about it are load-bearing:
 This is a show-notes line only. Nothing in the audio points at it: the sign-off
 rule above still stands, so never say "check the show notes" or read the source
 list aloud.
+
+The credit is per-show (#152): a manifest may set `"description_footer_text"`
+to replace it — the default names the daily show's feeds, which is wrong
+attribution on any other show rendered through `render.py`. The value is PLAIN
+TEXT by contract: `render.py` escapes it and builds the single `<p>` itself,
+and the manifest validator rejects any `<`/`>` (an operator-authored HTML
+fragment would otherwise land verbatim in public RSS show notes). Links are
+not supported in a custom footer — per-story links live on the chapter lines.
+Absent, the default footer above is used, byte-identical. Everything else
+about the footer — placement after the chapters, pinned last by the
+cap-trimmer — applies to a custom footer unchanged.
 
 ## Episode title
 
