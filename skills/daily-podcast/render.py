@@ -1260,6 +1260,295 @@ def concat_and_normalize(
 
 # --- cover -----------------------------------------------------------------
 
+COVER_SIZE = 1400
+
+# The house cover (#163): an ASCII sun over a horizon rule. There is deliberately
+# no second built-in design and no style selector — a show that wants its own art
+# supplies it with the manifest's `cover_image` (#164), which is strictly better
+# than a template it did not design. That key is what retired the old gradient
+# renderer: Frontier Commits was its only user.
+# Brand tokens, lifted from cortech.online's src/styles/global.css. RGB tuples
+# because that is what Pillow takes; the hex is in the comment so the two files
+# can be diffed by eye.
+COVER_GROUND = (16, 20, 29)  # #10141d — the ground both shows' covers sit on
+COVER_AMBER = (246, 195, 74)  # #f6c34a — --color-amber
+COVER_PAPER = (242, 239, 230)  # #f2efe6 — --color-text
+COVER_MUTED = (123, 126, 138)  # #7b7e8a — --color-muted
+COVER_FOOTER_INK = (76, 82, 97)  # one step below muted; the domain is a whisper
+# The sun is drawn at 92% over the ground rather than composited through an alpha
+# layer — one flattened constant is cheaper and exact.
+COVER_SUN_INK = (228, 181, 70)
+COVER_FOOTER = "cortech.online"  # publisher of every show this renderer serves
+
+# The ASCII sun is PINNED ART, not a table regenerated at import time: this is the
+# grid the design was approved at, and cortech.online's show-art SVG draws the same
+# one, which is what makes the show cover and the episode cover the same picture.
+# tests/test_cover.py re-derives it from the radial model below and fails if either
+# side drifts — the same posture as orchestrate.SHAPE_ORDERS, and for the same
+# reason: a table you can verify beats arithmetic you have to trust.
+ASCII_SUN_COLS = 19
+ASCII_SUN_ROWS = 16
+ASCII_SUN_CELL_W = 18.4  # px between glyph origins at COVER_SIZE
+ASCII_SUN_CELL_H = 21.6
+ASCII_SUN_RADIUS = 169.6  # disc radius in the same px space
+ASCII_SUN_RAMP = "@#*+=-"  # densest at the core, faintest at the rim
+ASCII_SUN_BANDS = (0.30, 0.48, 0.64, 0.78, 0.90, 1.02)  # upper bound per ramp step
+ASCII_SUN = (
+    "      -------",
+    "    --=======--",
+    "   -==+++++++==-",
+    "  -==++*****++==-",
+    " -==+***###***+==-",
+    " -=+**#######**+=-",
+    "-==+*##@@@@@##*+==-",
+    "-=++*##@@@@@##*++=-",
+    "-=++*##@@@@@##*++=-",
+    "-==+*##@@@@@##*+==-",
+    " -=+**#######**+=-",
+    " -==+***###***+==-",
+    "  -==++*****++==-",
+    "   -==+++++++==-",
+    "    --=======--",
+    "      -------",
+)
+
+# Layout, in COVER_SIZE px. These are the design's 640px board scaled by 2.1875.
+COVER_MARGIN = 122
+COVER_SUN_X = 923
+COVER_SUN_Y = 74
+COVER_LOCKUP_Y = 254
+COVER_LOCKUP_SIZE = 37
+COVER_LOCKUP_TRACKING = 8
+COVER_LOCKUP_MIN_SIZE = 19
+# The lockup shares its band with the sun, so its width runs to the sun's left
+# edge, NOT to the right margin. Measuring against the full canvas width is what
+# a first pass did, and a long show name ran straight under the disc.
+COVER_LOCKUP_MAX_W = COVER_SUN_X - COVER_MARGIN - 40
+COVER_DATE_Y = 328
+COVER_DATE_SIZE = 35
+COVER_RULE_Y = 438
+COVER_RULE_H = 11
+COVER_HEADLINE_SIZE = 96
+COVER_HEADLINE_MIN_SIZE = 64
+COVER_HEADLINE_LEADING = 1.16
+COVER_HEADLINE_BOTTOM = 1159  # the headline grows UP from here, so a long title
+COVER_HEADLINE_MAX_LINES = 4  # never runs down into the footer
+COVER_FOOTER_SIZE = 33
+COVER_FOOTER_Y = 1275
+
+# (path, face index) pairs, best first. The env overrides come first so a host with
+# the real brand faces installed can use them without a code change; everything
+# after is "what is actually on the machine": macOS ships Helvetica and Menlo, and
+# the Linux entries keep cover rendering possible off a Mac (only TTS is
+# Apple-Silicon-locked). Face INDEX matters for .ttc collections — Helvetica.ttc
+# index 1 is Bold — but the index is only a hint: _cover_face verifies the style
+# name it actually loaded, so a future macOS reordering its faces degrades to a
+# wrong-weight cover rather than being silently wrong about which font it used.
+#
+# Bold and regular are separate lists rather than one list plus a style request,
+# because the index IS the weight inside a .ttc: asking Helvetica.ttc for
+# "Regular" is useless if the entry already pinned index 1. The date and the
+# footer are set regular in the design, and a first pass that shared one list
+# rendered both bold.
+COVER_SANS_BOLD_FACES = (
+    (os.environ.get("DAILY_PODCAST_SANS_BOLD_FONT"), 0),
+    ("/System/Library/Fonts/Helvetica.ttc", 1),
+    ("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 0),
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 0),
+    ("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", 0),
+)
+COVER_SANS_TEXT_FACES = (
+    (os.environ.get("DAILY_PODCAST_SANS_FONT"), 0),
+    ("/System/Library/Fonts/Helvetica.ttc", 0),
+    ("/System/Library/Fonts/Supplemental/Arial.ttf", 0),
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
+    ("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", 0),
+)
+COVER_MONO_FACES = (
+    (os.environ.get("DAILY_PODCAST_MONO_FONT"), 0),
+    ("/System/Library/Fonts/Menlo.ttc", 0),
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 0),
+    ("/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf", 0),
+)
+
+
+def cover_headline(title: str, date_str: str) -> str:
+    """The episode title with its ' - <date>' suffix (#139) removed.
+
+    The cover shows the date on its own line, so repeating it inside the headline
+    would spend the largest type on the canvas saying nothing. Only an exact
+    trailing match is stripped — a title with a dash in the middle keeps it."""
+    suffix = f" - {date_str}"
+    if date_str and title.endswith(suffix):
+        return title[: -len(suffix)]
+    return title
+
+
+def _cover_face(image_font, faces, size: int, want_style: str = ""):
+    """First face in `faces` that loads, preferring one whose style name contains
+    `want_style` ("Bold"). Falls back to the first that loaded at all, so a host
+    without the preferred weight still renders a cover instead of dying — this is
+    art, not an invariant, and a slightly-wrong weight beats a failed run."""
+    fallback = None
+    for path, index in faces:
+        if not path or not Path(path).exists():
+            continue
+        try:
+            font = image_font.truetype(path, size, index=index)
+        except Exception:
+            continue
+        if fallback is None:
+            fallback = font
+        if not want_style:
+            return font
+        try:
+            style = (font.getname() or ("", ""))[1] or ""
+        except Exception:
+            style = ""
+        if want_style.lower() in style.lower():
+            return font
+    if fallback is not None:
+        return fallback
+    # Last resort: the general-purpose chain, which carries the documented
+    # DAILY_PODCAST_FONT override and die()s with an actionable message if even that
+    # finds nothing. A cover in the wrong face still ships; no cover fails the run.
+    return image_font.truetype(resolve_font(), size)
+
+
+def _tracked_width(draw, text: str, font, tracking: float) -> float:
+    """Rendered width of `text` at this tracking — the same sum _draw_tracked walks,
+    so a fit check and the drawing can never disagree."""
+    if not text:
+        return 0.0
+    return sum(draw.textlength(ch, font=font) for ch in text) + tracking * (len(text) - 1)
+
+
+def _draw_tracked(draw, xy, text: str, font, fill, tracking: float) -> None:
+    """Draw `text` with letter-spacing. Pillow has no tracking, so the glyphs are
+    placed one at a time; the wide-set small caps in this design depend on it."""
+    x, y = xy
+    for ch in text:
+        draw.text((x, y), ch, font=font, fill=fill)
+        x += draw.textlength(ch, font=font) + tracking
+
+
+def _cover_wrap(draw, text: str, font, max_width: int) -> list[str]:
+    """Greedy word-wrap to a pixel width."""
+    words, lines, cur = text.split(), [], ""
+    for w in words:
+        trial = (cur + " " + w).strip()
+        if draw.textlength(trial, font=font) <= max_width or not cur:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines or [text]
+
+
+def _fit_lockup(draw, image_font, text: str):
+    """Shrink, then truncate, so the show-name lockup always fits beside the sun.
+
+    A show name is arbitrary user config — the daily show's is still four words
+    (#133) — and art that overflows ships to a public feed unnoticed. Shrinking
+    alone is not enough: below COVER_LOCKUP_MIN_SIZE the small caps stop reading,
+    so a name too long even at the floor loses its tail to an ellipsis rather than
+    running under the disc."""
+    size = COVER_LOCKUP_SIZE
+    font = _cover_face(image_font, COVER_SANS_BOLD_FACES, size, "Bold")
+    while (
+        _tracked_width(draw, text, font, COVER_LOCKUP_TRACKING) > COVER_LOCKUP_MAX_W
+        and size > COVER_LOCKUP_MIN_SIZE
+    ):
+        size -= 2
+        font = _cover_face(image_font, COVER_SANS_BOLD_FACES, size, "Bold")
+    while (
+        len(text) > 1
+        and _tracked_width(draw, text, font, COVER_LOCKUP_TRACKING) > COVER_LOCKUP_MAX_W
+    ):
+        text = text[:-2].rstrip() + "\u2026"
+    return text, font
+
+
+def build_cover(out_path: Path, show_name: str, date_str: str, title_hint: str) -> None:
+    """The house cover: an ASCII sun over a full-bleed horizon rule, with the
+    episode's topics set large.
+
+    The hierarchy is the whole point of the redesign. The old cover gave the show
+    name 130px and the actual stories 44px along the bottom; a player already shows
+    the show name, so here the topics take the size and the lockup goes small."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    img = Image.new("RGB", (COVER_SIZE, COVER_SIZE), COVER_GROUND)
+    d = ImageDraw.Draw(img)
+
+    mono = _cover_face(ImageFont, COVER_MONO_FACES, 27)
+    date_font = _cover_face(ImageFont, COVER_SANS_TEXT_FACES, COVER_DATE_SIZE)
+    footer_font = _cover_face(ImageFont, COVER_SANS_TEXT_FACES, COVER_FOOTER_SIZE)
+
+    # The sun: every glyph placed on its own cell, so the disc's geometry comes from
+    # this table and never from the font's advance width. That is what lets any
+    # monospace render it — Menlo, DejaVu Sans Mono, JetBrains Mono — identically.
+    for row, line in enumerate(ASCII_SUN):
+        y = COVER_SUN_Y + row * ASCII_SUN_CELL_H
+        for col, glyph in enumerate(line):
+            if glyph == " ":
+                continue
+            d.text(
+                (COVER_SUN_X + col * ASCII_SUN_CELL_W, y),
+                glyph,
+                font=mono,
+                fill=COVER_SUN_INK,
+            )
+
+    lockup, lockup_font = _fit_lockup(d, ImageFont, show_name.upper())
+
+    _draw_tracked(
+        d,
+        (COVER_MARGIN, COVER_LOCKUP_Y),
+        lockup,
+        lockup_font,
+        COVER_AMBER,
+        COVER_LOCKUP_TRACKING,
+    )
+    d.text((COVER_MARGIN, COVER_DATE_Y), date_str, font=date_font, fill=COVER_MUTED)
+
+    # The horizon: full bleed, edge to edge. Inset it and the whole composition
+    # turns into a box.
+    d.rectangle(
+        [(0, COVER_RULE_Y), (COVER_SIZE, COVER_RULE_Y + COVER_RULE_H - 1)],
+        fill=COVER_AMBER,
+    )
+
+    headline = cover_headline(title_hint, date_str)
+    max_width = COVER_SIZE - 2 * COVER_MARGIN
+    size = COVER_HEADLINE_SIZE
+    headline_font = _cover_face(ImageFont, COVER_SANS_BOLD_FACES, size, "Bold")
+    lines = _cover_wrap(d, headline, headline_font, max_width)
+    while len(lines) > COVER_HEADLINE_MAX_LINES and size > COVER_HEADLINE_MIN_SIZE:
+        size -= 6
+        headline_font = _cover_face(ImageFont, COVER_SANS_BOLD_FACES, size, "Bold")
+        lines = _cover_wrap(d, headline, headline_font, max_width)
+    lines = lines[:COVER_HEADLINE_MAX_LINES]
+
+    # Bottom-anchored: a longer title grows up into the empty middle instead of down
+    # into the footer.
+    leading = int(size * COVER_HEADLINE_LEADING)
+    y = COVER_HEADLINE_BOTTOM - leading * len(lines)
+    for line in lines:
+        d.text((COVER_MARGIN, y), line, font=headline_font, fill=COVER_PAPER)
+        y += leading
+
+    d.text(
+        (COVER_MARGIN, COVER_FOOTER_Y),
+        COVER_FOOTER,
+        font=footer_font,
+        fill=COVER_FOOTER_INK,
+    )
+
+    img.save(out_path, "JPEG", quality=88, optimize=True)
+
 
 def resolve_font() -> str:
     """
@@ -1335,92 +1624,6 @@ def apply_cover_image(src: Path, out_path: Path) -> None:
             im.convert("RGB").save(out_path, "JPEG", quality=88, optimize=True)
     if already_jpeg:
         shutil.copyfile(src, out_path)
-
-
-def build_cover(out_path: Path, show_name: str, date_str: str, title_hint: str) -> None:
-    """Pillow cover: gradient + show name + date + short subtitle."""
-    from PIL import Image, ImageDraw, ImageFont
-
-    W = H = 1400
-    top = (28, 24, 50)
-    bot = (220, 110, 60)
-
-    bg = Image.new("RGB", (W, H), top)
-    d = ImageDraw.Draw(bg)
-    for y in range(H):
-        t = y / (H - 1)
-        d.line(
-            [(0, y), (W, y)],
-            fill=(
-                int(top[0] + (bot[0] - top[0]) * t),
-                int(top[1] + (bot[1] - top[1]) * t),
-                int(top[2] + (bot[2] - top[2]) * t),
-            ),
-        )
-
-    # Bottom darkening for legibility
-    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    od = ImageDraw.Draw(overlay)
-    for y in range(750, H):
-        a = int((y - 750) / (H - 750) * 190)
-        od.line([(0, y), (W, y)], fill=(0, 0, 0, a))
-    bg = Image.alpha_composite(bg.convert("RGBA"), overlay).convert("RGB")
-
-    d = ImageDraw.Draw(bg)
-    font_path = resolve_font()
-    title_font = ImageFont.truetype(font_path, 130)
-    sub_font = ImageFont.truetype(font_path, 54)
-    date_font = ImageFont.truetype(font_path, 44)
-    small_font = ImageFont.truetype(font_path, 36)
-
-    def shadowed(xy, text, font, fill=(255, 255, 255)):
-        x, y = xy
-        d.text((x + 3, y + 3), text, font=font, fill=(0, 0, 0))
-        d.text((x, y), text, font=font, fill=fill)
-
-    def wrap_to_lines(text: str, font, max_width: int) -> list[str]:
-        """Greedy word-wrap so each line's pixel width <= max_width."""
-        words = text.split()
-        lines, cur = [], ""
-        for w in words:
-            trial = (cur + " " + w).strip()
-            if d.textlength(trial, font=font) <= max_width:
-                cur = trial
-            else:
-                if cur:
-                    lines.append(cur)
-                cur = w
-        if cur:
-            lines.append(cur)
-        return lines or [text]
-
-    MARGIN = 60
-    MAX_TITLE_WIDTH = 1400 - 2 * MARGIN
-    title_lines = wrap_to_lines(show_name, title_font, MAX_TITLE_WIDTH)
-    # If wrapping produced too many lines, downsize the title font
-    while len(title_lines) > 2 and title_font.size > 70:
-        title_font = ImageFont.truetype(font_path, title_font.size - 10)
-        title_lines = wrap_to_lines(show_name, title_font, MAX_TITLE_WIDTH)
-
-    # Top label (also truncate if needed)
-    shadowed((MARGIN, 70), show_name.upper(), small_font, fill=(255, 220, 180))
-
-    # Big title — anchored to bottom block, one line per element
-    line_h = title_font.size + 10
-    title_block_h = line_h * len(title_lines)
-    title_y = 1400 - 400 - title_block_h  # leave room for date + hint
-    for i, line in enumerate(title_lines):
-        shadowed((MARGIN, title_y + i * line_h), line, title_font)
-
-    # Date subtitle directly under title
-    date_y = title_y + title_block_h + 10
-    shadowed((MARGIN, date_y), date_str, sub_font, fill=(240, 220, 200))
-
-    # Short title hint (truncated, only if it fits)
-    hint = title_hint[:48] + ("..." if len(title_hint) > 48 else "")
-    shadowed((MARGIN, date_y + 80), hint, date_font, fill=(220, 200, 180))
-
-    bg.save(out_path, "JPEG", quality=88, optimize=True)
 
 
 # --- timeline + description ------------------------------------------------
