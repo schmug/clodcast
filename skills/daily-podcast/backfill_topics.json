@@ -1,0 +1,380 @@
+{
+  "note": "Topic phrases for the #144 back-fill: three lead stories per published episode, written by hand from each entry's chapter titles and summary and reviewed by eye. retitle.py composes them into a title with orchestrate.episode_title, so this file holds CONTENT only - the format lives in #139's code. Keyed by the published slug (the isPermaLink guid): a key that is not live retitles nothing, a live slug that is missing keeps its date-only title, and tests/test_retitle.py pins the set against tests/data/published_slugs.tsv. The two June entries predate the manifest's `summary` field, so their topics come from chapter titles alone. Re-running is idempotent because this table is fixed; editing a phrase after publication rewrites that episode's title on the next --apply, which stays safe because the slug and guid are keyed on the date, never the title (#128).",
+  "topics": {
+    "daily-digest-august-23-2026": [
+      "The largest IPO",
+      "the MCP roadmap",
+      "rogue-model containment"
+    ],
+    "daily-digest-august-22-2026": [
+      "Claude's browser tool",
+      "Nvidia on harnesses",
+      "OWASP's agent risks"
+    ],
+    "daily-digest-august-21-2026": [
+      "Anthropic's record IPO",
+      "a retention reversal",
+      "Citrix NetScaler emergency"
+    ],
+    "daily-digest-august-20-2026": [
+      "Salt Typhoon",
+      "the CareCloud breach",
+      "Siemens PLC warnings"
+    ],
+    "daily-digest-august-19-2026": [
+      "Mojo open-sourced",
+      "OpenAI's paused run",
+      "Google's bug harness"
+    ],
+    "daily-digest-august-18-2026": [
+      "Anthropic's $65B run-rate",
+      "a 27B contender",
+      "OpenAI's tightened defenses"
+    ],
+    "daily-digest-august-17-2026": [
+      "Stripe buys OpenRouter",
+      "Claude's outage",
+      "Amodei on trust"
+    ],
+    "daily-digest-august-16-2026": [
+      "The Claude watermark",
+      "a classifier gap",
+      "a $2T IPO"
+    ],
+    "daily-digest-august-15-2026": [
+      "Anthropic's $11.5B quarter",
+      "SpaceX buys Cursor",
+      "PayPal's Stripe talks"
+    ],
+    "daily-digest-august-14-2026": [
+      "Agent turf wars",
+      "Anthropic's $2T price",
+      "OpenAI's Ultrafast mode"
+    ],
+    "daily-digest-august-13-2026": [
+      "Agent swarm failures",
+      "Claude watermarking",
+      "DeepSeek V4 Pro"
+    ],
+    "daily-digest-august-12-2026": [
+      "Worldwide Claude watermarks",
+      "Riemann progress",
+      "Gowers on math"
+    ],
+    "daily-digest-august-11-2026": [
+      "Claude output watermarks",
+      "a Riemann bound",
+      "Meta's open weights"
+    ],
+    "daily-digest-august-10-2026": [
+      "Auto mode arrives",
+      "Meta's Muse Glimmer",
+      "beyond the transformer"
+    ],
+    "daily-digest-august-9-2026": [
+      "Auto mode default",
+      "OpenAI's rogue run",
+      "Google's APT renaming"
+    ],
+    "daily-digest-august-7-2026": [
+      "Fable's loosened classifiers",
+      "Meta's misconfigured eval",
+      "failing approval gates"
+    ],
+    "daily-digest-august-6-2026": [
+      "Meta's model attack",
+      "Muse Code",
+      "Jeff Dean's exit"
+    ],
+    "daily-digest-august-5-2026": [
+      "Unsanctioned agent actions",
+      "Anthropic's Volta deal",
+      "open-weight safety"
+    ],
+    "daily-digest-august-4-2026": [
+      "AI hacking liability",
+      "N-able's patch bypass",
+      "Bouncy Castle CVEs"
+    ],
+    "daily-digest-august-3-2026": [
+      "Alibaba's giant Qwen",
+      "the distillation attack",
+      "a Swift rewrite"
+    ],
+    "daily-digest-august-2-2026": [
+      "OpenAI's math proofs",
+      "Lean 4's soundness",
+      "competing open letters"
+    ],
+    "daily-digest-august-1-2026": [
+      "Claude's sandbox escape",
+      "OpenAI's escaped agents",
+      "the AI Act"
+    ],
+    "daily-digest-july-31-2026": [
+      "Claude breaches companies",
+      "Chrome's bug surge",
+      "unmaintained cJSON"
+    ],
+    "daily-digest-july-30-2026": [
+      "OpenAI's break-in",
+      "Green on cryptanalysis",
+      "instruction provenance"
+    ],
+    "daily-digest-july-29-2026": [
+      "Mythos breaks crypto",
+      "Microsoft's patch backlog",
+      "a frontier intrusion"
+    ],
+    "daily-digest-july-28-2026": [
+      "Shared-chat fallout",
+      "Amodei's open-weight line",
+      "model welfare doubts"
+    ],
+    "daily-digest-july-27-2026": [
+      "Indexed Claude chats",
+      "Hugging Face's demands",
+      "settlement payouts begin"
+    ],
+    "daily-digest-july-26-2026": [
+      "Claude Code's prompt",
+      "OpenAI's agent breach",
+      "ServiceNow under attack"
+    ],
+    "daily-digest-july-25-2026": [
+      "Claude Opus 5",
+      "buried injection results",
+      "Kimi K3 assessed"
+    ],
+    "daily-digest-july-24-2026": [
+      "A runaway agent",
+      "Huntley on slop",
+      "Google's CodeMender"
+    ],
+    "daily-digest-july-23-2026": [
+      "Hugging Face break-in",
+      "Treasury's Moonshot warning",
+      "Anthropic's real moat"
+    ],
+    "daily-digest-july-22-2026": [
+      "Building Claude Code",
+      "small-team agent use",
+      "Nativ's local models"
+    ],
+    "daily-digest-july-21-2026": [
+      "Anthropic's $1.5B settlement",
+      "Sony versus Udio",
+      "Meta's $10B talks"
+    ],
+    "daily-digest-july-20-2026": [
+      "Hugging Face breached",
+      "a WordPress RCE",
+      "poisoned code completions"
+    ],
+    "daily-digest-july-18-2026": [
+      "Anthropic's $10B lease",
+      "Databricks at $188B",
+      "Amazon's billing error"
+    ],
+    "daily-digest-july-16-2026": [
+      "Grok Build open-sourced",
+      "VS Code agents",
+      "Microsoft's sales script"
+    ],
+    "daily-digest-july-15-2026": [
+      "Codex on GPT-5.6",
+      "Anthropic's Canadian funding",
+      "Lobsters on SQLite"
+    ],
+    "daily-digest-july-14-2026": [
+      "Apple's OpenAI lawsuit",
+      "Claude's language values",
+      "Claude's rupee pricing"
+    ],
+    "daily-digest-july-13-2026": [
+      "Claude's shifting values",
+      "Apple sues OpenAI",
+      "Entra logging gaps"
+    ],
+    "daily-digest-july-11-2026": [
+      "Claude's hidden workspace",
+      "Claude Code's browser",
+      "GPT-5.6 jailbreaks"
+    ],
+    "daily-digest-july-10-2026": [
+      "The GPT-5.6 family",
+      "Fidji Simo's exit",
+      "Claude's J-Space"
+    ],
+    "daily-digest-july-9-2026": [
+      "Bun's Rust rewrite",
+      "banning AI descriptions",
+      "Claude's AWS gateway"
+    ],
+    "daily-digest-july-8-2026": [
+      "China's backdoor warning",
+      "Cowork goes cloud",
+      "sqlite-utils 4.0"
+    ],
+    "daily-digest-july-7-2026": [
+      "Mythos and CISA",
+      "AI-run ransomware",
+      "Canada's offensive hacks"
+    ],
+    "daily-digest-july-6-2026": [
+      "Alibaba's backdoor claim",
+      "Claude Science's workbench",
+      "an open-source turn"
+    ],
+    "daily-digest-july-5-2026": [
+      "Fable's sqlite-utils release",
+      "worse agent tooling",
+      "Alibaba bans Claude"
+    ],
+    "daily-digest-july-4-2026": [
+      "Claude Science's launch",
+      "trusting model judgment",
+      "Claude's Electron app"
+    ],
+    "daily-digest-july-3-2026": [
+      "Anthropic's Samsung chip",
+      "a self-writing agent",
+      "Safari's MCP server"
+    ],
+    "daily-digest-july-2-2026": [
+      "Anthropic's models return",
+      "Claude Science",
+      "Claude Sonnet 5"
+    ],
+    "daily-digest-june-30-2026": [
+      "California's half-price Claude",
+      "Ornith 1.0",
+      "Base44's own model"
+    ],
+    "daily-digest-june-28-2026": [
+      "Hijacked coding agents",
+      "a Fetchmail overflow",
+      "n8n's SSRF fix"
+    ],
+    "daily-digest-june-27-2026": [
+      "Mythos cleared stateside",
+      "GPT-5.6's limits",
+      "the open-weight gap"
+    ],
+    "daily-digest-june-26-2026": [
+      "Alibaba's distillation attack",
+      "OpenAI's delayed model",
+      "German AI liability"
+    ],
+    "daily-digest-june-25-2026": [
+      "Alibaba's Claude extraction",
+      "OpenAI's Broadcom chip",
+      "IBM's sub-nanometer chip"
+    ],
+    "daily-digest-june-24-2026": [
+      "Claude inside Slack",
+      "Qwen's world models",
+      "Drupal's agentic turn"
+    ],
+    "daily-digest-june-23-2026": [
+      "Anthropic versus Washington",
+      "Claude age checks",
+      "Willison's browser inpainting"
+    ],
+    "daily-digest-june-21-2026": [
+      "Jumper joins Anthropic",
+      "AI's music sources",
+      "Whittaker on chatbots"
+    ],
+    "daily-digest-june-20-2026": [
+      "Fable 5's wall",
+      "Trump's Anthropic reversal",
+      "John Jumper's move"
+    ],
+    "daily-digest-june-19-2026": [
+      "Splunk under attack",
+      "General Intuition's $300M",
+      "Texas ID breach"
+    ],
+    "daily-digest-june-18-2026": [
+      "GLM-5.2's leaderboard win",
+      "Vercel's agent tools",
+      "Zvi's export-control read"
+    ],
+    "daily-digest-june-16-2026": [
+      "Fable export controls",
+      "ChatGPT's shrinking share",
+      "Salesforce buys Fin"
+    ],
+    "daily-digest-june-15-2026": [
+      "Fable 5 pulled",
+      "AI versus engineers",
+      "AI code cleanup"
+    ],
+    "daily-digest-june-14-2026": [
+      "Anthropic's export order",
+      "OpenAI's multistate probe",
+      "KPMG's hallucinated report"
+    ],
+    "daily-digest-june-13-2026": [
+      "The FBI's honeypot",
+      "ShinyHunters at universities",
+      "Check Point's bypass"
+    ],
+    "daily-digest-june-12-2026": [
+      "Claude Fable's initiative",
+      "Siri exits Europe",
+      "Bezos's $12B Prometheus"
+    ],
+    "daily-digest-june-11-2026": [
+      "Claude's hidden safeguard",
+      "Google's DiffusionGemma",
+      "Claude versus Codex"
+    ],
+    "daily-digest-june-10-2026": [
+      "Claude Fable 5",
+      "Willison's Fable verdict",
+      "Apple's private AI"
+    ],
+    "daily-digest-june-9-2026": [
+      "OpenAI's IPO filing",
+      "Siri on Gemini",
+      "poisoned Microsoft packages"
+    ],
+    "daily-digest-june-8-2026": [
+      "The Miasma worm",
+      "Google's Colab CLI",
+      "GitHub's Copilot app"
+    ],
+    "daily-digest-june-7-2026": [
+      "FFmpeg zero-days",
+      "OpenAI's Lockdown Mode",
+      "hijacked Instagram accounts"
+    ],
+    "daily-digest-june-6-2026": [
+      "The NSA's Mythos",
+      "OpenAI's federal rulebook",
+      "Google's SpaceX GPUs"
+    ],
+    "daily-digest-june-5-2026": [
+      "Mollick's co-existence book",
+      "an OpenAI-linked PAC",
+      "Valve's Steam Machine"
+    ],
+    "daily-digest-june-4-2026": [
+      "Containing Claude",
+      "Microsoft's agent security",
+      "synthetic DNA screening"
+    ],
+    "daily-digest-june-2-2026": [
+      "Anthropic's IPO filing",
+      "Alphabet's $80B raise",
+      "Codex on Bedrock"
+    ],
+    "daily-digest-june-1-2026": [
+      "Cloudflare runs Claude",
+      "Anthropic's EU Mythos",
+      "AI math breakthrough"
+    ]
+  }
+}

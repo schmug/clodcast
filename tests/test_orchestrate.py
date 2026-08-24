@@ -8,8 +8,9 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
-import orchestrate
 import pytest
+
+import orchestrate
 
 NOW = dt.datetime(2026, 6, 4, 12, 0, tzinfo=dt.timezone.utc)
 

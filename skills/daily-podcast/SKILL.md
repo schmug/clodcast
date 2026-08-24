@@ -274,17 +274,42 @@ two Spotify surfaces differ, and only one is mutable:
 | Public show (RSS-ingested from cortech.online) | `title` in the R2 `manifest.json` entry | **Yes** — ordinary data, and guid-neutral since #128 |
 | Private Save-to-Spotify show | `upload --title` | **No.** Episode metadata is immutable after creation, and the show sits at its 60-episode cap, so delete-and-recreate would permanently destroy a published episode |
 
-So a format change reaches **new episodes only**. Pick one and hold it: every episode is
-frozen under whatever format shipped it, and a churn of formats reads worse to a browsing
-listener than one merely-adequate format held consistently. That is also why the title
-format is deliberately **not** part of the date-seeded rotation that varies the cold open,
-the segues and the segment shapes — variety is right for prose, wrong for a name.
+On the private show a format change therefore reaches **new episodes only**. Pick one and
+hold it: every episode there is frozen under whatever format shipped it, and a churn of
+formats reads worse to a browsing listener than one merely-adequate format held
+consistently. That is also why the title format is deliberately **not** part of the
+date-seeded rotation that varies the cold open, the segues and the segment shapes —
+variety is right for prose, wrong for a name.
 
 In `orchestrate.py` the composition is `episode_title()`, and the topic phrases come back
 from the same `claude -p` call that writes the intro, sign-off and summary — from titles
 only, so the one-body-per-request invariant is untouched. `TITLE_TOPIC_COUNT`,
 `TITLE_MAX_CHARS`, the fallback and the worked example above are pinned against this
 section by `test_skill_md_states_the_episode_title_format`.
+
+### Back-filling the published back catalogue
+
+`retitle.py` applies this same format retroactively to the **public** show, by rewriting
+`title` on entries already in the R2 `manifest.json` (#144). It is a maintenance CLI, not
+part of a run — nothing in the daily pipeline calls it.
+
+```bash
+python3 skills/daily-podcast/retitle.py                        # review every title
+python3 skills/daily-podcast/retitle.py --only <slug> --apply  # canary: one episode
+python3 skills/daily-podcast/retitle.py --apply                # the rest
+```
+
+The topic phrases are checked-in data (`backfill_topics.json`, keyed by published slug),
+and the title is composed by `orchestrate.episode_title` — so the back-fill applies this
+format rather than a second one, and a re-run is idempotent. Dry run is the default;
+`--apply` writes the manifest, backs the previous one up under
+`~/.config/daily-podcast/manifest-backups/`, and fires the Pages deploy hook (without
+which the rewrite stays invisible until the next episode ships, because cortech.online
+reads the manifest at **build** time). `assert_title_only` refuses any write where a
+field other than `title` moved or the slug order changed — a manifest that fails the
+consumer's `episodeSchema` empties the entire public feed.
+
+Covers are deliberately not regenerated; see the module docstring for why.
 
 
 ## Voice selection
