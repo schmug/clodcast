@@ -404,6 +404,54 @@ Two more append-only logs live beside `covered.json` and `runs.jsonl`:
 - **`incidents/new/`** — structured reports written on any non-clean exit
   (`DAILY_PODCAST_INCIDENT_DIR` overrides the location).
 
+### Bloopers bin (`bloopers/`)
+
+An archive of TTS clips worth keeping, written as a side effect of paths that
+already exist. Nothing in a run ever reads it back — it is write-only until a
+meta-episode is cut from it by hand. Clips are content-addressed under
+`bloopers/clips/<sha16>.mp3`; `bloopers/index.jsonl` is append-only with one
+full-key-set row per clip (same line-by-line read contract as `runs.jsonl`).
+
+| `reason` | Fires when | Banks |
+| --- | --- | --- |
+| `gate` | the artifact gate is about to reject a segment (< `MIN_SPEECH_RATE_RATIO`) | that one segment, with the rate evidence |
+| `near-miss` | a segment PASSED but reads slow (`MIN_SPEECH_RATE_RATIO`–`NEAR_MISS_RATE_RATIO`) | that segment; the episode still ships |
+| `run-failed` | any run dies after TTS | every `seg_*.mp3` in the workdir |
+| `manual` | you run `bloopers.py mark` | an ffmpeg trim of any audio file |
+
+Four things here are load-bearing:
+
+- **Capture runs BEFORE `verify_artifact`, not after.** A speech-rate rejection's
+  documented recovery deletes the offending `seg_NN.mp3`, and a stale workdir
+  empties itself within days — so anything measured after the `die()` is already
+  unrecoverable. No branch may be introduced between the measurement and the copy.
+- **The `run-failed` sweep is suppressed on a speech-rate rejection.** The `gate`
+  trigger has already banked the precise offender; sweeping too would bank the
+  eleven clean segments beside it and bury the one clip worth keeping. Every other
+  failure identifies no segment, so there the sweep is the only thing that saves
+  the audio.
+- **Capture is best-effort and never changes a run's exit code** — the same
+  contract as `write_run_log` and the incident reports. A full disk loses a joke,
+  not an episode. `--dry-run` banks nothing and logs what it would have banked.
+- **Clips are content-addressed**, so a same-day resume (which re-runs the gate
+  against a cache-hit segment) is a no-op rather than a duplicate.
+
+Most failures are upload/poll problems whose audio is perfectly fine, so the bin
+deliberately fills with non-bloopers; `reason` is what keeps them siftable:
+
+```bash
+# what is actually worth listening to
+jq -r 'select(.reason!="run-failed") | [.reason,.segment,.note] | @tsv' \
+  ~/.config/daily-podcast/bloopers/index.jsonl
+
+# how much material is banked, in seconds
+jq -s 'map(.duration_ms // 0) | add / 1000' ~/.config/daily-podcast/bloopers/index.jsonl
+
+# bank a clip you heard yourself (works on a workdir segment, an episode.mp3, or
+# a feed episode you downloaded)
+python3 bloopers.py mark --from episode.mp3 --start 4:12 --end 4:58 --note "birdsbirdsbirds"
+```
+
 ```jsonc
 // ~/.config/daily-podcast/covered.json — written by render.py on successful upload.
 // Pruned to a 180-day retention window on each write (the `date` field drives this);
@@ -449,7 +497,8 @@ Every `render.py` run appends one JSON record to `~/.config/daily-podcast/runs.j
   "pruned_workdirs": null,                    // {count, freed_bytes} when --prune-workdirs ran
   "r2_status": "published",                   // "published" | "skipped" | "failed" or null pre-publish (#48)
   "resumed": false,
-  "mp3_url": null                             // public R2 URL on a web-only ship, else null (#155)
+  "mp3_url": null,                            // public R2 URL on a web-only ship, else null (#155)
+  "bloopers_captured": 0                      // clips banked into the bloopers bin this run (#169)
 }
 ```
 
