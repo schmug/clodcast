@@ -190,17 +190,18 @@ A standard `render.py` manifest (the daily skill's Form 2) plus two keys: `show_
   "voice": "house",
   "r2_manifest_name": "manifest-frontier-commits.json",
   "segments": [
-    {"text": "Cold open...", "source_url": null},
+    {"text": "Cold open...", "source_url": null, "title": "Cold open"},
     {"text": "Lead story, 1100-1500 chars...", "source_url": "https://github.com/openai/git", "source_title": "openai/git"},
     {"text": "Body story...", "source_url": "https://github.com/anthropics/example", "source_title": "anthropics/example"},
-    {"text": "Trend watch...", "source_url": null},
-    {"text": "Sign-off...", "source_url": null}
+    {"text": "Trend watch...", "source_url": null, "title": "Trend watch"},
+    {"text": "Sign-off...", "source_url": null, "title": "Sign-off"}
   ]
 }
 ```
 
 - **Title format:** `Frontier Commits — Week of <Month D, YYYY>` (the Monday of the run's ISO week).
 - **Strict 1:1** segment ↔ source mapping: every story segment carries exactly its own repo URL; the cold open, trend watch, and sign-off carry `null`. Never merge stories or attach two URLs to one segment.
+- **Frame segments must carry a `title`.** Story segments get their chapter title from `source_title`, but the three frame segments have no source — without an explicit `"title"` ("Cold open", "Trend watch", "Sign-off"), `render.py` falls back to positional chapter titles like "Segment 1" in the published timeline.
 - **Voice defaults to house.** Do not set `voice_instruct`; no new voice modes.
 
 ## Show + state config
