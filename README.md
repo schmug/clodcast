@@ -239,6 +239,23 @@ The orchestrator writes two additional state files alongside `covered.json` and 
 - `~/.config/daily-podcast/feed_usage.json` — records the last date each feed contributed a segment; drives the variety penalty so the same feed doesn't dominate consecutive episodes. Updated only on a successful real run (`--dry-run` leaves it unchanged).
 - `~/.config/daily-podcast/dropped.jsonl` — append-only log of every item that was blocked, refused, timed out, errored, or hit an auth failure during a run. One JSON line per dropped item: `{timestamp, run_date, feed_name, url, reason, detail}` (`reason` ∈ `refused`/`blocked`/`auth`/`timeout`/`error`). Useful for diagnosing feed-level issues or cyber-content policy patterns; an all-`auth` night means child `claude -p` could not authenticate (see SKILL.md).
 
+### Bloopers bin
+
+Qwen3-TTS occasionally derails mid-segment into looping babble. The artifact gate
+catches the gross cases and the documented recovery deletes the offending audio — so
+`~/.config/daily-podcast/bloopers/` archives it first. Clips land content-addressed
+under `clips/<sha16>.mp3` with one append-only row each in `index.jsonl`, tagged by
+what tripped the capture: `gate` (about to be rejected), `near-miss` (slow but
+shipped), `run-failed` (swept from a dead run's workdir), or `manual`.
+
+Nothing in a run reads the bin back. Sift it with `jq`, and bank a clip you heard
+yourself with:
+
+```bash
+python3 skills/daily-podcast/bloopers.py mark \
+  --from episode.mp3 --start 4:12 --end 4:58 --note "birdsbirdsbirds"
+```
+
 ### Run log
 
 Every run appends one JSON record to `~/.config/daily-podcast/runs.jsonl` — on success,

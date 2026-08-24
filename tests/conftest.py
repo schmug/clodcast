@@ -34,6 +34,7 @@ _WRITABLE_STATE_ATTRS = (
     "RUN_LOG_PATH",
     "REJECTIONS_PATH",
     "INCIDENT_DIR",
+    "BLOOPER_DIR",
     # TMP_BASE matters as much as the config paths: the auto workdir is now
     # deterministic (daily-podcast-<date>), so an unpatched test would land on the
     # exact directory a real same-day run is using — and the auto-delete-on-success
@@ -62,6 +63,7 @@ def _isolate_user_state(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(render, "RUN_LOG_PATH", sandbox / "runs.jsonl")
     monkeypatch.setattr(render, "REJECTIONS_PATH", sandbox / "rejections.jsonl")
     monkeypatch.setattr(render, "INCIDENT_DIR", sandbox / "incidents" / "new")
+    monkeypatch.setattr(render, "BLOOPER_DIR", sandbox / "bloopers")
     workdirs = sandbox / "tmp"
     workdirs.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(render, "TMP_BASE", workdirs)

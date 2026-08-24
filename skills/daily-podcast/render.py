@@ -114,6 +114,14 @@ MIN_SPEECH_RATE_RATIO = 0.75
 # skipped rather than guessed at — same no-data-loss posture as the covered.json
 # date pruning. The daily episode carries ~10 body segments, well clear of this.
 MIN_RATE_SAMPLE_SEGMENTS = 5
+# Ceiling of the bloopers bin's "near-miss" band (the floor is MIN_SPEECH_RATE_RATIO).
+# The gate only ever catches a GROSS derailment; a phrase that garbles for a second
+# or two barely moves its segment's rate and ships unnoticed, which is where the
+# funny audio actually lives. 0.90 sits below the slowest CLEAN segment on 08-17
+# (0.94x) so a normal episode banks nothing — widen it and every run banks half its
+# segments, which is how an archive turns into noise. Capture only: this band never
+# fails a run.
+NEAR_MISS_RATE_RATIO = 0.90
 # Spotify caps an episode description at 4000 characters (Spotify Web API
 # `description`/`html_description` field; same limit surfaces in Spotify for
 # Podcasters episode show notes). Past the cap the upload silently truncates or
@@ -261,6 +269,41 @@ REJECTIONS_PATH = CONFIG_DIR / "rejections.jsonl"
 # repo-relative write would be invisible to the operator and wiped by the next
 # release. Lives beside runs.jsonl instead; DAILY_PODCAST_INCIDENT_DIR overrides.
 INCIDENT_DIR = CONFIG_DIR / "incidents" / "new"
+
+# The bloopers bin: an archive of TTS clips worth keeping, written as a side effect
+# of paths that already exist (#169). It is here rather than in the workdir because
+# the workdir is precisely what disappears — the documented recovery for a speech-rate
+# rejection deletes the offending seg_NN.mp3, and /tmp itself empties a stale workdir
+# within days. Clips are content-addressed under clips/, indexed by an append-only
+# index.jsonl (runs.jsonl posture: never atomic-replaced, one full-key-set row per
+# clip). Nothing in a run reads it back; it is write-only until a meta-episode is cut
+# from it by hand.
+BLOOPER_DIR = CONFIG_DIR / "bloopers"
+
+# One row per banked clip. Same contract as RUN_LOG_FIELDS: every row carries the
+# FULL key set with nulls for what does not apply, so the index parses line-by-line
+# in jq/pandas without a per-row schema check. `text` and `duration_ms` are the two
+# that must never go missing — the meta-episode narrates over these clips and needs
+# to know what each was supposed to say and how much material is banked.
+BLOOPER_FIELDS: tuple[str, ...] = (
+    "timestamp",  # ISO 8601 UTC
+    "reason",  # "gate" | "near-miss" | "run-failed" | "manual"
+    "sha256",  # of the clip bytes; the clip's filename is its first 16 chars
+    "clip",  # absolute path inside the bin
+    "source",  # where it came from (workdir segment, episode mp3, ...)
+    "run_date",
+    "title",  # episode title, when known
+    "segment",  # 1-based segment number, matching the render log
+    "source_url",
+    "text",  # what the segment was supposed to say
+    "chars",
+    "duration_ms",
+    "rate",  # measured chars/sec (rate triggers only)
+    "median",  # the population median it was judged against
+    "ratio",  # rate / median
+    "note",  # free text, manual captures only
+    "workdir",
+)
 
 # Registry of feeds/outlets that can't be fetched for article bodies, moved out of
 # operator memory and into the shipped skill so curation can consult it.
@@ -498,6 +541,7 @@ RUN_LOG_FIELDS: tuple[str, ...] = (
     "preflight",  # {ok, checks:[{name, ok, detail}]} or null when skipped
     "abandoned_episodes",  # [{episode_uri, title, source_urls}] on a poison-pill give-up
     "mp3_url",  # public R2 URL on a web-only ship, else null (#155)
+    "bloopers_captured",  # clips banked into the bloopers bin this run (#169)
 )
 
 
@@ -3121,8 +3165,195 @@ def record_rejection(mp3: Path, *, episode_uri: str, profile: dict[str, Any], re
         log(f"warn: could not append {REJECTIONS_PATH}: {e}")
 
 
-def speech_rate_problems(segments: list[dict], seg_paths: list[Path]) -> list[str]:
-    """Flag body segments whose speech rate is a low outlier against the median.
+def _new_blooper_record() -> dict[str, Any]:
+    return dict.fromkeys(BLOOPER_FIELDS, None)
+
+
+def bank_blooper(audio: Any, *, reason: str, **fields: Any) -> dict[str, Any] | None:
+    """Copy one clip into the bin and append its index row. Returns the record, or
+    None when nothing was banked.
+
+    Best-effort by contract, exactly like write_run_log and the incident reports: it
+    NEVER raises and never changes a run's exit code. A full disk loses a joke, not
+    an episode — and this runs on failure paths, where a recovery that can itself
+    crash is worse than no recovery.
+
+    Content-addressed: the clip's name is its own hash, so identical bytes can only
+    land once. That is what makes a same-day resume (which re-runs the gate against a
+    cache-hit segment) a no-op instead of a duplicate, and it is why a re-bank returns
+    None rather than a second row."""
+    try:
+        source = Path(audio)
+        data = source.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        clips = BLOOPER_DIR / "clips"
+        clips.mkdir(parents=True, exist_ok=True)
+        clip = clips / f"{digest[:16]}.mp3"
+        if clip.exists():
+            return None
+        # Write-then-rename so a crash mid-copy cannot leave a truncated clip under a
+        # hash that claims to describe its contents.
+        staged = clip.with_suffix(".part")
+        staged.write_bytes(data)
+        staged.replace(clip)
+
+        record = _new_blooper_record()
+        # Filtered to the known field set: an unrecognised key here would put a row in
+        # the index that no other row has, breaking the line-by-line read contract.
+        record.update({k: v for k, v in fields.items() if k in BLOOPER_FIELDS})
+        record.update(
+            {
+                "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "reason": reason,
+                "sha256": digest,
+                "clip": str(clip),
+                "source": str(source),
+            }
+        )
+        # Append-only, never _atomic_write_text — same reason as runs.jsonl: an
+        # atomic replace would truncate the archive to its newest row.
+        with open(BLOOPER_DIR / "index.jsonl", "a") as f:
+            f.write(json.dumps(record) + "\n")
+        return record
+    except (OSError, TypeError, ValueError) as e:
+        log(f"warn: could not bank blooper from {audio}: {e}")
+        return None
+
+
+def capture_rate_bloopers(
+    segments: list[dict],
+    seg_paths: list[Path],
+    *,
+    dry_run: bool = False,
+    **ctx: Any,
+) -> list[dict[str, Any]]:
+    """Bank every body segment whose speech rate is odd, in two bands off one
+    measurement.
+
+    Below MIN_SPEECH_RATE_RATIO is what the gate is about to reject — and whose
+    documented recovery ("delete that seg_NN.mp3 from the workdir and re-run") is
+    precisely what has been destroying the only funny audio this pipeline makes.
+    Between that floor and NEAR_MISS_RATE_RATIO the episode SHIPS: a phrase that
+    garbled too briefly to move the segment's rate is invisible to the gate, which
+    only ever catches a gross derailment.
+
+    Called BEFORE verify_artifact rather than after, so no branch — and no die() —
+    can sit between measuring a segment and copying it out.
+
+    --dry-run banks nothing: a rehearsal must not mutate user state, the same posture
+    that keeps it out of covered.json and stops --prune-workdirs deleting anything."""
+    banked: list[dict[str, Any]] = []
+    for row in speech_rate_rows(segments, seg_paths):
+        if row["rate"] < row["median"] * MIN_SPEECH_RATE_RATIO:
+            reason = "gate"
+        elif row["rate"] < row["median"] * NEAR_MISS_RATE_RATIO:
+            reason = "near-miss"
+        else:
+            continue
+        if dry_run:
+            log(
+                f"would bank {reason} blooper: segment {row['number']} at "
+                f"{row['rate']:.1f} chars/sec ({row['ratio']:.2f}x median)"
+            )
+            continue
+        seg = segments[row["index"]]
+        record = bank_blooper(
+            row["path"],
+            reason=reason,
+            segment=row["number"],
+            chars=row["chars"],
+            duration_ms=row["duration_ms"],
+            rate=round(row["rate"], 2),
+            median=round(row["median"], 2),
+            ratio=round(row["ratio"], 3),
+            text=seg.get("text"),
+            source_url=seg.get("source_url"),
+            **ctx,
+        )
+        if record:
+            banked.append(record)
+    if banked:
+        log(f"banked {len(banked)} blooper clip(s) in {BLOOPER_DIR}")
+    return banked
+
+
+def _safe_duration_ms(path: Path) -> int | None:
+    """mp3_duration_ms without the exception. The sweep runs on the failure path,
+    where assuming ffprobe works is how a recovery becomes a second crash."""
+    try:
+        return mp3_duration_ms(path)
+    except Exception:  # noqa: BLE001 — a measurement is nice to have, never required
+        return None
+
+
+def capture_workdir_segments(
+    workdir: Any,
+    *,
+    error_message: str | None = None,
+    dry_run: bool = False,
+    **ctx: Any,
+) -> list[dict[str, Any]]:
+    """Sweep a dead run's workdir into the bin before the workdir is gone.
+
+    Suppressed for a speech-rate rejection: capture_rate_bloopers has already banked
+    the precise offending segment with the rate evidence that condemned it, and
+    sweeping would bank the eleven clean segments beside it — burying the one clip
+    worth keeping under an episode's worth of ordinary narration. Every other failure
+    identifies no segment at all, so there the sweep is the only thing that saves the
+    audio.
+
+    Most failures are upload/poll problems whose audio is perfectly fine, so this
+    deliberately banks non-bloopers; `reason` is what keeps them siftable."""
+    if error_message and classify_incident(error_message) == "tts-degeneration":
+        return []
+    try:
+        wd = Path(workdir)
+        seg_paths = sorted(wd.glob("seg_*.mp3"))
+    except (OSError, TypeError, ValueError):
+        return []
+    if not seg_paths:
+        return []
+
+    # The manifest is sitting right next to the segments and carries what each one was
+    # supposed to say — a swept clip without its script is a sound with no story. Its
+    # absence or corruption is not a reason to lose the audio.
+    manifest: dict[str, Any] = {}
+    try:
+        manifest = json.loads((wd / "manifest.json").read_text())
+    except (OSError, ValueError):
+        pass
+    manifest_segments = manifest.get("segments") or []
+
+    banked: list[dict[str, Any]] = []
+    for path in seg_paths:
+        number = int(path.stem.split("_")[-1]) if path.stem.split("_")[-1].isdigit() else None
+        seg = {}
+        if number is not None and 0 < number <= len(manifest_segments):
+            seg = manifest_segments[number - 1] or {}
+        if dry_run:
+            log(f"would bank run-failed blooper: {path.name}")
+            continue
+        record = bank_blooper(
+            path,
+            reason="run-failed",
+            segment=number,
+            duration_ms=_safe_duration_ms(path),
+            text=seg.get("text"),
+            source_url=seg.get("source_url"),
+            chars=len(seg.get("text") or "") or None,
+            title=manifest.get("title"),
+            workdir=str(wd),
+            **ctx,
+        )
+        if record:
+            banked.append(record)
+    if banked:
+        log(f"banked {len(banked)} clip(s) from the failed run in {BLOOPER_DIR}")
+    return banked
+
+
+def speech_rate_rows(segments: list[dict], seg_paths: list[Path]) -> list[dict[str, Any]]:
+    """Measure every body segment's speech rate against the population median.
 
     Only segments with a `source_url` count: the intro and sign-off are short and
     legitimately slower (16.5 / 16.9 c/s against an 18.4 median on 2026-08-17), so
@@ -3132,8 +3363,14 @@ def speech_rate_problems(segments: list[dict], seg_paths: list[Path]) -> list[st
 
     Durations come from mp3_duration_ms, the same per-segment measurement
     plan_silences and build_timeline_and_description already use, so this adds no
-    second measurement path, no network call, and no model load."""
-    rates: list[tuple[int, float]] = []
+    second measurement path, no network call, and no model load.
+
+    Returns rows rather than formatted strings because two consumers now share this
+    one measurement: the gate (which rejects the low outliers) and the bloopers bin
+    (which banks them, plus the near-misses the gate lets through). An empty list
+    means "no evidence of a defect" — the caller cannot tell a too-small population
+    apart from an all-clean one, and must not try."""
+    measured: list[dict[str, Any]] = []
     for i, seg in enumerate(segments[: len(seg_paths)]):
         if not seg.get("source_url"):
             continue
@@ -3141,22 +3378,45 @@ def speech_rate_problems(segments: list[dict], seg_paths: list[Path]) -> list[st
         duration_ms = mp3_duration_ms(seg_paths[i])
         if chars <= 0 or duration_ms <= 0:
             continue  # unmeasurable: no evidence of a defect, so don't invent one
-        rates.append((i + 1, chars / (duration_ms / 1000)))
+        measured.append(
+            {
+                "index": i,
+                "number": i + 1,  # 1-based, matching the render log
+                "path": seg_paths[i],
+                "chars": chars,
+                "duration_ms": duration_ms,
+                "rate": chars / (duration_ms / 1000),
+            }
+        )
 
-    if len(rates) < MIN_RATE_SAMPLE_SEGMENTS:
+    if len(measured) < MIN_RATE_SAMPLE_SEGMENTS:
         return []
-    median = statistics.median(rate for _, rate in rates)
+    median = statistics.median(row["rate"] for row in measured)
     if median <= 0:
         return []
 
-    floor = median * MIN_SPEECH_RATE_RATIO
+    for row in measured:
+        row["median"] = median
+        row["ratio"] = row["rate"] / median
+    return measured
+
+
+def speech_rate_problems(segments: list[dict], seg_paths: list[Path]) -> list[str]:
+    """Reject the low outliers speech_rate_rows measured.
+
+    The wording is load-bearing twice over: classify_incident matches "speech rate" to
+    route the operator to incidents/tts-degeneration.md, and the message names the
+    segment, its rate and the median so the recovery needs no second lookup."""
     return [
-        f"segment {number} speech rate {rate:.1f} chars/sec is {rate / median:.2f}x the "
-        f"{median:.1f} chars/sec median (floor {MIN_SPEECH_RATE_RATIO:.2f}x) — the TTS "
+        f"segment {row['number']} speech rate {row['rate']:.1f} chars/sec is "
+        f"{row['ratio']:.2f}x the {row['median']:.1f} chars/sec median "
+        f"(floor {MIN_SPEECH_RATE_RATIO:.2f}x) — the TTS "
         "model likely degenerated mid-segment and left part of the script unspoken; "
-        "re-render it (delete that seg_NN.mp3 from the workdir and re-run) before shipping"
-        for number, rate in rates
-        if rate < floor
+        "re-render it (delete that seg_NN.mp3 from the workdir and re-run) before "
+        "shipping — the clip is already banked in the bloopers bin, so deleting it here "
+        "loses nothing"
+        for row in speech_rate_rows(segments, seg_paths)
+        if row["rate"] < row["median"] * MIN_SPEECH_RATE_RATIO
     ]
 
 
@@ -3748,6 +4008,7 @@ def main() -> int:
         code = e.code if isinstance(e.code, int) else 1
         if code != 0:
             record["status"] = "failed"
+            _sweep_bloopers_on_failure(record)
             write_run_log(record)
             _write_run_incident(record)
         raise
@@ -3758,11 +4019,28 @@ def main() -> int:
         record["status"] = "failed"
         if not record.get("error_message"):
             record["error_message"] = f"{type(e).__name__}: {e}"
+        _sweep_bloopers_on_failure(record)
         write_run_log(record)
         _write_run_incident(record)
         raise
     finally:
         _RUN_CTX = None
+
+
+def _sweep_bloopers_on_failure(record: dict[str, Any]) -> None:
+    """Bank a dead run's segments before its workdir is gone (#169), and record the
+    count on the run. Best-effort in the same way as write_run_log beside it: the run
+    has already failed and nothing here may change how it failed."""
+    try:
+        banked = capture_workdir_segments(
+            record.get("workdir"),
+            error_message=record.get("error_message"),
+            run_date=record.get("run_date"),
+            title=record.get("title"),
+        )
+        record["bloopers_captured"] = (record.get("bloopers_captured") or 0) + len(banked)
+    except Exception as e:  # noqa: BLE001 — a failed sweep must not mask the real failure
+        log(f"warn: blooper sweep failed: {e}")
 
 
 def _cleanup_auto_workdir(workdir: Path, eligible: bool) -> None:
@@ -3938,6 +4216,20 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
     # every check is local (ffprobe + a hash), so a dry run should exercise the same
     # gate the real run does — that is the whole point of rehearsing with --dry-run.
     episode_duration_ms = mp3_duration_ms(episode_mp3)
+    # Bank the odd-sounding segments BEFORE the gate decides this run's fate (#169).
+    # A speech-rate rejection's documented recovery deletes the offending seg_NN.mp3,
+    # and a stale workdir empties itself within days, so anything measured after the
+    # die() below is already unrecoverable. Best-effort: never changes the exit code.
+    record["bloopers_captured"] = len(
+        capture_rate_bloopers(
+            segments,
+            seg_paths,
+            dry_run=args.dry_run,
+            run_date=manifest.get("date"),
+            title=manifest.get("title"),
+            workdir=str(workdir),
+        )
+    )
     artifact_errors = verify_artifact(
         episode_mp3,
         timeline,

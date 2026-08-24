@@ -50,7 +50,8 @@ rejects a low outlier against the **median** of that population, before upload:
 error: artifact gate failed: segment 6 speech rate 11.0 chars/sec is 0.60x the
 18.5 chars/sec median (floor 0.75x) — the TTS model likely degenerated
 mid-segment and left part of the script unspoken; re-render it (delete that
-seg_NN.mp3 from the workdir and re-run) before shipping
+seg_NN.mp3 from the workdir and re-run) before shipping — the clip is already
+banked in the bloopers bin, so deleting it here loses nothing
 ```
 
 Design choices, all load-bearing:
@@ -76,10 +77,22 @@ Detection only: the operator decides. Because of the per-segment TTS cache, the
 recovery is to delete the offending `seg_NN.mp3` from the workdir and re-run —
 every other segment is a cache hit, so only the bad one re-renders.
 
+**That recovery used to destroy the evidence.** This is the only genuinely funny
+audio the pipeline has ever produced, and the documented fix deletes it; a stale
+workdir empties itself within days regardless (`/tmp/daily-podcast-2026-08-1{6,7,8,9}`
+were all empty by 08-24, and the 08-17 clip survives only inside the published
+episode). Since #169 `capture_rate_bloopers` copies the offending segment into the
+bloopers bin **before** `verify_artifact` is even called — no branch, and no
+`die()`, sits between measuring a segment and copying it out. Deleting the file is
+now purely a re-render, and the rejection message says so.
+
 Scope, honestly: this catches a **gross** derailment. A short mangled phrase that
 barely moves the segment's rate still slips through; only transcript
 verification would catch that, and it is deliberately out of scope for a gate
-that must stay local and fast.
+that must stay local and fast. The bin's `near-miss` band (0.75-0.90x, #169)
+*captures* that zone without judging it — a slow-but-passing segment is banked for
+later listening, never rejected. That is an archive, not a second gate: it makes
+the blind spot audible after the fact, and does not narrow it.
 
 ## Test that guards it
 
