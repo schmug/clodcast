@@ -181,7 +181,7 @@ Plus the two inherited house rules: **never manufacture a connection** between u
 
 ## Manifest
 
-A standard `render.py` manifest (the daily skill's Form 2) plus six keys, all six required for this show:
+A standard `render.py` manifest (the daily skill's Form 2) plus seven keys, all seven required for this show:
 
 - `"ship_mode": "web"` — the web-only ship (#155). The R2 publish *is* the ship: no upload, no timeline set, no readiness poll, and `save-to-spotify` is never invoked. **Omitting this key is not a degraded run — it is a different one**, because render.py defaults to a Spotify upload. In this mode R2 configuration is *required* (absent fails pre-flight, before any render), a failed publish fails the run, and `covered.json` is written only after the publish succeeds.
 - `"r2_manifest_name": "manifest-frontier-commits.json"` — keeps this show's web feed beside, never inside, the daily show's `manifest.json` (#118).
