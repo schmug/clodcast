@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/schmug/clodcast/actions/workflows/ci.yml/badge.svg)](https://github.com/schmug/clodcast/actions/workflows/ci.yml)
 
-A Claude Code skill that turns a list of saved articles (or RSS items) into a fully-produced Spotify episode in one pass:
+Two Claude Code podcast skills built on the same production stack. The flagship, **`daily-podcast`**, turns a list of saved articles (or RSS items) into a fully-produced Spotify episode in one pass:
 
 - Pulls full content for each item
 - Writes a segmented script using a deterministic template (intro + per-item + outro)
@@ -13,6 +13,18 @@ A Claude Code skill that turns a list of saved articles (or RSS items) into a fu
 - Updates a per-user dedup log so the same URLs are not re-covered
 
 Ships an executable `render.py` and a self-contained `claude -p` prompt so the whole thing can run unattended on a schedule.
+
+### Frontier Commits
+
+The second show, **`frontier-commits`** ([skills/frontier-commits/](skills/frontier-commits/)), reads the
+frontier AI labs' **public GitHub activity** — new repos, releases, archivals, staleness, star
+velocity — into a speculation-forward **weekly** episode (Mondays), shipped through the same
+`render.py`. A daily launchd collector (pure Python + the `gh` CLI, no Claude credential)
+accumulates per-org snapshots; a deterministic detector diffs them into typed, mention-once
+story candidates; the weekly run researches each story in an isolated context and writes the
+segments. The same snapshot data feeds `labs.json`, which powers a `/labs/` dashboard on
+[cortech.online](https://github.com/schmug/cortech.online). Setup, story types, and the
+unattended procedure live in [skills/frontier-commits/SKILL.md](skills/frontier-commits/SKILL.md).
 
 ## Live example
 
@@ -54,6 +66,7 @@ the next version and changelog; **merging that PR** cuts the tag and GitHub Rele
 - **Python 3.10+** — runtime deps are declared in [`pyproject.toml`](pyproject.toml) (`mlx-audio`, `soundfile`, `mutagen`, `Pillow`, `numpy`, `feedparser`)
   - `pip install -r requirements.txt` (or `pip install -e .` for an editable checkout)
 - **`ffmpeg`** and **`ffprobe`**
+- **`gh` CLI** on `PATH`, authenticated (`gh auth login`) — required by the `frontier-commits` skill (daily snapshot collector and per-story research)
 - ~4 GB free disk for the first model download (Qwen3-TTS Base 1.7B-8bit)
 
 ## Setup

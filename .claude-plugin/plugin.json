@@ -1,7 +1,7 @@
 {
   "name": "clodcast",
   "version": "0.1.5",
-  "description": "Daily-digest podcast skill — turns a list of saved articles into a fully-produced Spotify episode using Qwen3-TTS, on top of the save-to-spotify CLI.",
+  "description": "Two podcast skills on top of the save-to-spotify CLI: daily-podcast turns a list of saved articles into a fully-produced Spotify episode using Qwen3-TTS, and frontier-commits turns the frontier AI labs' public GitHub activity into a speculation-forward weekly show.",
   "author": {
     "name": "schmug",
     "url": "https://cortech.online"
