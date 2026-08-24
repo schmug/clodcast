@@ -138,6 +138,25 @@ DESCRIPTION_FOOTER = (
     f'<a href="{html.escape(CURATION_TOOL_URL, quote=True)}">'
     f"{html.escape(CURATION_TOOL_NAME, quote=True)}</a>.</p>"
 )
+
+
+def resolve_description_footer(manifest: dict[str, Any]) -> str:
+    """
+    Per-show source credit (#152). DESCRIPTION_FOOTER names the daily show's
+    sources (the OPML feeds, Don't Hype Me) — factually wrong attribution on any
+    other show, and under ship_mode=web it lands verbatim in public RSS show
+    notes. `description_footer_text` replaces it: PLAIN TEXT by contract
+    (validate_manifest rejects markup), escaped and wrapped in one <p> here
+    rather than trusting an operator-authored HTML fragment. Links are
+    deliberately unsupported — per-story links live on the chapter lines.
+    Absent/null → the daily footer, byte-identical.
+    """
+    text = manifest.get("description_footer_text")
+    if not text:
+        return DESCRIPTION_FOOTER
+    return f"<p>{html.escape(text, quote=True)}</p>"
+
+
 # covered.json dedup-log retention. A daily run covers ~10 URLs, so the log
 # would grow ~3.6k entries/year unbounded. 180 days is comfortably larger than
 # the feed-curation lookback window (lookback_hours, default 24h — the only
@@ -754,6 +773,22 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         not isinstance(cover_show_name, str) or not cover_show_name.strip()
     ):
         die(f"manifest 'show_name' must be a non-empty string (got {cover_show_name!r})")
+    # Per-show source credit (#152). A blank value is a typo, not a request for
+    # the default (same posture as show_name). Plain text by contract: the value
+    # is html.escape()d into the footer <p>, so markup here would reach the
+    # public show notes as literal angle brackets — reject it early instead.
+    footer_text = manifest.get("description_footer_text")
+    if footer_text is not None:
+        if not isinstance(footer_text, str) or not footer_text.strip():
+            die(
+                "manifest 'description_footer_text' must be a non-empty string "
+                f"or unset (got {footer_text!r})"
+            )
+        if "<" in footer_text or ">" in footer_text:
+            die(
+                "manifest 'description_footer_text' is plain text (render.py escapes "
+                f"it into the footer <p>); remove the markup (got {footer_text!r})"
+            )
     # Ship mode is a closed set (#155): an unrecognized value must never fall back
     # to the Spotify default, because for an RSS-first show that means uploading to
     # a deprecated show instead of failing. Typos ("webb", "WEB") die here.
@@ -1299,6 +1334,7 @@ def build_timeline_and_description(
     silences_ms: list[int],
     summary: str,
     episode_mp3: Path,
+    footer_html: str = DESCRIPTION_FOOTER,
 ) -> tuple[dict, str]:
     items: list[dict] = []
     chapters: list[tuple[int, str, str | None]] = []  # (ms, title, url)
@@ -1341,22 +1377,20 @@ def build_timeline_and_description(
             parts.append(f'<p>{ts} - {safe_title} - <a href="{safe_url}">source</a></p>')
         else:
             parts.append(f"<p>{ts} - {safe_title}</p>")
-    description = "".join(parts) + DESCRIPTION_FOOTER
+    description = "".join(parts) + footer_html
 
     # Fit under Spotify's summary cap WITHOUT breaking the HTML: each list entry
     # is a self-contained <p>…</p>, so drop whole chapter blocks from the end
     # (longest-suffix-first) until it fits — never cut mid-tag, never ellipsize a
     # block. parts[0] is the summary <p> and is always preserved (it's the hook).
     # The timeline JSON above is untouched: the audio chapters still exist, only
-    # the show-notes listing is trimmed. DESCRIPTION_FOOTER is pinned last rather
-    # than trimmed — it counts against the cap but is never a drop candidate, so
-    # every episode keeps its credit line no matter how long the chapter list is.
+    # the show-notes listing is trimmed. The footer (per-show since #152) is
+    # pinned last rather than trimmed — it counts against the cap but is never a
+    # drop candidate, so every episode keeps its credit line no matter how long
+    # the chapter list is.
     if len(description) > SPOTIFY_SUMMARY_MAX_CHARS:
         kept = list(parts)
-        while (
-            len(kept) > 1
-            and len("".join(kept)) + len(DESCRIPTION_FOOTER) > SPOTIFY_SUMMARY_MAX_CHARS
-        ):
+        while len(kept) > 1 and len("".join(kept)) + len(footer_html) > SPOTIFY_SUMMARY_MAX_CHARS:
             kept.pop()
         dropped = len(parts) - len(kept)
         log(
@@ -1364,7 +1398,7 @@ def build_timeline_and_description(
             f"dropped {dropped} trailing chapter block(s) from show notes "
             "(timeline/audio chapters unaffected)"
         )
-        description = "".join(kept) + DESCRIPTION_FOOTER
+        description = "".join(kept) + footer_html
 
     return {"items": items}, description
 
@@ -3551,7 +3585,12 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
 
     # 5: timeline + description
     timeline, description = build_timeline_and_description(
-        segments, seg_paths, silences_ms, summary, episode_mp3
+        segments,
+        seg_paths,
+        silences_ms,
+        summary,
+        episode_mp3,
+        footer_html=resolve_description_footer(manifest),
     )
     timeline_path = workdir / "timeline.json"
     timeline_path.write_text(json.dumps(timeline, indent=2))

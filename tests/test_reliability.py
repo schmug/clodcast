@@ -1254,6 +1254,9 @@ def test_skill_md_documents_the_description_footer():
     assert "github.com/schmug/donthype-me" not in skill
     # The placement rule is the whole point of the issue — keep it written down.
     assert "DESCRIPTION_FOOTER" in skill
+    # The credit is per-show since #152: the manifest can replace it, and the
+    # SKILL.md manifest schema has to say so or the override rots undocumented.
+    assert "description_footer_text" in skill
 
 
 # --- host credit -----------------------------------------------------------
