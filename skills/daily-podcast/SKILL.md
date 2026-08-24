@@ -55,6 +55,7 @@ Already-written segments. Skip straight to rendering.
   "show_id": "spotify:show:...",
   "date": "2026-05-22",                    // optional ISO date; stamps the cover AND keys the web slug/guid. Omit to use today (re-renders of a dated manifest reproduce its date)
   "voice": "house",                        // default; or "random" / preset name; set voice_instruct for custom VoiceDesign
+  "ship_mode": "spotify",                  // optional; "spotify" (default) or "web". "web" skips save-to-spotify entirely and makes the R2 publish the ship — see "Web-only shipping"
   "segments": [
     {"text": "Intro segment...",            "source_url": null},
     {"text": "Item 1 segment, 600+ chars.", "source_url": "https://...", "source_title": "..."},
@@ -419,8 +420,8 @@ Every `render.py` run appends one JSON record to `~/.config/daily-podcast/runs.j
 // ~/.config/daily-podcast/runs.jsonl — one line per run
 {
   "timestamp": "2026-06-03T06:00:12+00:00",  // ISO 8601 UTC
-  "status": "ready",                         // "ready" | "dry-run" | "failed"
-  "episode_uri": "spotify:episode:...",      // null unless ready
+  "status": "ready",                         // "ready" | "web-ready" (#155) | "dry-run" | "failed"
+  "episode_uri": "spotify:episode:...",      // null unless ready; always null on a web-only ship
   "title": "Mojo open source, OpenAI's pause, Cursor vs GitHub - June 3, 2026",
   "voice": "house", "voice_mode": "clone",
   "chapter_count": 6, "duration_s": 412.3, "segment_count": 6,
@@ -431,7 +432,8 @@ Every `render.py` run appends one JSON record to `~/.config/daily-podcast/runs.j
   "loudnorm": {"input_i": -19.4, "output_i": -16.0, "output_tp": -1.5, "output_lra": 6.9},
   "pruned_workdirs": null,                    // {count, freed_bytes} when --prune-workdirs ran
   "r2_status": "published",                   // "published" | "skipped" | "failed" or null pre-publish (#48)
-  "resumed": false
+  "resumed": false,
+  "mp3_url": null                             // public R2 URL on a web-only ship, else null (#155)
 }
 ```
 
@@ -475,6 +477,35 @@ is date-keyed, so two shows publishing the same day into the shared bucket would
 otherwise mint identical keys and the later publish would overwrite the earlier
 show's objects (#142). Unset means no prefix — the daily show's keys byte-identical
 to before. The `slug` field itself (the permalink guid) is never prefixed.
+
+### Web-only shipping (`"ship_mode": "web"`)
+
+A manifest may set `"ship_mode"` to `"spotify"` (the default when the key is absent)
+or `"web"`; anything else fails validation, because falling back to the default on a
+typo would upload an episode that was never meant to reach Spotify.
+
+`"web"` inverts the relationship above — the R2 publish stops being additive and
+becomes the ship itself (#155). It is how the RSS-first
+[Frontier Commits](../frontier-commits/SKILL.md) show publishes:
+
+- **`save-to-spotify` is never invoked.** No upload, no `timeline set`, no readiness
+  poll, no episode-cap capacity check or prune, and no in-flight reconciliation
+  (nothing is ever left in flight). `show_id` is not required and is ignored.
+- **Pre-flight runs the local subset plus R2, and R2 is REQUIRED.** The three-state
+  credential check's `absent` — a pass on the default path, where the web feed is
+  optional — is a failure here, so a misconfigured host fails in seconds instead of
+  after a full TTS render.
+- **`verify_artifact` still gates the publish**, exactly as it gates the upload.
+- **`covered.json` is written only after the publish succeeds.** Same
+  only-after-success posture as the default path, with the publish as the success
+  condition; a failed publish fails the run and leaves those URLs in the pool. The
+  dedup entry records the published mp3 URL in place of an episode URI.
+- **The run-log record uses `"status": "web-ready"`** and fills `mp3_url` (null on
+  every Spotify-path record). The final JSON on stdout carries `mp3_url` instead of
+  `episode_uri`.
+
+`--dry-run` behaves the same as it does anywhere else: it renders, runs the artifact
+gate, previews the R2 URL, and publishes nothing.
 
 ### `slug` is keyed on the date, never the title
 

@@ -279,7 +279,9 @@ def test_preflight_records_checks_into_the_run_record(monkeypatch, tmp_path):
     monkeypatch.setattr(render, "shutil", render.shutil)
     monkeypatch.setattr(render.shutil, "which", lambda t: f"/usr/bin/{t}")
     monkeypatch.setattr(
-        render, "check_r2_credentials", lambda c: {"ok": True, "state": "absent", "detail": "n/a"}
+        render,
+        "check_r2_credentials",
+        lambda c, **kw: {"ok": True, "state": "absent", "detail": "n/a"},
     )
     monkeypatch.setattr(
         render,
@@ -1221,6 +1223,24 @@ def test_speech_rate_failure_classifies_as_a_tts_degeneration_incident():
         )
         == "tts-degeneration"
     )
+
+
+def test_skill_md_documents_every_ship_mode_render_py_accepts():
+    """The manifest schema is a contract between SKILL.md and render.py (CLAUDE.md:
+    'keep them in sync when changing either'). A mode that exists only in the code
+    is a mode no manifest writer knows to set — and the default is a Spotify upload,
+    so the silent failure is shipping to the wrong place, not shipping nothing."""
+    skill = (_repo_root() / "skills" / "daily-podcast" / "SKILL.md").read_text()
+
+    for mode in render.SHIP_MODES:
+        assert f'"{mode}"' in skill, f"SKILL.md never documents ship_mode {mode!r}"
+    assert "ship_mode" in skill
+    # The three inversions that make web mode more than a flag: R2 required, the
+    # publish load-bearing, and dedup moving behind it.
+    web_section = skill.split("### Web-only shipping")[1].split("\n## ")[0]
+    assert "REQUIRED" in web_section
+    assert "covered.json" in web_section
+    assert "web-ready" in web_section
 
 
 def test_skill_md_documents_the_description_footer():
