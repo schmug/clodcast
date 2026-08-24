@@ -53,6 +53,7 @@ Already-written segments. Skip straight to rendering.
   "title": "Mojo goes open source, OpenAI's pause, Cursor vs GitHub - May 22, 2026",
   "summary": "Today's one-sentence hook.",
   "show_id": "spotify:show:...",
+  "show_name": "Daily Digest",             // optional; overrides config.json's show_name on the COVER only (big title + top label). Set it when rendering a SECOND show — render.py reads one config for every show it renders, so without this its covers carry the daily show's branding
   "date": "2026-05-22",                    // optional ISO date; stamps the cover AND keys the web slug/guid. Omit to use today (re-renders of a dated manifest reproduce its date)
   "voice": "house",                        // default; or "random" / preset name; set voice_instruct for custom VoiceDesign
   "ship_mode": "spotify",                  // optional; "spotify" (default) or "web". "web" skips save-to-spotify entirely and makes the R2 publish the ship — see "Web-only shipping"
@@ -348,7 +349,9 @@ Chapters under 30 seconds used to be capped at 3 per episode, and `render.py` pa
 // ~/.config/daily-podcast/config.json
 {
   "show_id": "spotify:show:...",       // required; one-time setup
-  "show_name": "Daily Digest",         // rendered onto every generated cover, so a
+  "show_name": "Daily Digest",         // rendered onto every generated cover unless
+                                       //   a manifest overrides it (a second show
+                                       //   sets its own; see the manifest schema), so a
                                        //   change here splits the catalogue's art;
                                        //   the public show is now "Cortech Daily"
                                        //   and this has NOT been renamed to match
