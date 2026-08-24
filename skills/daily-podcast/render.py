@@ -690,6 +690,23 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         die(
             f"manifest 'r2_manifest_name' must be a bare filename ending in .json (got {r2_name!r})"
         )
+    # r2_manifest_name isolates only the manifest object; the date-keyed slug (#128)
+    # still mints identical <slug>.mp3/<slug>.jpg keys for two shows publishing the
+    # same day into the shared bucket, so a second show's publish would silently
+    # overwrite the daily show's episode (#142). r2_key_prefix namespaces those keys.
+    # Same whitelist posture as above, with one addition: the prefix also lands in
+    # public URLs (base_url + key), where a dot-only prefix like "../" normalizes
+    # back onto the default show's objects — so dot-only values die too.
+    prefix = manifest.get("r2_key_prefix")
+    if prefix is not None and (
+        not isinstance(prefix, str)
+        or not re.fullmatch(r"[A-Za-z0-9._-]+/?", prefix)
+        or not prefix.strip("./")
+    ):
+        die(
+            "manifest 'r2_key_prefix' must be a bare object-key prefix "
+            f"([A-Za-z0-9._-]+ with an optional trailing '/') (got {prefix!r})"
+        )
     if manifest.get("date"):  # treat "" as absent, matching resolve_cover_date
         try:
             dt.date.fromisoformat(manifest["date"])
@@ -2174,11 +2191,20 @@ R2_SKIPPED = "skipped"
 R2_FAILED = "failed"
 
 
+def _r2_key_prefix(manifest: dict[str, Any]) -> str:
+    """Episode/cover object-key prefix, "" when unset — the daily show's keys stay
+    byte-identical. A second show sharing the bucket sets r2_key_prefix so its
+    date-keyed slug cannot mint the daily show's same-day keys (#142);
+    validate_manifest whitelists the value."""
+    return manifest.get("r2_key_prefix") or ""
+
+
 def r2_episode_mp3_url(cfg: dict[str, Any], manifest: dict[str, Any]) -> str:
     """Public URL of the episode mp3 for this manifest. The --dry-run preview and the
     real publish both resolve it here, so a rehearsal can never advertise a URL the
     publish would not actually write (#128)."""
-    return f"{cfg['public_base_url'].rstrip('/')}/{slug_for_date(resolve_slug_date(manifest))}.mp3"
+    base = cfg["public_base_url"].rstrip("/")
+    return f"{base}/{_r2_key_prefix(manifest)}{slug_for_date(resolve_slug_date(manifest))}.mp3"
 
 
 def maybe_publish_r2(
@@ -2209,7 +2235,8 @@ def maybe_publish_r2(
         immutable = "public, max-age=31536000, immutable"
 
         # mp3 first: the manifest must never reference an object that isn't up yet.
-        mp3_key = f"{slug}.mp3"
+        key_prefix = _r2_key_prefix(manifest)
+        mp3_key = f"{key_prefix}{slug}.mp3"
         _r2_put(
             client,
             cfg["bucket"],
@@ -2224,7 +2251,7 @@ def maybe_publish_r2(
         cover_url: str | None = None
         if cover and Path(cover).exists():
             try:
-                cover_key = f"{slug}.jpg"
+                cover_key = f"{key_prefix}{slug}.jpg"
                 _r2_put(
                     client,
                     cfg["bucket"],

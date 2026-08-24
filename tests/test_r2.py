@@ -724,6 +724,85 @@ def test_publish_appends_to_existing_r2_manifest_name_object(monkeypatch, tmp_pa
     assert "manifest.json" not in s3.objects
 
 
+# --- r2_key_prefix (second-show episode/cover keys, #142) --------------------
+#
+# r2_manifest_name isolates only the manifest OBJECT; the date-keyed slug still
+# mints the same <slug>.mp3/<slug>.jpg keys for any show publishing the same day
+# into the shared bucket — a real second-show publish would overwrite the daily
+# show's episode. r2_key_prefix namespaces the episode/cover keys (and the URLs
+# the web-feed entries advertise). The default-key test is the load-bearing one:
+# with the key absent, the daily show's object keys are byte-identical to today.
+
+_FRONTIER_MANIFEST = {
+    "title": "Frontier Commits",
+    "summary": "S",
+    "date": "2026-08-23",
+    "r2_manifest_name": "manifest-frontier-commits.json",
+    "r2_key_prefix": "frontier-commits/",
+}
+
+
+def test_publish_default_object_keys_are_byte_identical_when_prefix_absent(monkeypatch, tmp_path):
+    status, s3 = _publish_with_manifest(
+        monkeypatch, tmp_path, {"title": "Daily X", "summary": "S", "date": "2026-08-23"}
+    )
+    assert status == render.R2_PUBLISHED
+    # Exact keys, exact order — the daily show's behavior with no prefix key set.
+    assert s3.put_order == [
+        "daily-digest-august-23-2026.mp3",
+        "daily-digest-august-23-2026.jpg",
+        "manifest.json",
+    ]
+
+
+def test_publish_prefixed_keys_are_disjoint_from_a_same_day_default_publish(monkeypatch, tmp_path):
+    """The #142 collision, replayed: daily ships first, frontier ships the same day
+    into the same bucket. With the prefix set, no frontier PUT may touch a key the
+    daily publish wrote."""
+    s3 = FakeS3()
+    status, s3 = _publish_with_manifest(
+        monkeypatch, tmp_path, {"title": "Daily X", "summary": "S", "date": "2026-08-23"}, s3=s3
+    )
+    assert status == render.R2_PUBLISHED
+    daily_keys = list(s3.put_order)
+
+    status, s3 = _publish_with_manifest(monkeypatch, tmp_path, dict(_FRONTIER_MANIFEST), s3=s3)
+    assert status == render.R2_PUBLISHED
+    frontier_keys = s3.put_order[len(daily_keys) :]
+    assert set(frontier_keys).isdisjoint(daily_keys)
+    assert "frontier-commits/daily-digest-august-23-2026.mp3" in frontier_keys
+    assert "frontier-commits/daily-digest-august-23-2026.jpg" in frontier_keys
+
+
+def test_publish_prefix_reaches_the_web_feed_urls_but_not_the_slug(monkeypatch, tmp_path):
+    status, s3 = _publish_with_manifest(monkeypatch, tmp_path, dict(_FRONTIER_MANIFEST))
+    assert status == render.R2_PUBLISHED
+    entry = json.loads(s3.objects["manifest-frontier-commits.json"])[0]
+    base = "https://audio.example"
+    assert entry["mp3_url"] == f"{base}/frontier-commits/daily-digest-august-23-2026.mp3"
+    assert entry["cover_url"] == f"{base}/frontier-commits/daily-digest-august-23-2026.jpg"
+    # The slug is the /podcast/<slug>/ permalink guid — the prefix must not reach it.
+    assert entry["slug"] == "daily-digest-august-23-2026"
+
+
+def test_dry_run_preview_url_carries_the_prefix(monkeypatch, tmp_path):
+    """--dry-run's r2_would_publish resolves through r2_episode_mp3_url, same as the
+    real publish — the rehearsal that exposed #142 must now show the prefixed URL."""
+    s3 = FakeS3()
+    _configured(monkeypatch, tmp_path, s3)
+    cfg_config = {"r2_bucket": "clodcast", "r2_public_base_url": "https://audio.example"}
+    manifest = dict(_FRONTIER_MANIFEST)
+
+    preview = render.r2_episode_mp3_url(render.load_r2_config(cfg_config), manifest)
+
+    kwargs = _publish_kwargs(tmp_path)
+    kwargs["manifest"] = manifest
+    assert render.maybe_publish_r2(cfg_config, **kwargs) == render.R2_PUBLISHED
+    published = json.loads(s3.objects["manifest-frontier-commits.json"])[0]["mp3_url"]
+    assert preview == published
+    assert preview == "https://audio.example/frontier-commits/daily-digest-august-23-2026.mp3"
+
+
 # --- resume-path R2 back-fill (#40) ----------------------------------------
 #
 # The --workdir resume tail (_resume) must also publish to R2, mirroring the fresh

@@ -467,6 +467,15 @@ second show sharing the bucket keeps its web feed out of the daily show's
 `manifest.json`. Unset means `manifest.json`; episode and cover object keys are
 unaffected either way.
 
+Episode and cover keys have their own optional `"r2_key_prefix"` — a bare prefix
+matching `[A-Za-z0-9._-]+` with an optional trailing `/` (no paths, no dot-only
+values; anything else fails validation) — prepended to the `<slug>.mp3`/`<slug>.jpg`
+object keys and to the `mp3_url`/`cover_url` the web-feed entry advertises. The slug
+is date-keyed, so two shows publishing the same day into the shared bucket would
+otherwise mint identical keys and the later publish would overwrite the earlier
+show's objects (#142). Unset means no prefix — the daily show's keys byte-identical
+to before. The `slug` field itself (the permalink guid) is never prefixed.
+
 ### `slug` is keyed on the date, never the title
 
 `slug` comes from `slug_for_date(<episode date>)` alone — the manifest `title` is

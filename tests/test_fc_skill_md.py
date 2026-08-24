@@ -109,10 +109,12 @@ def test_fc_snapshot_cli_exists_and_matches_the_documented_contract():
         assert literal in skill, f"SKILL.md no longer documents the {literal!r} final line"
 
 
-def test_render_py_honors_the_documented_manifest_key():
-    assert "r2_manifest_name" in RENDER_PY.read_text(), (
-        "SKILL.md's manifest promises r2_manifest_name but render.py never mentions it"
-    )
+def test_render_py_honors_the_documented_manifest_keys():
+    render_src = RENDER_PY.read_text()
+    for key in ("r2_manifest_name", "r2_key_prefix"):
+        assert key in render_src, (
+            f"SKILL.md's manifest promises {key} but render.py never mentions it"
+        )
 
 
 def test_skill_md_relative_paths_resolve():
@@ -156,3 +158,9 @@ def test_write_story_prompt_declares_the_placeholders():
 
 def test_skill_md_pins_the_frontier_manifest_name():
     assert "manifest-frontier-commits.json" in _skill_text()
+
+
+def test_skill_md_pins_the_frontier_key_prefix():
+    # Without the prefix, a frontier publish mints the daily show's same-day
+    # <slug>.mp3/<slug>.jpg keys in the shared bucket and overwrites them (#142).
+    assert '"r2_key_prefix": "frontier-commits/"' in _skill_text()
