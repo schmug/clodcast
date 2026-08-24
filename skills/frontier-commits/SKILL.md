@@ -195,7 +195,7 @@ A standard `render.py` manifest (the daily skill's Form 2) plus five keys, all f
 
 ```json
 {
-  "title": "Frontier Commits — Week of August 24, 2026",
+  "title": "Claude Code, the codex train, OpenAI's Python SDK - Week of August 24, 2026",
   "summary": "This week's one-sentence hook.",
   "date": "2026-08-24",
   "voice": "house",
@@ -214,7 +214,19 @@ A standard `render.py` manifest (the daily skill's Form 2) plus five keys, all f
 }
 ```
 
-- **Title format:** `Frontier Commits — Week of <Month D, YYYY>` (the Monday of the run's ISO week).
+- **Title format** — the daily show's topic-first style (its SKILL.md's "Episode title" section is the source of the rules), with the weekly date tail:
+
+  ```
+  <topic>, <topic>, <topic> - Week of <Month D, YYYY>
+  ```
+
+  Three topics from the FIRST THREE stories in running order; each a short noun phrase of
+  2-3 words naming the subject (repo, product, release), never a sentence; digits stay
+  digits; hyphens, never em dashes; the date is the Monday of the run's ISO week. The
+  title is display-only free text — the slug/guid key on the DATE (see the daily
+  SKILL.md's #128 note), so retitling never duplicates the back catalogue. Never title an
+  episode `Frontier Commits — Week of ...`: the show name is already on every directory
+  listing, and the first thirty characters are the only ones a browsing listener sees.
 - **Strict 1:1** segment ↔ source mapping: every story segment carries exactly its own repo URL; the cold open, trend watch, and sign-off carry `null`. Never merge stories or attach two URLs to one segment.
 - **Frame segments must carry a `title`.** Story segments get their chapter title from `source_title`, but the three frame segments have no source — without an explicit `"title"` ("Cold open", "Trend watch", "Sign-off"), `render.py` falls back to positional chapter titles like "Segment 1" in the published timeline.
 - **Voice defaults to house.** Do not set `voice_instruct`; no new voice modes.
