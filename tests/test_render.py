@@ -603,6 +603,110 @@ def test_resolve_cover_date_bad_value_dies():
         render.resolve_cover_date({"date": "not-a-date"})
 
 
+# --- resolve_show_name (#157) ---------------------------------------------
+#
+# render.py reads ONE config (~/.config/daily-podcast/config.json) for every show
+# it renders — deliberately, since it owns the episode bucket. Without a per-
+# manifest override, a second show's covers were stamped with the daily show's
+# name.
+
+
+def test_resolve_show_name_prefers_the_manifest_override():
+    # The whole point of #157: the manifest wins over a config naming another show.
+    assert (
+        render.resolve_show_name({"show_name": "Frontier Commits"}, {"show_name": "Daily Digest"})
+        == "Frontier Commits"
+    )
+
+
+def test_resolve_show_name_falls_back_to_config_when_the_key_is_absent():
+    # Default path must be byte-identical to pre-#157 behaviour.
+    assert render.resolve_show_name({}, {"show_name": "Daily Digest"}) == "Daily Digest"
+
+
+def test_resolve_show_name_falls_back_to_the_house_default():
+    assert render.resolve_show_name({}, {}) == "Daily Digest"
+
+
+def test_resolve_show_name_treats_an_explicit_null_as_absent():
+    assert render.resolve_show_name({"show_name": None}, {"show_name": "Daily Digest"}) == (
+        "Daily Digest"
+    )
+
+
+def _cover_show_name(monkeypatch, tmp_path, manifest_extra: dict, config: dict) -> str:
+    """Dry-run main() over a minimal manifest and return the name build_cover got."""
+    manifest = {
+        "title": "An episode",
+        "summary": "hook",
+        "segments": [{"text": "story", "source_url": "https://example.com/a"}],
+        **manifest_extra,
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+
+    seen: list[str] = []
+    monkeypatch.setattr(render, "load_config", lambda: config)
+    monkeypatch.setattr(render, "render_segments", lambda *a, **k: [tmp_path / "seg_01.mp3"])
+    monkeypatch.setattr(render, "plan_silences", lambda paths: [0])
+    monkeypatch.setattr(
+        render, "concat_and_normalize", lambda *a, **k: (tmp_path / "episode.mp3", None)
+    )
+    monkeypatch.setattr(
+        render, "build_cover", lambda out, show_name, *a, **k: seen.append(show_name)
+    )
+    monkeypatch.setattr(
+        render,
+        "build_timeline_and_description",
+        lambda *a, **k: ({"items": [{"chapter": {"title": "A", "start_time_ms": 0}}]}, "<p>d</p>"),
+    )
+    monkeypatch.setattr(render, "mp3_duration_ms", lambda p: 60_000)
+    monkeypatch.setattr(render, "preflight", lambda *a, **k: (True, []))
+    monkeypatch.setattr(render, "verify_artifact", lambda *a, **k: [])
+    monkeypatch.setattr(render, "probe_audio_profile", lambda p: {})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "render.py",
+            "--manifest",
+            str(manifest_path),
+            "--workdir",
+            str(tmp_path / "wd"),
+            "--dry-run",
+        ],
+    )
+
+    assert render.main() == 0
+    assert len(seen) == 1
+    return seen[0]
+
+
+def test_manifest_show_name_reaches_the_cover(monkeypatch, tmp_path):
+    # Real-host shape: config names the daily show, the manifest is a second show's.
+    assert (
+        _cover_show_name(
+            monkeypatch,
+            tmp_path,
+            {"show_name": "Frontier Commits", "show_id": "spotify:show:1"},
+            {"show_name": "Daily Digest", "show_id": "spotify:show:1"},
+        )
+        == "Frontier Commits"
+    )
+
+
+def test_cover_still_uses_config_show_name_when_the_manifest_omits_it(monkeypatch, tmp_path):
+    assert (
+        _cover_show_name(
+            monkeypatch,
+            tmp_path,
+            {"show_id": "spotify:show:1"},
+            {"show_name": "Daily Digest", "show_id": "spotify:show:1"},
+        )
+        == "Daily Digest"
+    )
+
+
 # --- resume (idempotent post-upload) --------------------------------------
 
 
@@ -839,6 +943,29 @@ def test_validate_manifest_r2_key_prefix_rejects_paths_and_traversal(bad):
     # would advertise a URL that normalizes back onto the default show's objects.
     m = _valid_manifest()
     m["r2_key_prefix"] = bad
+    with pytest.raises(SystemExit):
+        render.validate_manifest(m)
+
+
+def test_validate_manifest_show_name_accepts_a_second_shows_name():
+    m = _valid_manifest()
+    m["show_name"] = "Frontier Commits"
+    render.validate_manifest(m)  # no raise
+
+
+def test_validate_manifest_show_name_allows_null():
+    m = _valid_manifest()
+    m["show_name"] = None  # explicit null behaves like absent
+    render.validate_manifest(m)  # no raise
+
+
+@pytest.mark.parametrize("bad", ["", "   ", 7, ["Frontier Commits"]])
+def test_validate_manifest_rejects_a_blank_or_non_string_show_name(bad):
+    # A blank override is a typo, not a request for the default: falling through to
+    # config would stamp the daily show's branding on a second show's cover, which
+    # is exactly the bug the key exists to fix (#157).
+    m = _valid_manifest()
+    m["show_name"] = bad
     with pytest.raises(SystemExit):
         render.validate_manifest(m)
 

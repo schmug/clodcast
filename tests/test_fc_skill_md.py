@@ -126,7 +126,7 @@ def test_fc_snapshot_cli_exists_and_matches_the_documented_contract():
 
 def test_render_py_honors_the_documented_manifest_keys():
     render_src = RENDER_PY.read_text()
-    for key in ("r2_manifest_name", "r2_key_prefix", "ship_mode"):
+    for key in ("r2_manifest_name", "r2_key_prefix", "ship_mode", "show_name"):
         assert key in render_src, (
             f"SKILL.md's manifest promises {key} but render.py never mentions it"
         )
@@ -138,6 +138,18 @@ def test_render_py_honors_the_documented_manifest_keys():
 # save-to-spotify show is deprecated. SKILL.md is the production path — the
 # scheduled weekly run is a Claude invocation following it — so a mode that
 # exists only in render.py never reaches a real episode.
+
+
+def test_skill_md_pins_the_shows_own_cover_name():
+    # render.py stamps the cover from ~/.config/daily-podcast/config.json unless the
+    # MANIFEST overrides it (#157), so an example without this key produces episodes
+    # whose art carries the daily show's branding. Section-scoped on purpose: the
+    # Setup section's frontier config.json carries an identical show_name line, and
+    # that file is precisely the one render.py does not read.
+    assert '"show_name": "Frontier Commits"' in _section("## Manifest"), (
+        "SKILL.md's manifest example must set show_name; without it every cover "
+        "renders with the daily show's name"
+    )
 
 
 def test_skill_md_pins_the_web_only_ship_mode():

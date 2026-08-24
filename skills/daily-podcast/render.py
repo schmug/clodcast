@@ -653,6 +653,17 @@ def resolve_cover_date(manifest: dict[str, Any]) -> str:
         die(f"manifest.date must be ISO YYYY-MM-DD, got: {raw!r}")
 
 
+def resolve_show_name(manifest: dict[str, Any], config: dict[str, Any]) -> str:
+    """
+    Name stamped on the cover (big wrapped title + uppercase top label). The
+    manifest wins because render.py renders every show from ONE config —
+    ~/.config/daily-podcast/config.json — and that is deliberate: it owns the
+    episode bucket and the Spotify show for all of them. Without this override a
+    second show's covers carried the daily show's branding (#157).
+    """
+    return manifest.get("show_name") or config.get("show_name") or "Daily Digest"
+
+
 # --- input safety ----------------------------------------------------------
 
 
@@ -735,6 +746,14 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             "manifest 'r2_key_prefix' must be a bare object-key prefix "
             f"([A-Za-z0-9._-]+ with an optional trailing '/') (got {prefix!r})"
         )
+    # Cover branding override (#157). A blank value is a typo, not a request for
+    # the default: falling through to config would stamp the daily show's name on a
+    # second show's cover, which is the exact bug this key exists to fix.
+    cover_show_name = manifest.get("show_name")
+    if cover_show_name is not None and (
+        not isinstance(cover_show_name, str) or not cover_show_name.strip()
+    ):
+        die(f"manifest 'show_name' must be a non-empty string (got {cover_show_name!r})")
     # Ship mode is a closed set (#155): an unrecognized value must never fall back
     # to the Spotify default, because for an RSS-first show that means uploading to
     # a deprecated show instead of failing. Typos ("webb", "WEB") die here.
@@ -3473,7 +3492,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
         # An RSS-first show has no Spotify show to upload to, so a show_id here is
         # meaningless — drop it rather than let it reach a gate or an API call.
         show_id = None
-    show_name = config.get("show_name") or "Daily Digest"
+    show_name = resolve_show_name(manifest, config)
 
     # PRE-FLIGHT: verify everything the run depends on before spending a render on
     # it. Capacity is the headline — the cap-429 auto-prune only ever fired *after*
