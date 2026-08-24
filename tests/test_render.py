@@ -707,6 +707,42 @@ def test_cover_still_uses_config_show_name_when_the_manifest_omits_it(monkeypatc
     )
 
 
+# --- build_cover, for real -------------------------------------------------
+#
+# Every OTHER reference to build_cover in this suite monkeypatches it, so until
+# #164 nothing ever drew a cover — despite resolve_font's fallback chain existing
+# precisely so this path runs on Linux CI. These two actually render.
+
+
+def test_build_cover_renders_a_valid_1400px_jpeg(tmp_path):
+    from PIL import Image
+
+    out = tmp_path / "cover.jpg"
+    render.build_cover(out, "Frontier Commits", "August 24, 2026", "A short subtitle hint")
+    with Image.open(out) as im:
+        assert im.format == "JPEG"
+        assert im.size == (1400, 1400)
+    # The generated and supplied paths must produce interchangeable artifacts, or
+    # one of them ships art a podcast directory rejects.
+    assert render.check_cover_image(out)["ok"] is True
+
+
+def test_build_cover_survives_a_show_name_that_has_to_wrap_and_downsize(tmp_path):
+    # The wrap-then-shrink loop is the only nontrivial logic in build_cover, and it
+    # is the branch a long name reaches.
+    from PIL import Image
+
+    out = tmp_path / "cover.jpg"
+    render.build_cover(
+        out,
+        "A Preposterously Long Show Name That Cannot Possibly Fit On One Line",
+        "August 24, 2026",
+        "x" * 200,
+    )
+    with Image.open(out) as im:
+        assert im.size == (1400, 1400)
+
+
 # --- supplied cover image (#164) -------------------------------------------
 #
 # build_cover draws ONE template for every show render.py renders — the daily
