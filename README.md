@@ -208,6 +208,27 @@ JSON summary — and exits non-zero on any failure. It runs in under 5 seconds. 
 real run the auto-created workdir is deleted (pass `--keep-workdir` to retain it; a failed run
 always keeps it for debugging).
 
+### Retitling published episodes
+
+`retitle.py` rewrites the `title` field on entries already in the R2 manifest, so the
+public show's back catalogue can carry topical titles instead of date stamps. It is a
+maintenance tool — no run calls it — and it touches nothing else: not the audio, not the
+slug, and therefore not the `<guid>` Spotify keys each episode on.
+
+```bash
+python3 skills/daily-podcast/retitle.py                        # review every title
+python3 skills/daily-podcast/retitle.py --only <slug> --apply  # canary: one episode
+python3 skills/daily-podcast/retitle.py --apply                # the rest
+```
+
+Dry run is the default. `--apply` backs the current manifest up to
+`~/.config/daily-podcast/manifest-backups/`, PUTs the rewrite, and fires the
+Cloudflare Pages deploy hook so cortech.online rebuilds (it reads the manifest at build
+time, so without the hook the change stays invisible until the next episode ships). A
+second `--apply` writes nothing: the titles come from a fixed table
+(`skills/daily-podcast/backfill_topics.json`) and are composed by the same
+`episode_title()` new episodes use.
+
 ### Config files
 
 The orchestrator writes two additional state files alongside `covered.json` and `runs.jsonl`:
