@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+  <title>Bubbles — Comments</title>
+  <link href="https://bubbles.town/feed/comments" rel="self" type="application/atom+xml"></link>
+  <link href="https://bubbles.town" rel="alternate" type="text/html"></link>
+  <icon>https://bubbles.town/static/favicon.svg</icon>
+  <id>https://bubbles.town/feed/comments</id>
+  <updated>2026-08-25T10:37:35Z</updated>
+  <!-- FIXTURE: Captured from https://bubbles.town/feed/comments on 2026-08-25 (see docs/superpowers/specs/2026-08-24-surface-tension-design.md section 2). Entries cover both content shapes: a first comment (2 links) and an Nth comment carrying 'Earlier comments' (3 links). Content is VERBATIM, untrimmed - the absence of any comment body is the finding, not an artifact of trimming. -->
+  <entry>
+    <title>New comment on: 8 Movies to Know Me (1st, 1 total)</title>
+    <link href="https://mastodon.social/@snowgoon/117155709265017126" rel="alternate" type="text/html"></link>
+    <id>https://bubbles.town/entry/44773379#comment-1</id>
+    <published>2026-08-25T10:37:35Z</published>
+    <updated>2026-08-25T10:37:35Z</updated>
+    <author>
+      <name>bubbles.town</name>
+    </author>
+    <content type="html">&lt;ul&gt;&lt;li&gt;&lt;a href=&#34;https://bubbles.town/entry/44773379&#34;&gt;8 Movies to Know Me on Bubbles&lt;/a&gt;&lt;/li&gt;&lt;li&gt;&lt;a href=&#34;https://social.bubbles.town/@bubbles/statuses/01M0W334QHQET5T286GAPBCTYK&#34;&gt;Full discussion on Fediverse&lt;/a&gt;&lt;/li&gt;&lt;/ul&gt;</content>
+  </entry>
+  <entry>
+    <title>New comment on: Stop Trying to Distinguish AI-Generated Writing From Human Writing Because You Can’t (2nd, 2 total)</title>
+    <link href="https://mastodon.me.uk/@clare_hooley/117144874121371209" rel="alternate" type="text/html"></link>
+    <id>https://bubbles.town/entry/44771775#comment-2</id>
+    <published>2026-08-23T12:42:03Z</published>
+    <updated>2026-08-23T12:42:03Z</updated>
+    <author>
+      <name>bubbles.town</name>
+    </author>
+    <content type="html">&lt;ul&gt;&lt;li&gt;&lt;a href=&#34;https://bubbles.town/entry/44771775&#34;&gt;Stop Trying to Distinguish AI-Generated Writing From Human Writing Because You Can’t on Bubbles&lt;/a&gt;&lt;/li&gt;&lt;li&gt;&lt;a href=&#34;https://social.bubbles.town/@bubbles/statuses/01M0MYYXHYSNNWMTVFZ99HYVWS&#34;&gt;Full discussion on Fediverse&lt;/a&gt;&lt;/li&gt;&lt;li&gt;Earlier comments: &lt;a href=&#34;https://fosstodon.org/@jerryorr/117142338586986048&#34;&gt;#1&lt;/a&gt;&lt;/li&gt;&lt;/ul&gt;</content>
+  </entry>
+  <entry>
+    <title>New comment on: NO THANK YOU. (1st, 1 total)</title>
+    <link href="https://techhub.social/@numericcitizen/117150351194691804" rel="alternate" type="text/html"></link>
+    <id>https://bubbles.town/entry/44771288#comment-1</id>
+    <published>2026-08-24T11:54:57Z</published>
+    <updated>2026-08-24T11:54:57Z</updated>
+    <author>
+      <name>bubbles.town</name>
+    </author>
+    <content type="html">&lt;ul&gt;&lt;li&gt;&lt;a href=&#34;https://bubbles.town/entry/44771288&#34;&gt;NO THANK YOU. on Bubbles&lt;/a&gt;&lt;/li&gt;&lt;li&gt;&lt;a href=&#34;https://social.bubbles.town/@bubbles/statuses/01M0JH6T1D056NVZ2PCBRTE0W6&#34;&gt;Full discussion on Fediverse&lt;/a&gt;&lt;/li&gt;&lt;/ul&gt;</content>
+  </entry>
+</feed>
