@@ -37,11 +37,17 @@ jobs:
       # written to run off macOS precisely so this job can exercise it (#164). Without
       # it every cover test either fails or silently skips, and the cover ships to a
       # PUBLIC feed where a directory rejects the whole feed over bad art.
+      # feedparser is the third: it is pure Python, installs anywhere, and
+      # tests/test_bubbles_fixtures.py asserts that the captured bubbles.town feeds
+      # (#173) survive feedparser's namespace flattening — the vote count reaches
+      # `media_statistics`, not the nesting the XML actually uses. Those assertions
+      # are importorskip-gated, so without it here the recon's "feedparser parses it
+      # without loss" claim would quietly stop being checked.
       # ruff is pinned exactly so CI matches the version validated locally and in
       # .pre-commit-config.yaml — a floating ruff can promote rules and redden CI.
       # Keep this in lockstep with the pre-commit rev and pyproject's `dev` extra.
       - name: Install dev tools
-        run: python -m pip install "ruff==0.14.10" "pytest>=8.0" boto3 defusedxml Pillow
+        run: python -m pip install "ruff==0.14.10" "pytest>=8.0" boto3 defusedxml Pillow feedparser
 
       # resolve_font's Linux fallbacks are DejaVu and Liberation. Installed
       # explicitly rather than assumed from the runner image: which fonts ship in

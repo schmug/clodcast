@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xmlns:slash="http://purl.org/rss/1.0/modules/slash/" xmlns:thr="http://purl.org/syndication/thread/1.0">
+  <title>Bubbles — New</title>
+  <link href="https://bubbles.town/feed/new" rel="self" type="application/atom+xml"></link>
+  <link href="https://bubbles.town" rel="alternate" type="text/html"></link>
+  <icon>https://bubbles.town/static/favicon.svg</icon>
+  <id>https://bubbles.town/feed/new</id>
+  <updated>2026-08-25T11:00:39Z</updated>
+  <!-- FIXTURE: Captured from https://bubbles.town/feed/new on 2026-08-25 (see docs/superpowers/specs/2026-08-24-surface-tension-design.md section 2). Entries selected to cover the structural variants; <content> bodies truncated to keep the fixture small and avoid vendoring whole posts. -->
+  <entry>
+    <title>Please interact with my blog post!</title>
+    <link href="https://hypersubject.net/posts/please-interact-with-my-blog-post!" rel="alternate" type="text/html"></link>
+    <id>https://hypersubject.net/posts/please-interact-with-my-blog-post!</id>
+    <published>2026-08-25T11:00:39Z</published>
+    <updated>2026-08-25T11:00:39Z</updated>
+    <author>
+      <name>ege&#39;s weblog</name>
+      <uri>https://hypersubject.net</uri>
+    </author>
+    <content type="html">&lt;p&gt;&lt;a href=&#34;https://bubbles.town/entry/44773418&#34;&gt;🫧 Open on Bubbles&lt;/a&gt;&lt;/p&gt;&lt;p&gt;This website is, in some sense, an open call for everyone out there: “this is what I think and this is what I do, let’s connect!” This requires setting up pathways for people to reach out to me, and &lt;a href=&#34;https://michaelharley.net/posts/2026/08/22/please-let-me-interact-with [TRIMMED FOR FIXTURE]</content>
+    <media:thumbnail url="https://hypersubject.b-cdn.net/images/hypersubject/webmentions.png"></media:thumbnail>
+    <slash:comments>0</slash:comments>
+    <media:community>
+      <media:statistics favorites="1"></media:statistics>
+    </media:community>
+  </entry>
+  <entry>
+    <title>Leaf Developers Geekstrada and Helaas: The Full Interview</title>
+    <link href="https://gardinerbryant.com/leaf-developers-the-full-interview/" rel="alternate" type="text/html"></link>
+    <id>https://gardinerbryant.com/leaf-developers-the-full-interview/</id>
+    <published>2026-08-25T11:00:13Z</published>
+    <updated>2026-08-25T11:00:13Z</updated>
+    <author>
+      <name>The Bryant Review</name>
+      <uri>https://gardinerbryant.com</uri>
+    </author>
+    <content type="html">&lt;p&gt;&lt;a href=&#34;https://bubbles.town/entry/44773420&#34;&gt;🫧 Open on Bubbles&lt;/a&gt;&lt;/p&gt;&lt;img src=&#34;https://gardinerbryant.com/content/images/2026/08/sniff-2.webp&#34;&gt;&lt;p&gt;&lt;/p&gt;&lt;p&gt;This is the complete chat with the duo behind Leaf (Geekstrada and Helaas), the custom firmware for the Miniloong Pocket 1. Covering their backgrounds, how they came together, th [TRIMMED FOR FIXTURE]</content>
+    <media:thumbnail url="https://gardinerbryant.com/content/images/2026/08/sniff-2.webp"></media:thumbnail>
+    <slash:comments>0</slash:comments>
+    <media:community>
+      <media:statistics favorites="0"></media:statistics>
+    </media:community>
+  </entry>
+  <entry>
+    <title>I Built the Writing App of My Dreams</title>
+    <link href="https://justincox.com/blog/2026/08/i-built-the-writing-app-of-my-dreams/" rel="alternate" type="text/html"></link>
+    <id>https://justincox.com/blog/2026/08/i-built-the-writing-app-of-my-dreams/</id>
+    <published>2026-08-25T11:00:02Z</published>
+    <updated>2026-08-25T11:00:02Z</updated>
+    <author>
+      <name>Justin Cox</name>
+      <uri>https://justincox.com</uri>
+    </author>
+    <content type="html">&lt;p&gt;&lt;a href=&#34;https://bubbles.town/entry/44773416&#34;&gt;🫧 Open on Bubbles&lt;/a&gt;&lt;/p&gt;&lt;img src=&#34;https://justincox.com/content/images/2026/08/All-Devices-Screenshot-2.png&#34; alt=&#34;I Built the Writing App of My Dreams&#34;&gt;&lt;p&gt;First of all, let me take a moment to retract a passage from &lt;a href=&#34;https://justincox.com/book/&#34; rel=&#34;nofollow&#34; [TRIMMED FOR FIXTURE]</content>
+    <media:thumbnail url="https://justincox.com/content/images/2026/08/All-Devices-Screenshot-2.png"></media:thumbnail>
+    <slash:comments>0</slash:comments>
+    <media:community>
+      <media:statistics favorites="0"></media:statistics>
+    </media:community>
+  </entry>
+</feed>

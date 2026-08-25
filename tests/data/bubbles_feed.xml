@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xmlns:slash="http://purl.org/rss/1.0/modules/slash/" xmlns:thr="http://purl.org/syndication/thread/1.0">
+  <title>Bubbles</title>
+  <link href="https://bubbles.town/feed" rel="self" type="application/atom+xml"></link>
+  <link href="https://bubbles.town" rel="alternate" type="text/html"></link>
+  <icon>https://bubbles.town/static/favicon.svg</icon>
+  <id>https://bubbles.town/feed</id>
+  <updated>2026-08-25T08:00:00Z</updated>
+  <!-- FIXTURE: Captured from https://bubbles.town/feed on 2026-08-25 (see docs/superpowers/specs/2026-08-24-surface-tension-design.md section 2). Entries selected to cover the structural variants; <content> bodies truncated to keep the fixture small and avoid vendoring whole posts. -->
+  <entry>
+    <title>9 Games to Know Me</title>
+    <link href="https://www.strangevoyages.quest/9-games-to-know-me/" rel="alternate" type="text/html"></link>
+    <id>https://www.strangevoyages.quest/9-games-to-know-me/</id>
+    <published>2026-08-25T08:00:00Z</published>
+    <updated>2026-08-25T08:00:00Z</updated>
+    <author>
+      <name>Strange Voyages</name>
+      <uri>https://www.strangevoyages.quest</uri>
+    </author>
+    <content type="html">&lt;p&gt;&lt;a href=&#34;https://bubbles.town/entry/44773354&#34;&gt;🫧 Open on Bubbles&lt;/a&gt;&lt;/p&gt;&lt;p&gt;&lt;strong&gt;Part of the User Manual Series where I give some brief overviews of the media, experiences, thoughts that help make me...me. Released hourly on my 32nd birthday.&lt;/strong&gt;&lt;/p&gt;&#xA;&lt;p&gt;&lt;strong&gt;Pokémon Heartgold&lt;/strong&gt;&lt;/p&gt;&#xA;&lt;p&gt;I [TRIMMED FOR FIXTURE]</content>
+    <slash:comments>0</slash:comments>
+    <media:community>
+      <media:statistics favorites="3"></media:statistics>
+    </media:community>
+  </entry>
+  <entry>
+    <title>Capitalism Failure</title>
+    <link href="https://lars.ingebrigtsen.no/2026/08/25/capitalism-failure/" rel="alternate" type="text/html"></link>
+    <id>https://lars.ingebrigtsen.no/2026/08/25/capitalism-failure/</id>
+    <published>2026-08-25T10:41:30Z</published>
+    <updated>2026-08-25T10:41:30Z</updated>
+    <author>
+      <name>Random Thoughts</name>
+      <uri>https://lars.ingebrigtsen.no</uri>
+    </author>
+    <content type="html">&lt;p&gt;&lt;a href=&#34;https://bubbles.town/entry/44773408&#34;&gt;🫧 Open on Bubbles&lt;/a&gt;&lt;/p&gt;&lt;p&gt;&lt;a href=&#34;https://lars.ingebrigtsen.no/wp-content/uploads/2026/08/2026-08-25.jpeg&#34; rel=&#34;nofollow&#34;&gt;&lt;img src=&#34;https://lars.ingebrigtsen.no/wp-content/uploads/2026/08/2026-08-25.jpeg&#34; alt=&#34;&#34; width=&#34;840&#34; height=&#34;560&#34;/&gt;&lt;/a&gt; [TRIMMED FOR FIXTURE]</content>
+    <media:thumbnail url="https://lars.ingebrigtsen.no/wp-content/uploads/2026/08/2026-08-25.jpeg"></media:thumbnail>
+    <slash:comments>0</slash:comments>
+    <media:community>
+      <media:statistics favorites="1"></media:statistics>
+    </media:community>
+  </entry>
+  <entry>
+    <title>8 Movies to Know Me</title>
+    <link href="https://www.strangevoyages.quest/8-movies-to-know-me/" rel="alternate" type="text/html"></link>
+    <link href="https://bubbles.town/entry/44773379" rel="replies" type="text/html" thr:count="1"></link>
+    <id>https://www.strangevoyages.quest/8-movies-to-know-me/</id>
+    <published>2026-08-25T09:00:00Z</published>
+    <updated>2026-08-25T09:00:00Z</updated>
+    <author>
+      <name>Strange Voyages</name>
+      <uri>https://www.strangevoyages.quest</uri>
+    </author>
+    <content type="html">&lt;p&gt;&lt;a href=&#34;https://bubbles.town/entry/44773379&#34;&gt;🫧 Open on Bubbles&lt;/a&gt;&lt;/p&gt;&lt;p&gt;&lt;strong&gt;Part of the User Manual Series where I give some brief overviews of the media, experiences and thoughts that help make me...me. Released hourly on my 32nd birthday.&lt;/strong&gt;&lt;/p&gt;&#xA;&lt;p&gt;&lt;strong&gt;Jurassic Park&lt;/strong&gt;&lt;/p&gt;&#xA;&lt;p&gt;Di [TRIMMED FOR FIXTURE]</content>
+    <slash:comments>1</slash:comments>
+    <media:community>
+      <media:statistics favorites="1"></media:statistics>
+    </media:community>
+  </entry>
+</feed>

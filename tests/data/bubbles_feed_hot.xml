@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xmlns:slash="http://purl.org/rss/1.0/modules/slash/" xmlns:thr="http://purl.org/syndication/thread/1.0">
+  <title>Bubbles — Hot</title>
+  <link href="https://bubbles.town/feed/hot" rel="self" type="application/atom+xml"></link>
+  <link href="https://bubbles.town" rel="alternate" type="text/html"></link>
+  <icon>https://bubbles.town/static/favicon.svg</icon>
+  <id>https://bubbles.town/feed/hot</id>
+  <updated>2026-08-25T09:00:00Z</updated>
+  <!-- FIXTURE: Captured from https://bubbles.town/feed/hot on 2026-08-25 (see docs/superpowers/specs/2026-08-24-surface-tension-design.md section 2). Entries selected to cover the structural variants; <content> bodies truncated to keep the fixture small and avoid vendoring whole posts. -->
+  <entry>
+    <title>8 Movies to Know Me</title>
+    <link href="https://www.strangevoyages.quest/8-movies-to-know-me/" rel="alternate" type="text/html"></link>
+    <link href="https://bubbles.town/entry/44773379" rel="replies" type="text/html" thr:count="1"></link>
+    <id>https://www.strangevoyages.quest/8-movies-to-know-me/</id>
+    <published>2026-08-25T09:00:00Z</published>
+    <updated>2026-08-25T09:00:00Z</updated>
+    <author>
+      <name>Strange Voyages</name>
+      <uri>https://www.strangevoyages.quest</uri>
+    </author>
+    <content type="html">&lt;p&gt;&lt;a href=&#34;https://bubbles.town/entry/44773379&#34;&gt;🫧 Open on Bubbles&lt;/a&gt;&lt;/p&gt;&lt;p&gt;&lt;strong&gt;Part of the User Manual Series where I give some brief overviews of the media, experiences and thoughts that help make me...me. Released hourly on my 32nd birthday.&lt;/strong&gt;&lt;/p&gt;&#xA;&lt;p&gt;&lt;strong&gt;Jurassic Park&lt;/strong&gt;&lt;/p&gt;&#xA;&lt;p&gt;Di [TRIMMED FOR FIXTURE]</content>
+    <slash:comments>1</slash:comments>
+    <media:community>
+      <media:statistics favorites="1"></media:statistics>
+    </media:community>
+  </entry>
+  <entry>
+    <title> PTPL 220 · Would you rather: generative AI, or Comic Sans? (Poll results from 677 people) </title>
+    <link href="https://ellanew.com/2026/08/24/ptpl-221-ai-vs-comic-sans" rel="alternate" type="text/html"></link>
+    <link href="https://bubbles.town/entry/44772521" rel="replies" type="text/html" thr:count="1"></link>
+    <id>https://ellanew.com/2026/08/24/ptpl-221-ai-vs-comic-sans</id>
+    <published>2026-08-23T23:00:00Z</published>
+    <updated>2026-08-23T23:00:00Z</updated>
+    <author>
+      <name>Ellane W</name>
+      <uri>https://ellanew.com</uri>
+    </author>
+    <content type="html">&lt;p&gt;&lt;a href=&#34;https://bubbles.town/entry/44772521&#34;&gt;🫧 Open on Bubbles&lt;/a&gt;&lt;/p&gt;&lt;h2 id=&#34;stop-reading-now-if-you-arent-interested-in-a-nuanced-take-on-both-of-them&#34;&gt;Stop reading now if you aren’t interested in a nuanced take on both of them&lt;/h2&gt;&#xA;&lt;p&gt;&lt;img src=&#34;https://cdn.blot.im/blog_177bc256f0ee469c998e912e20ece048/_image_cache/35c742fa [TRIMMED FOR FIXTURE]</content>
+    <media:thumbnail url="https://cdn.blot.im/blog_177bc256f0ee469c998e912e20ece048/_image_cache/35c742fa-2399-4aef-a36c-a789dc73b020/pasted-percent20image-percent2020260822194418.png"></media:thumbnail>
+    <slash:comments>1</slash:comments>
+    <media:community>
+      <media:statistics favorites="0"></media:statistics>
+    </media:community>
+  </entry>
+  <entry>
+    <title>Stop Trying to Distinguish AI-Generated Writing From Human Writing Because You Can’t</title>
+    <link href="https://journal.james-zhan.com/ai-writing/" rel="alternate" type="text/html"></link>
+    <link href="https://bubbles.town/entry/44771775" rel="replies" type="text/html" thr:count="2"></link>
+    <id>https://journal.james-zhan.com/ai-writing/</id>
+    <published>2026-08-22T14:41:00Z</published>
+    <updated>2026-08-22T14:41:00Z</updated>
+    <author>
+      <name>James Zhan in real life.</name>
+      <uri>https://journal.james-zhan.com</uri>
+    </author>
+    <content type="html">&lt;p&gt;&lt;a href=&#34;https://bubbles.town/entry/44771775&#34;&gt;🫧 Open on Bubbles&lt;/a&gt;&lt;/p&gt;&lt;p&gt;I was just attending a virtual academic conference, where, frustratingly and annoyingly, 9 out of 10 sessions were about AI. But then, in one of the sessions that discussed human writing vs AI writing, I saw this slide:&lt;/p&gt;&#xA;&lt;p&gt;&lt;img src=&#34;https://bear-images.sfo2. [TRIMMED FOR FIXTURE]</content>
+    <slash:comments>2</slash:comments>
+    <media:community>
+      <media:statistics favorites="11"></media:statistics>
+    </media:community>
+  </entry>
+</feed>
