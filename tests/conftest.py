@@ -24,10 +24,13 @@ sys.path.insert(0, str(FC_SKILL_DIR))
 import fc_common  # noqa: E402  (must follow the sys.path insert above)
 
 # Surface Tension is a third flat skill directory. st_script_plan imports
-# fc_script_plan by path itself, so this insert only makes `import
-# st_script_plan` resolve from the repo root the same way the others do.
+# fc_script_plan by path itself, so this insert is what makes `import
+# st_script_plan` / `import st_gather` resolve from the repo root the same way
+# the other skills' modules do.
 ST_SKILL_DIR = Path(__file__).resolve().parent.parent / "skills" / "surface-tension"
 sys.path.insert(0, str(ST_SKILL_DIR))
+
+import st_gather  # noqa: E402  (must follow the sys.path insert above)
 
 # Every user-level state path render.py can WRITE to. Redirected per-test below.
 # Read-only paths (the bundled house-voice refs, blocked_sources.json) are left
@@ -80,6 +83,11 @@ def _isolate_user_state(tmp_path_factory, monkeypatch):
     # the developer's real 0600 ~/.config/daily-podcast/secrets.json — and a
     # live GH_TOKEN there would print in any assertion that reprs a captured env.
     monkeypatch.setattr(fc_common, "DAILY_PODCAST_CONFIG_DIR", fc_sandbox / "daily-podcast")
+    # Surface Tension owns its config dir precisely so its covered.json cannot be
+    # confused with the daily show's (a shared one would silently withhold a post
+    # from whichever show ran second) — so it needs its own redirection too.
+    st_sandbox = tmp_path_factory.mktemp("surface-tension-state")
+    monkeypatch.setattr(st_gather, "CONFIG_DIR", st_sandbox)
     yield sandbox
 
 
@@ -89,6 +97,7 @@ def pytest_configure(config):
     real = Path.home() / ".config" / "daily-podcast"
     config._daily_podcast_real_state_dir = real
     config._frontier_real_state_dir = Path.home() / ".config" / "frontier-commits"
+    config._st_real_state_dir = Path.home() / ".config" / "surface-tension"
 
 
 @pytest.fixture(autouse=True)
@@ -115,3 +124,9 @@ def _assert_no_real_state_writes(request, _isolate_user_state):
             assert forbidden not in value.parents and value != forbidden, (
                 f"test left fc_common.{attr} pointing at real user state: {value}"
             )
+    st_value = Path(st_gather.CONFIG_DIR)
+    real_st = request.config._st_real_state_dir
+    assert real_st not in st_value.parents and st_value != real_st, (
+        f"test left st_gather.CONFIG_DIR pointing at the real state dir ({st_value}); "
+        "patch it to a tmp path"
+    )
