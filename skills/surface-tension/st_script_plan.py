@@ -81,25 +81,43 @@ ROLES_ST = {
         "turns": (1, 2),
     },
     "switchboard": {
-        "does": "Takes the calls - introduces each caller, reacts, cuts them off.",
+        "does": (
+            "Works the board: reports how many called, from which instances, and "
+            "when. Never what they said."
+        ),
         "turns": (0, 2),
     },
 }
 
 # Roles the DATA can veto after the plan is made. The plan proposes a slot; a
-# scene with no callers renders no turn in it. This is the same mechanical
+# scene with no discussion renders no turn in it. This is the same mechanical
 # honesty as the textless `cold` transition move in fc_script_plan and the
-# "never manufacture a connection" rule: a fabricated caller is strictly worse
+# "never manufacture a connection" rule: a fabricated call is strictly worse
 # than a dead phone line, because it is unfalsifiable on air. `build_plan`
-# precomputes the no-caller ordering for every scene precisely so a writer
+# precomputes the no-discussion ordering for every scene precisely so a writer
 # handed an empty comment list is never left resolving it by hand — the
-# temptation to invent a caller has to be designed out, not forbidden in prose.
+# temptation to invent one has to be designed out, not forbidden in prose.
 CONDITIONAL_ROLES_ST = ("switchboard",)
 
+# WORDING IS LOAD-BEARING, and the first version of it shipped a fabrication
+# path. It said the slot renders when there is "a real Fediverse comment to
+# quote verbatim" — but #173 established that /feed/comments carries NO comment
+# bodies (spec section 2.3), so there has never been anything to quote. Worse,
+# the gate fires on the comment COUNT, which is real and non-zero: slash:comments
+# was > 0 on 17 of 17 live /feed/hot entries, and scene 6 is sourced from
+# /feed/hot. A writer told a real quote exists, handed a post the data agrees
+# has comments, and given no way to fetch one, invents it. State the absence
+# explicitly rather than trusting a trailing "never invent" to hold the line.
 SWITCHBOARD_CONDITION = (
-    "Renders turns ONLY if this post has at least one real Fediverse comment to "
-    "quote verbatim. With no comments there is no call and no switchboard turn: "
-    "use the no_callers ordering. Never invent a caller to fill this slot."
+    "Renders turns ONLY if this post has at least one Fediverse comment "
+    "(slash:comments > 0 on the post's feed entry). NO COMMENT TEXT IS "
+    "AVAILABLE ANYWHERE — the comments feed carries navigation links only, so "
+    "any wording you attribute to a commenter is fabricated. Report only what "
+    "the metadata supports: how many comments, which post, thread position, "
+    "roughly when, and the commenters' INSTANCE HOSTS (never their handles or "
+    "display names). Never reproduce or paraphrase what anyone said, and never "
+    "name a commenter. With no comments there is no call and no switchboard "
+    "turn: use the no_discussion ordering."
 )
 
 # The recurring bits, one owner each per week. Order is load-bearing:
@@ -258,7 +276,7 @@ def _turn_entry(role: str, voice: str | None) -> dict:
 
 def build_scene(week: int, pos: int) -> dict:
     """Assemble one post scene: the panel, the sat-out role, the stance pair,
-    the turn order, and the ordering that survives a post with no callers."""
+    the turn order, and the ordering that survives a post with no discussion."""
     roles = scene_roles(week, pos)
     order = scene_turn_order(week, pos)
     fallback = [role for role in order if role not in CONDITIONAL_ROLES_ST]
@@ -271,9 +289,9 @@ def build_scene(week: int, pos: int) -> dict:
         "opens": order[0],
         "last_word": order[-1],
         # Precomputed rather than left to the writer: handed only the full
-        # ordering, a writer with no comments to quote has to decide who takes
-        # the freed slot, and inventing a caller is the easier answer.
-        "no_callers": {
+        # ordering, a writer whose post drew no discussion has to decide who
+        # takes the freed slot, and inventing a call is the easier answer.
+        "no_discussion": {
             "turn_order": fallback,
             "opens": fallback[0],
             "last_word": fallback[-1],

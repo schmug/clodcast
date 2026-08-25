@@ -248,27 +248,27 @@ def test_switchboard_is_the_only_conditional_role():
             assert ("condition" in turn) == turn["conditional"]
 
 
-def test_a_scene_with_no_callers_renders_no_switchboard_turn():
-    # The plan proposes, the data disposes. The no-caller ordering is precomputed
+def test_a_scene_with_no_discussion_renders_no_switchboard_turn():
+    # The plan proposes, the data disposes. The no-discussion ordering is precomputed
     # so a writer handed an empty comment list is never left resolving it — and
-    # so nothing is tempted to invent a caller to fill an assigned slot.
+    # so nothing is tempted to invent a call to fill an assigned slot.
     for monday in _MONDAY_SPAN[:30]:
         for scene in sp.build_plan(monday, 5)["scenes"]:
             full = [t["role"] for t in scene["turn_order"]]
-            fallback = scene["no_callers"]["turn_order"]
+            fallback = scene["no_discussion"]["turn_order"]
             assert fallback == [r for r in full if r not in sp.CONDITIONAL_ROLES_ST]
             assert fallback  # never empties the scene
-            assert scene["no_callers"]["opens"] == fallback[0]
-            assert scene["no_callers"]["last_word"] == fallback[-1]
+            assert scene["no_discussion"]["opens"] == fallback[0]
+            assert scene["no_discussion"]["last_word"] == fallback[-1]
             assert scene["opens"] == full[0]
             assert scene["last_word"] == full[-1]
 
 
-def test_no_caller_fallback_never_hands_a_turn_to_the_switchboard():
+def test_no_discussion_fallback_never_hands_a_turn_to_the_switchboard():
     for monday in _MONDAY_SPAN[:30]:
         for scene in sp.build_plan(monday, 5)["scenes"]:
-            assert scene["no_callers"]["opens"] not in sp.CONDITIONAL_ROLES_ST
-            assert scene["no_callers"]["last_word"] not in sp.CONDITIONAL_ROLES_ST
+            assert scene["no_discussion"]["opens"] not in sp.CONDITIONAL_ROLES_ST
+            assert scene["no_discussion"]["last_word"] not in sp.CONDITIONAL_ROLES_ST
 
 
 def test_the_switchboard_takes_the_opening_or_closing_slot_sometimes():
@@ -350,7 +350,7 @@ def test_scene_entries_carry_the_full_writer_contract():
             "turn_order",
             "opens",
             "last_word",
-            "no_callers",
+            "no_discussion",
         } <= set(scene)
         for turn in scene["turn_order"]:
             assert turn["voice"] == scene["roles"][turn["role"]]
@@ -381,3 +381,30 @@ def test_cli_refuses_a_date_that_is_not_a_real_iso_day(bad):
 def test_cli_refuses_a_post_count_below_one():
     with pytest.raises(SystemExit):
         sp.main(["plan", "--date", "2026-08-31", "--posts", "0"])
+
+
+# ---------------------------------------------------------------------------
+# The plan must never instruct the writer to quote a caller (#173 fallout)
+# ---------------------------------------------------------------------------
+
+
+def test_the_plan_never_instructs_the_writer_to_quote_a_comment():
+    """A plan that says "quote verbatim" is an instruction to fabricate.
+
+    `/feed/comments` carries NO comment bodies (#173, spec section 2.3, pinned by
+    tests/test_bubbles_fixtures.py) — an entry is navigation links only. So there
+    is nothing to quote, and any quotable text a writer produces is invented.
+
+    This is sharper than it sounds because the switchboard gate fires on the
+    comment COUNT, which is real and non-zero: `slash:comments` was > 0 on 17 of
+    17 live `/feed/hot` entries, and scene 6 is sourced from `/feed/hot`. So the
+    condition goes TRUE on essentially every scene-6 post while the bodies remain
+    unavailable — the worst possible combination for a model told a real quote
+    exists.
+
+    Asserted on the SERIALIZED plan rather than on the constants, because the
+    JSON is what actually reaches the writer.
+    """
+    blob = json.dumps(sp.build_plan("2026-08-30", 4)).lower()
+    for banned in ("quot", "verbatim", "caller", "takes the calls"):
+        assert banned not in blob, f"the emitted plan tells the writer to {banned!r}"
