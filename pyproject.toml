@@ -72,5 +72,6 @@ known-first-party = [
     "fc_snapshot",
     "fc_stories",
     "fc_script_plan",
+    "st_gather",
     "st_script_plan",
 ]

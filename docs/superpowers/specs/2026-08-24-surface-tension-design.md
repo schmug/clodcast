@@ -324,6 +324,24 @@ Two hazards, both worth guarding at gather time:
 and per-feed variety terms, and keeps `rank_candidates`' per-feed cap so one
 prolific blog cannot take the episode.
 
+**Amended 2026-08-25 (#175), on three points the implementation had to settle:**
+
+- **The variety penalty reads `covered.json`, and there is no `feed_usage.json`**
+  (see §6). It keys on the **domain** of each covered URL rather than a feed name:
+  several feeds resolve to one blog, and the blog is the thing that needs limiting.
+- **The per-feed cap keys on the domain too.** Every bubbles candidate arrives
+  through `/feed` or `/feed/hot`, so a cap keyed on the feed it came from would
+  never bind — and stopping one prolific blog owning the episode is the entire
+  point of the cap.
+- **The two pools are ranked separately and interleaved on a share, not merged
+  into one sorted list.** An OPML blog post has no vote count, so a single global
+  sort on votes puts every OPML candidate below every bubbles candidate and the
+  second source — a locked decision — becomes dead weight. Ranking within a pool
+  keeps the vote signal honest exactly where it exists and never asks what a blog
+  post's vote count "would have been"; `opml_share` (default 0.25) reserves the
+  slots, and an empty OPML pool returns its slots to the voted one rather than
+  leaving a hole.
+
 ### 4.3 Assign — `st_script_plan.py`
 
 A CLI in the shape of `fc_script_plan.py` — `plan --date <ISO> --posts <n>`
@@ -600,7 +618,7 @@ main load-bearing justification.
 | `covered.json` | `render.py` | URL → `{date, mp3_url}`; written only after `R2_PUBLISHED`; 180-day prune |
 | `runs.jsonl` | `render.py` | Append-only, full `RUN_LOG_FIELDS` key set per line |
 | `dropped.jsonl` | `st_gather.py` | One record per dropped item; observability only |
-| `feed_usage.json` | orchestrator | Variety penalty across weeks. **#95 reports the daily show's has been dead since 2026-06-05** — wire it here rather than copying the dead path, and assert it with a test |
+| ~~`feed_usage.json`~~ | — | **Not created (amended 2026-08-25, #175).** #95's penalty went inert because its only writer stopped being the path that ships. A second state file here would inherit that failure mode, so the variety penalty reads `covered.json` instead — written by `render.py` after every successful ship, already loaded for dedup, and keyed on the covered URL's domain (which #95 notes is closer to what needs limiting than a feed name). See §4.2 |
 | `bloopers/` | `render.py` | Shared archive shape; see §4.6 for the gate trap |
 
 ## 7. Testing
