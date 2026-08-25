@@ -23,6 +23,12 @@ sys.path.insert(0, str(FC_SKILL_DIR))
 
 import fc_common  # noqa: E402  (must follow the sys.path insert above)
 
+# Surface Tension is a third flat skill directory. st_script_plan imports
+# fc_script_plan by path itself, so this insert only makes `import
+# st_script_plan` resolve from the repo root the same way the others do.
+ST_SKILL_DIR = Path(__file__).resolve().parent.parent / "skills" / "surface-tension"
+sys.path.insert(0, str(ST_SKILL_DIR))
+
 # Every user-level state path render.py can WRITE to. Redirected per-test below.
 # Read-only paths (the bundled house-voice refs, blocked_sources.json) are left
 # alone — tests legitimately assert against the shipped files.
