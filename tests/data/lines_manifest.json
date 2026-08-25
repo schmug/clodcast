@@ -1,0 +1,64 @@
+{
+  "title": "Surface Tension - lines-layer rehearsal",
+  "summary": "A two-scene hand-written manifest exercising the multi-voice lines layer (#172).",
+  "date": "2026-08-24",
+  "ship_mode": "web",
+  "voice": "Ryan",
+  "cast": {
+    "anchor": "Ryan",
+    "advocate": "Aiden",
+    "skeptic": "Ethan",
+    "switchboard": "Chelsie"
+  },
+  "segments": [
+    {
+      "title": "Cold open",
+      "source_url": null,
+      "lines": [
+        {
+          "speaker": "anchor",
+          "text": "You are listening to a rehearsal, which is the least promising sentence in radio, so let us get on with it."
+        },
+        {
+          "speaker": "skeptic",
+          "text": "It is a rehearsal for a show about blog posts nobody asked to be read aloud. I want that on the record before we start."
+        },
+        {
+          "speaker": "advocate",
+          "text": "Noted, and overruled. The whole point is that four people arguing about one post is more honest than one voice summarising it."
+        },
+        {
+          "speaker": "switchboard",
+          "text": "Lines are open, the coffee is bad, and the board is already lit. Let us go to the first post."
+        }
+      ]
+    },
+    {
+      "title": "The post",
+      "source_title": "An indie blog post",
+      "source_url": "https://example.com/a-post",
+      "lines": [
+        {
+          "speaker": "anchor",
+          "text": "First up: a post arguing that small software should stay small, and that every feature past the second one is a tax the author pays forever."
+        },
+        {
+          "speaker": "advocate",
+          "text": "The argument holds. The maintenance cost of a feature is not the week you wrote it, it is every week after, and most projects never price that in until they are drowning."
+        },
+        {
+          "speaker": "skeptic",
+          "text": "It holds right up until it meets a user. The post never says who decides which two features count, and that is the entire fight, not a detail."
+        },
+        {
+          "speaker": "advocate",
+          "text": "The author does say it, in the part about shipping the smallest thing that is embarrassing and letting the complaints pick the third feature for you."
+        },
+        {
+          "speaker": "anchor",
+          "text": "We will call that a draw and move on, which is the anchor's privilege and the reason this desk exists."
+        }
+      ]
+    }
+  ]
+}

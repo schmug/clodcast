@@ -99,6 +99,16 @@ HOUSE_VOICE_INSTRUCT = (
 MIN_CHAPTER_GAP_MS = 5_000
 DEFAULT_SILENCE_MS = 800
 LAST_SILENCE_MS = 0  # no silence after the final segment
+# The pause between two speakers' lines INSIDE one scene (#172). Read the three
+# constants above it as a set, because they are three different things and the
+# first two get conflated constantly:
+#   MIN_CHAPTER_GAP_MS is not a silence at all — it is the minimum SPACING between
+#     consecutive chapter start times, which plan_silences satisfies with padding.
+#   DEFAULT_SILENCE_MS is the beat between CHAPTERS: a breath between two topics.
+#   TURN_GAP_MS is the beat between TURNS inside one chapter. 800ms here would make
+#     a four-hander sound like a hostage negotiation; dialogue wants 150-350ms.
+# It is baked into the concatenated seg_NN.mp3, so it is part of a scene's cache key.
+TURN_GAP_MS = 250
 # TTS speech-rate outlier gate. render.py samples Qwen3-TTS with mlx-audio's
 # defaults (no seed, temperature, or repetition penalty), and it occasionally
 # degenerates mid-segment into looping babble: on 2026-08-17 segment 6 of
@@ -748,7 +758,84 @@ def resolve_cover_image(manifest: dict[str, Any], manifest_path: Path) -> Path |
     return path if path.is_absolute() else manifest_path.parent / path
 
 
+# --- multi-voice scenes (#172) ---------------------------------------------
+#
+# A segment may carry `lines: [{speaker, text}, ...]` instead of a `text`. Each line
+# renders in its own cast voice and the takes join into the same seg_NN.mp3 the rest
+# of the pipeline already expects, so one scene stays one chapter with one
+# source_url. The alternative — one utterance per segment — breaks the strict 1:1
+# segment<->chapter<->source_url mapping, makes plan_silences pad seconds of dead air
+# between every turn to reach MIN_CHAPTER_GAP_MS, and emits a couple hundred
+# chapters. Putting the lines INSIDE the segment leaves silences, chapter math,
+# timeline, artifact gate, run log, R2 publish and dedup untouched.
+
+LINE_TEXT_JOINER = " "
+
+
+def segment_lines(seg: Any) -> list[Any] | None:
+    """The segment's non-empty `lines` array, or None for a single-voice segment.
+
+    Deliberately tolerant of junk: this is also read on the failure path
+    (capture_workdir_segments), where the manifest is whatever JSON was on disk."""
+    lines = seg.get("lines") if isinstance(seg, dict) else None
+    return lines if isinstance(lines, list) and lines else None
+
+
+def lines_text(lines: list[Any]) -> str:
+    """The spoken text of a scene: its line texts, in order, joined."""
+    return LINE_TEXT_JOINER.join(
+        line["text"].strip()
+        for line in lines
+        if isinstance(line, dict) and isinstance(line.get("text"), str) and line["text"].strip()
+    )
+
+
+def materialize_line_text(manifest: dict[str, Any]) -> None:
+    """Give every `lines` segment a derived `text`, in place. NOT a convenience.
+
+    speech_rate_rows measures `len(seg["text"])` and treats zero chars as
+    *unmeasurable*, skipping the segment. A lines-only episode would therefore
+    measure nothing, fall under MIN_RATE_SAMPLE_SEGMENTS, and get back `[]` — which
+    that function's docstring defines as "no evidence of a defect". The
+    TTS-degeneration gate and the bloopers bin would both switch themselves off for
+    an entire show and report nothing. Deriving the text keeps their population
+    intact rather than routing around the contract.
+
+    Runs immediately AFTER validate_manifest, which is what rejects a segment
+    carrying both an author-written `text` and `lines` — by the time this has run
+    every scene has a `text` and the two are indistinguishable. Never overwrites an
+    existing `text`, so it is idempotent and safe to re-run on a workdir manifest."""
+    if not isinstance(manifest, dict):
+        return
+    segments = manifest.get("segments")
+    if not isinstance(segments, list):
+        return
+    for seg in segments:
+        lines = segment_lines(seg)
+        if lines is None or seg.get("text") is not None:
+            continue
+        seg["text"] = lines_text(lines)
+
+
 # --- input safety ----------------------------------------------------------
+
+
+def _validate_scene(i: int, lines: Any, cast: dict[str, Any] | None) -> None:
+    """Structural checks for one segment's `lines` array. Dies naming the line."""
+    if not isinstance(lines, list) or not lines:
+        die(f"manifest segment[{i}] field 'lines' must be a non-empty list")
+    for j, line in enumerate(lines):
+        where = f"manifest segment[{i}].lines[{j}]"
+        if not isinstance(line, dict):
+            die(f"{where} must be an object")
+        speaker = line.get("speaker")
+        if not isinstance(speaker, str) or not speaker.strip():
+            die(f"{where} missing required field 'speaker'")
+        if not isinstance(line.get("text"), str) or not line["text"].strip():
+            die(f"{where} field 'text' must be a non-empty string")
+        if not cast or speaker not in cast:
+            known = ", ".join(sorted(cast)) if cast else "the manifest has no 'cast'"
+            die(f"{where}.speaker {speaker!r} is not in the manifest 'cast' ({known})")
 
 
 def validate_manifest(manifest: dict[str, Any]) -> None:
@@ -765,15 +852,44 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         if not isinstance(val, str) or not val.strip():
             die(f"manifest '{field}' is required and must be a non-empty string")
 
+    # The cast is validated before the segments because every line's `speaker` is
+    # checked against it (#172). A whitelist of the four bundled presets, not a free
+    # string: a typo must die rather than silently render a scene in the wrong voice,
+    # and the house voice is deliberately excluded — it is the daily show's narrator,
+    # not a panelist. Recorded cast clips are Phase 3.
+    cast = manifest.get("cast")
+    if cast is not None:
+        if not isinstance(cast, dict) or not cast:
+            die("manifest 'cast' must be a non-empty object mapping speaker -> voice")
+        shown = "{" + ", ".join(f'"{v}"' for v in VOICES) + "}"
+        for speaker, cast_voice in cast.items():
+            if not isinstance(speaker, str) or not speaker.strip():
+                die("manifest 'cast' keys must be non-empty speaker names")
+            if cast_voice not in VOICES:
+                die(
+                    f"manifest cast[{speaker!r}] must be one of {shown} (got {cast_voice!r}) — "
+                    "the lines layer ships on the bundled presets"
+                )
+
     segments = manifest.get("segments")
     if not isinstance(segments, list) or not segments:
         die("manifest 'segments' is required and must be a non-empty list")
     for i, seg in enumerate(segments):
         if not isinstance(seg, dict):
             die(f"manifest segment[{i}] must be an object")
-        if not isinstance(seg.get("text"), str):
+        if seg.get("lines") is not None:
+            # A scene's `text` is DERIVED from its lines (materialize_line_text), so an
+            # author-written one is a malformed manifest: silently preferring either
+            # would ship an episode whose audio and whose measured script disagree.
+            if seg.get("text") is not None:
+                die(
+                    f"manifest segment[{i}] has both 'text' and 'lines' — they are mutually "
+                    "exclusive; a scene's 'text' is derived from its line texts"
+                )
+            _validate_scene(i, seg["lines"], cast)
+        elif not isinstance(seg.get("text"), str):
             die(f"manifest segment[{i}] missing required field 'text'")
-        if not seg["text"].strip():
+        elif not seg["text"].strip():
             die(f"manifest segment[{i}] field 'text' must be non-empty")
         for opt in ("title", "source_title"):
             if seg.get(opt) is not None and not isinstance(seg[opt], str):
@@ -783,6 +899,19 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             isinstance(url, str) and url.startswith(("http://", "https://"))
         ):
             die(f"manifest segment[{i}].source_url must be an http(s) URL (got {url!r})")
+
+    # A cast is presets on the base MODEL_ID; voice_instruct routes the episode to
+    # VOICE_DESIGN_MODEL_ID — a SECOND model, roughly doubling the ~15s load, that
+    # also drifts run to run (docs/durable-voices.md). One episode cannot be rendered
+    # from both, so the combination dies here rather than quietly rendering a cast
+    # off the wrong model. Clone mode is fine: it shares the base model.
+    if manifest.get("voice_instruct") and any(
+        isinstance(seg, dict) and seg.get("lines") for seg in segments
+    ):
+        die(
+            "manifest sets 'voice_instruct' and carries 'lines' segments — VoiceDesign is a "
+            "second model and a multi-voice cast runs on the base model's presets; drop one"
+        )
 
     voice = manifest.get("voice")
     if voice is not None:
@@ -982,12 +1111,20 @@ def _segment_cache_key(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _cache_hit(workdir: Path, i: int, key: str) -> bool:
-    """A segment is reusable iff its mp3 exists AND its sidecar records this exact
-    key. A bare mp3 with no/mismatched sidecar (older run, partial write, changed
-    script) is NOT trusted — content identity is then unknown, so we re-render."""
-    mp3 = workdir / f"seg_{i:02d}.mp3"
-    sidecar = workdir / f"seg_{i:02d}.json"
+def _scene_cache_key(line_keys: list[str]) -> str:
+    """Content hash for a scene assembled from per-line takes (#172): the ordered line
+    keys plus the turn gap welded between them. A line changing, moving, appearing or
+    disappearing changes the scene's key — and so does retuning TURN_GAP_MS, since
+    that silence is baked into the concatenated seg_NN.mp3. Pure; no I/O."""
+    payload = json.dumps({"lines": line_keys, "turn_gap_ms": TURN_GAP_MS}, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _take_cache_hit(mp3: Path, sidecar: Path, key: str) -> bool:
+    """A rendered take (a whole segment, or one line of a scene) is reusable iff its
+    mp3 exists AND its sidecar records this exact key. A bare mp3 with no/mismatched
+    sidecar (older run, partial write, changed script) is NOT trusted — content
+    identity is then unknown, so we re-render."""
     if not mp3.exists() or not sidecar.exists():
         return False
     try:
@@ -997,7 +1134,83 @@ def _cache_hit(workdir: Path, i: int, key: str) -> bool:
     return isinstance(meta, dict) and meta.get("key") == key
 
 
+def _cache_hit(workdir: Path, i: int, key: str) -> bool:
+    """Whether segment `i`'s finished seg_NN.mp3 can be reused as-is. For a scene the
+    key is the composite one from _scene_cache_key, so the joined mp3 and its line
+    takes are cached independently."""
+    return _take_cache_hit(workdir / f"seg_{i:02d}.mp3", workdir / f"seg_{i:02d}.json", key)
+
+
 # --- audio rendering -------------------------------------------------------
+
+
+def _render_take(
+    model: Any,
+    *,
+    text: str,
+    mode: str,
+    voice: str,
+    voice_instruct: str | None,
+    ref_audio: str | None,
+    ref_text: str | None,
+    mp3: Path,
+) -> float:
+    """Render ONE take — a whole segment, or one line of a multi-voice scene — to a
+    mono-44.1k mp3. Returns the generated audio's duration in seconds.
+
+    Both callers share this body so the per-line path cannot drift from the
+    per-segment one: the mono-44.1k re-assertion in particular is a place the concat
+    invariant can be broken, and there is now one of it rather than two."""
+    import numpy as np
+    import soundfile as sf
+
+    if mode == "clone":
+        results = list(
+            model.generate(
+                text=text,
+                language="English",
+                ref_audio=ref_audio,
+                ref_text=ref_text,
+            )
+        )
+    elif mode == "design":
+        results = list(
+            model.generate_voice_design(
+                text=text,
+                language="English",
+                instruct=voice_instruct,
+            )
+        )
+    else:
+        results = list(
+            model.generate(
+                text=text,
+                voice=voice,
+                language="English",
+            )
+        )
+    audio = np.concatenate([np.array(r.audio) for r in results])
+    wav = mp3.with_suffix(".wav")
+    sf.write(wav, audio, SAMPLE_RATE)
+    # convert to mp3 at 44.1k mono so concat is clean
+    run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(wav),
+            "-ar",
+            str(AUDIO_SAMPLE_RATE),
+            "-ac",
+            str(AUDIO_CHANNELS),
+            "-c:a",
+            AUDIO_CODEC,
+            "-b:a",
+            AUDIO_BITRATE,
+            str(mp3),
+        ]
+    )
+    return len(audio) / SAMPLE_RATE
 
 
 def render_segments(
@@ -1008,6 +1221,7 @@ def render_segments(
     ref_audio: str | None = None,
     ref_text: str | None = None,
     raw_text: bool = False,
+    cast: dict[str, str] | None = None,
 ) -> list[Path]:
     """
     Render each segment text to an mp3 in workdir; return list of mp3 paths.
@@ -1019,12 +1233,21 @@ def render_segments(
 
     `ref_audio` takes precedence if both are set.
 
+    Multi-voice scenes (#172): a segment carrying `lines` renders one take per line,
+    each in the voice `cast` maps its `speaker` to, and joins them into the same
+    seg_NN.mp3 a single-voice segment produces — one scene, one chapter, one
+    source_url. A cast voice is a preset on the same base MODEL_ID, so a four-hander
+    still pays exactly one model load; `speaker` is a role, NOT a fifth voice mode,
+    and the four-mode precedence above is untouched.
+
     Per-segment cache (#9): each seg_NN.mp3 carries a seg_NN.json sidecar with a
     content-hash key (text + voice settings). On a re-run with the same --workdir,
     any segment whose key matches is reused as-is and only the rest are rendered;
-    if *every* segment is cached the model load is skipped entirely. The mono-44.1k
-    invariant and strict 1:1 segment<->source mapping are unchanged — a cache hit
-    returns the byte-identical mp3 a fresh render would have produced.
+    if *every* segment is cached the model load is skipped entirely. A scene caches
+    at both levels — line_NN_LL.mp3 per take, seg_NN.mp3 for the join — so rewriting
+    one bad line re-renders that line, not the whole scene. The mono-44.1k invariant
+    and strict 1:1 segment<->source mapping are unchanged — a cache hit returns the
+    byte-identical mp3 a fresh render would have produced.
     """
     use_clone = bool(ref_audio)
     use_design = bool(voice_instruct) and not use_clone
@@ -1033,104 +1256,139 @@ def render_segments(
     # the key; otherwise the voice label is. Resolve the ref-audio fingerprint once.
     key_voice = voice_instruct if use_design else voice
     ref_fingerprint = _ref_audio_fingerprint(ref_audio)
+    cast = cast or {}
+    if use_design and any(segment_lines(seg) for seg in segments):
+        # validate_manifest already rejects this; re-asserted here so the function is
+        # honest to a direct caller rather than rendering presets off the wrong model.
+        die(
+            "voice_instruct (VoiceDesign) cannot render a 'lines' cast — "
+            "presets need the base model"
+        )
 
-    # Pass 1 (no model needed): prep text + compute keys + classify hit/miss.
-    prepped: list[str] = []
-    keys: list[str] = []
-    cached: list[bool] = []
+    # Pass 1 (no model needed): prep text + compute keys + classify hit/miss. A scene
+    # expands into one take per line here, so per-line hits are known before anything
+    # is loaded — which is what keeps the model load conditional for scenes too.
+    plans: list[dict[str, Any]] = []
     for i, seg in enumerate(segments, start=1):
-        text = _prep_segment_text(seg["text"], raw_text)
-        if not text:
-            die(f"segment {i} has empty text")
-        key = _segment_cache_key(text, mode, key_voice or "", ref_fingerprint, ref_text)
-        prepped.append(text)
-        keys.append(key)
-        cached.append(_cache_hit(workdir, i, key))
+        lines = segment_lines(seg)
+        if lines is None:
+            text = _prep_segment_text(seg["text"], raw_text)
+            if not text:
+                die(f"segment {i} has empty text")
+            takes = [
+                {
+                    "text": text,
+                    "mode": mode,
+                    "voice": voice,
+                    "key": _segment_cache_key(
+                        text, mode, key_voice or "", ref_fingerprint, ref_text
+                    ),
+                    "mp3": workdir / f"seg_{i:02d}.mp3",
+                    "sidecar": workdir / f"seg_{i:02d}.json",
+                }
+            ]
+            key = takes[0]["key"]
+        else:
+            takes = []
+            for j, line in enumerate(lines, start=1):
+                text = _prep_segment_text(line.get("text") or "", raw_text)
+                if not text:
+                    die(f"segment {i} line {j} has empty text")
+                speaker = line.get("speaker")
+                line_voice = cast.get(speaker) if isinstance(speaker, str) else None
+                if not line_voice:
+                    known = ", ".join(sorted(cast)) if cast else "no cast in the manifest"
+                    die(f"segment {i} line {j} speaker {speaker!r} is not in the cast ({known})")
+                takes.append(
+                    {
+                        "text": text,
+                        # A cast voice is a preset on the base model — never the clone
+                        # or VoiceDesign engine — so its key records that mode and no
+                        # ref-audio fields, and stays stable if the EPISODE voice moves.
+                        "mode": "preset",
+                        "voice": line_voice,
+                        "key": _segment_cache_key(text, "preset", line_voice, None, None),
+                        "mp3": workdir / f"line_{i:02d}_{j:02d}.mp3",
+                        "sidecar": workdir / f"line_{i:02d}_{j:02d}.json",
+                    }
+                )
+            key = _scene_cache_key([t["key"] for t in takes])
+        for take in takes:
+            take["cached"] = _take_cache_hit(take["mp3"], take["sidecar"], take["key"])
+        plans.append(
+            {
+                "scene": lines is not None,
+                "takes": takes,
+                "key": key,
+                "cached": _cache_hit(workdir, i, key),
+            }
+        )
 
-    n_hits = sum(cached)
+    n_hits = sum(p["cached"] for p in plans)
     if n_hits:
         log(f"cache: {n_hits}/{len(segments)} segment(s) reusable from {workdir}")
 
-    # Load the model only if at least one segment is a miss. A fully-cached re-run
-    # pays nothing for the ~15s model load (acceptance criterion in #9).
+    # Load the model only if at least one TAKE is a miss. A fully-cached re-run pays
+    # nothing for the ~15s model load (acceptance criterion in #9), and a scene whose
+    # line takes all survive needs only re-joining, which is an ffmpeg call.
+    pending = [t for p in plans if not p["cached"] for t in p["takes"] if not t["cached"]]
     model = None
-    if n_hits < len(segments):
+    if pending:
         model_id = VOICE_DESIGN_MODEL_ID if use_design else MODEL_ID
         log(f"loading {model_id}...")
         t0 = time.time()
-        import numpy as np
-        import soundfile as sf
         from mlx_audio.tts.utils import load_model
 
         model = load_model(model_id)
         log(f"  model loaded in {time.time() - t0:.1f}s")
-    else:
+    elif n_hits == len(segments):
         log("cache: all segments cached, skipping model load")
+    else:
+        log("cache: every line take is cached, re-joining scenes only; skipping model load")
 
     paths: list[Path] = []
-    for idx in range(len(segments)):
+    for idx, plan in enumerate(plans):
         i = idx + 1
-        text = prepped[idx]
         mp3 = workdir / f"seg_{i:02d}.mp3"
-        if cached[idx]:
-            log(f"[{i}/{len(segments)}] cache hit (voice={voice}, mode={mode}), reusing {mp3.name}")
+        if plan["cached"]:
+            what = (
+                f"scene, {len(plan['takes'])} line take(s)"
+                if plan["scene"]
+                else f"voice={voice}, mode={mode}"
+            )
+            log(f"[{i}/{len(segments)}] cache hit ({what}), reusing {mp3.name}")
             paths.append(mp3)
             continue
-        log(f"[{i}/{len(segments)}] rendering ({len(text)} chars, voice={voice}, mode={mode})...")
-        t0 = time.time()
-        if use_clone:
-            results = list(
-                model.generate(
-                    text=text,
-                    language="English",
-                    ref_audio=ref_audio,
-                    ref_text=ref_text,
-                )
+        n_takes = len(plan["takes"])
+        for j, take in enumerate(plan["takes"], start=1):
+            where = f"[{i}/{len(segments)}]" + (f" line {j}/{n_takes}" if plan["scene"] else "")
+            if take["cached"]:
+                log(f"{where} cache hit (voice={take['voice']}), reusing {take['mp3'].name}")
+                continue
+            log(
+                f"{where} rendering ({len(take['text'])} chars, "
+                f"voice={take['voice']}, mode={take['mode']})..."
             )
-        elif use_design:
-            results = list(
-                model.generate_voice_design(
-                    text=text,
-                    language="English",
-                    instruct=voice_instruct,
-                )
+            t0 = time.time()
+            dur_s = _render_take(
+                model,
+                text=take["text"],
+                mode=take["mode"],
+                voice=take["voice"],
+                voice_instruct=voice_instruct,
+                ref_audio=ref_audio,
+                ref_text=ref_text,
+                mp3=take["mp3"],
             )
-        else:
-            results = list(
-                model.generate(
-                    text=text,
-                    voice=voice,
-                    language="English",
-                )
-            )
-        audio = np.concatenate([np.array(r.audio) for r in results])
-        wav = workdir / f"seg_{i:02d}.wav"
-        sf.write(wav, audio, SAMPLE_RATE)
-        # convert to mp3 at 44.1k mono so concat is clean
-        run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(wav),
-                "-ar",
-                str(AUDIO_SAMPLE_RATE),
-                "-ac",
-                str(AUDIO_CHANNELS),
-                "-c:a",
-                AUDIO_CODEC,
-                "-b:a",
-                AUDIO_BITRATE,
-                str(mp3),
-            ]
-        )
-        # Write the sidecar only AFTER the mp3 is on disk, so a crash between the
-        # two never records a cache hit for a half-written segment. _atomic_write_text
-        # ensures the sidecar itself can't be torn either.
-        _atomic_write_text(workdir / f"seg_{i:02d}.json", json.dumps({"key": keys[idx]}))
-        dur_s = len(audio) / SAMPLE_RATE
-        elapsed = time.time() - t0
-        log(f"  -> {dur_s:.2f}s in {elapsed:.1f}s ({dur_s / elapsed:.1f}x rt)")
+            # Write the sidecar only AFTER the mp3 is on disk, so a crash between the
+            # two never records a cache hit for a half-written take. _atomic_write_text
+            # ensures the sidecar itself can't be torn either.
+            _atomic_write_text(take["sidecar"], json.dumps({"key": take["key"]}))
+            elapsed = time.time() - t0
+            log(f"  -> {dur_s:.2f}s in {elapsed:.1f}s ({dur_s / elapsed:.1f}x rt)")
+        if plan["scene"]:
+            join_line_takes([t["mp3"] for t in plan["takes"]], workdir, mp3)
+            _atomic_write_text(workdir / f"seg_{i:02d}.json", json.dumps({"key": plan["key"]}))
         paths.append(mp3)
     return paths
 
@@ -1189,6 +1447,51 @@ def write_silence(workdir: Path, ms: int) -> Path:
         ]
     )
     return p
+
+
+def join_line_takes(line_paths: list[Path], workdir: Path, out: Path) -> Path:
+    """Join one scene's per-line takes into the single seg_NN.mp3 the rest of the
+    pipeline expects, separated by TURN_GAP_MS of silence (#172).
+
+    The gap between takes is a TURN gap and stops at this function: plan_silences
+    still spaces the chapters exactly as it does for a single-voice episode, and
+    nothing below seg_NN.mp3 can tell that this segment was a scene.
+
+    Re-asserts mono 44.1k for the same reason every other ffmpeg call in this file
+    does — the concat protocol is fragile across mismatched sample rates and channel
+    layouts, and a scene is one more place to break it."""
+    gap = write_silence(workdir, TURN_GAP_MS)
+    parts: list[Path] = []
+    for k, take in enumerate(line_paths):
+        if k:
+            parts.append(gap)
+        parts.append(take)
+
+    concat_list = workdir / f"{out.stem}_lines.txt"
+    concat_list.write_text("\n".join(f"file '{p}'" for p in parts) + "\n")
+    run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat_list),
+            "-ar",
+            str(AUDIO_SAMPLE_RATE),
+            "-ac",
+            str(AUDIO_CHANNELS),
+            "-c:a",
+            AUDIO_CODEC,
+            "-b:a",
+            AUDIO_BITRATE,
+            str(out),
+        ]
+    )
+    log(f"  joined {len(line_paths)} line take(s) -> {out.name} ({TURN_GAP_MS}ms turn gap)")
+    return out
 
 
 # ffmpeg's loudnorm filter, with print_format=json, emits a measurement block to
@@ -3320,6 +3623,9 @@ def capture_workdir_segments(
     manifest: dict[str, Any] = {}
     try:
         manifest = json.loads((wd / "manifest.json").read_text())
+        # A scene's script lives in its `lines`, so derive the same text the run
+        # measured — otherwise a swept multi-voice clip banks with no script at all.
+        materialize_line_text(manifest)
     except (OSError, ValueError):
         pass
     manifest_segments = manifest.get("segments") or []
@@ -4078,6 +4384,11 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
     except (json.JSONDecodeError, OSError) as e:
         die(f"manifest is not valid JSON: {e}")
     validate_manifest(manifest)
+    # A `lines` scene carries no author-written text, and a segment measuring zero
+    # chars is invisible to speech_rate_rows — which would silently disarm the
+    # TTS-degeneration gate and the bloopers bin for the whole show (#172). Derive it
+    # here, once, before anything downstream measures a segment.
+    materialize_line_text(manifest)
     title = manifest["title"]
     summary = manifest["summary"]
     segments = manifest["segments"]
@@ -4179,6 +4490,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
         ref_audio=ref_audio,
         ref_text=ref_text,
         raw_text=manifest.get("raw_text", False),
+        cast=manifest.get("cast"),
     )
     mark_stage(workdir, "segments", count=len(seg_paths))
     silences_ms = plan_silences(seg_paths)
