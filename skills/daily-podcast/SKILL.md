@@ -59,6 +59,7 @@ Already-written segments. Skip straight to rendering.
   "voice": "house",                        // default; or "random" / preset name; set voice_instruct for custom VoiceDesign
   "ship_mode": "spotify",                  // optional; "spotify" (default) or "web". "web" skips save-to-spotify entirely and makes the R2 publish the ship — see "Web-only shipping"
   "description_footer_text": "Sources: …", // optional; replaces the standard credit footer on the episode description (see "Episode description footer"). PLAIN TEXT: render.py escapes it into one <p> and rejects markup. Set it when rendering a SECOND show — the default footer credits the daily show's feeds
+  "cast": {"anchor": "Ryan", "skeptic": "Ethan"}, // optional; speaker -> preset for multi-voice `lines` segments (see "Multi-voice scenes"). Values must be bundled presets. The daily show does not use this
   "segments": [
     {"text": "Intro segment...",            "source_url": null},
     {"text": "Item 1 segment, 600+ chars.", "source_url": "https://...", "source_title": "..."},
@@ -349,6 +350,28 @@ The bundled house clip is one good render of a VoiceDesign instruct (`HOUSE_VOIC
 `ref_audio` precedence: if `voice_instruct` is also set in a manifest, the explicit instruct wins (so you can A/B against the house voice without unwiring it).
 
 Report the voice in the final summary so the user knows which one ran.
+
+### Multi-voice scenes (`lines`)
+
+A segment may carry a `lines` array instead of `text`, so one scene can hold several speakers (#172). The daily show does not use this — it exists for multi-voice shows rendering through the same `render.py`.
+
+```json
+"cast": {"anchor": "Ryan", "advocate": "Aiden", "skeptic": "Ethan", "switchboard": "Chelsie"},
+"segments": [
+  {"source_url": "https://...", "source_title": "...", "lines": [
+    {"speaker": "anchor",  "text": "Sets up the post."},
+    {"speaker": "skeptic", "text": "Names what is unsupported."}
+  ]}
+]
+```
+
+The rules, all enforced by `validate_manifest`:
+
+- **`text` and `lines` are mutually exclusive.** A scene's `text` is *derived* from its line texts and materialized before anything measures the segment — that is what keeps the speech-rate gate and the bloopers bin armed, since a zero-char segment is skipped as unmeasurable. An author-written `text` beside `lines` is a malformed manifest and dies naming both fields.
+- **`speaker` is a role, not a voice.** It resolves through the manifest's `cast`, whose values must be bundled presets (`Ryan` / `Aiden` / `Ethan` / `Chelsie`). This is not a fifth voice mode — the four-mode precedence above is unchanged — and it means recasting a role is a manifest edit, not a script edit.
+- **A cast cannot share an episode with `voice_instruct`.** VoiceDesign is a second model and it drifts; the cast runs on the base model, so the combination dies. `voice: "house"` (clone) is fine — same base model, one load.
+- **One scene is still one chapter with one `source_url`.** Lines render to `line_NN_LL.mp3` and join into the same `seg_NN.mp3` a single-voice segment produces, separated by `TURN_GAP_MS` (250 ms) — a *turn* gap, unrelated to the 800 ms between chapters and to the 5 s chapter-spacing floor. Everything downstream is untouched.
+- **Caching is per line.** Rewriting one line re-renders that line, not the scene; a fully cached re-run still skips the model load.
 
 ## Chapter-duration guardrail
 
