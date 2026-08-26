@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/schmug/clodcast/actions/workflows/ci.yml/badge.svg)](https://github.com/schmug/clodcast/actions/workflows/ci.yml)
 
-Two Claude Code podcast skills built on the same production stack. The flagship, **`daily-podcast`**, turns a list of saved articles (or RSS items) into a fully-produced Spotify episode in one pass:
+Three Claude Code podcast skills built on the same production stack. The flagship, **`daily-podcast`**, turns a list of saved articles (or RSS items) into a fully-produced Spotify episode in one pass:
 
 - Pulls full content for each item
 - Writes a segmented script using a deterministic template (intro + per-item + outro)
@@ -26,6 +26,20 @@ story candidates; the weekly run researches each story in an isolated context an
 segments. The same snapshot data feeds `labs.json`, which powers a `/labs/` dashboard on
 [cortech.online](https://github.com/schmug/cortech.online). Setup, story types, and the
 unattended procedure live in [skills/frontier-commits/SKILL.md](skills/frontier-commits/SKILL.md).
+
+### Surface Tension
+
+The third show, **`surface-tension`** ([skills/surface-tension/](skills/surface-tension/)), is a
+**weekly** call-in radio show in which a **four-voice panel** argues about **personal independent
+blog posts surfaced by community vote** on [bubbles.town](https://bubbles.town) — the only one of
+the three whose beat is not tech. A two-source gather ranks candidates on real votes; a
+week-seeded assignment layer hands out seats, stances, turn order and bit ownership before any
+prose exists; each scene is then written by an isolated `claude -p` and rendered as a `lines`
+multi-voice segment, so a whole panel scene is still one chapter. The four panelists are locked
+`ref_audio` clones, and the show ships through the same `render.py` in its **web-only mode** onto
+its own public feed — RSS-first, `save-to-spotify` is never involved. Cast, roles, content guards,
+manifest keys, and the unattended procedure live in
+[skills/surface-tension/SKILL.md](skills/surface-tension/SKILL.md).
 
 ## Live example
 
