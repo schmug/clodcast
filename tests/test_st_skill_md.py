@@ -13,6 +13,7 @@ someone added by hand has to go red just as loudly as a deleted one (#141).
 import re
 from pathlib import Path
 
+import render
 import st_gather
 import st_script_plan as sp
 import st_write
@@ -113,6 +114,25 @@ def test_skill_md_manifest_pins_match_the_assembler():
             f"SKILL.md's manifest example must pin {key}={value!r}; st_write assembles it"
         )
     assert '"description_footer_text"' in manifest
+
+
+def test_skill_md_manifest_documents_the_shows_own_art():
+    # The key SKILL.md said was "not yet" through Phase 2 (#177). Pinned on the path
+    # tail rather than the literal, because st_write emits an absolute path resolved
+    # off its own file and SKILL.md writes it against `<root>`.
+    manifest = _section("## Manifest")
+    tail = "skills/surface-tension/refs/cover.jpg"
+    assert str(st_write.COVER_IMAGE).endswith(tail)
+    assert f'"cover_image": "<root>/{tail}"' in manifest
+
+
+def test_skill_md_manifest_shows_the_cast_as_recorded_clips():
+    # A cast documented as bare preset names would send the next author to write
+    # `{"Ryan": "Ryan"}` by hand — which render.py accepts, and which silently ships
+    # the episode in four voices nobody chose.
+    manifest = _section("## Manifest")
+    for field in render.CAST_CLIP_FIELDS:
+        assert f'"{field}"' in manifest, f"the documented cast must carry {field}"
 
 
 def test_skill_md_scene_band_matches_the_code():

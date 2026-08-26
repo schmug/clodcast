@@ -59,6 +59,11 @@ from typing import Any
 # --- constants -------------------------------------------------------------
 
 VOICES = ["Ryan", "Aiden", "Ethan", "Chelsie"]
+# The two halves of a recorded cast clip (#177) — a manifest `cast` value is either
+# a preset name from VOICES or exactly these two keys. Both are needed: the clip is
+# what the model imitates, the transcript is what it believes the clip says, and a
+# clone rendered against the wrong transcript drifts audibly.
+CAST_CLIP_FIELDS = ("ref_audio", "ref_text")
 MODEL_ID = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit"
 VOICE_DESIGN_MODEL_ID = "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16"
 SAMPLE_RATE = 24000
@@ -820,6 +825,43 @@ def materialize_line_text(manifest: dict[str, Any]) -> None:
 # --- input safety ----------------------------------------------------------
 
 
+def _validate_cast_voice(speaker: str, cast_voice: Any) -> None:
+    """One cast entry (#172, #177): a bundled preset NAME, or a recorded clip
+    `{"ref_audio": <path>, "ref_text": <transcript>}`.
+
+    Both shapes are closed, for the same reason. The preset side stays a whitelist so
+    a mistyped "Rian" dies rather than silently rendering a scene in the wrong voice.
+    The clip side must carry both halves of the reference and nothing else, because a
+    stray key that LOOKS like it selects something — `{"ref_audio": ..., "voice":
+    "Ryan"}` — would otherwise be accepted and then ignored, which is the same wrong
+    voice arriving by a different door.
+
+    Pure: whether the clip is actually on disk is checked where its bytes are read
+    (resolve_cast_voice), since validate_manifest does no I/O.
+    """
+    if isinstance(cast_voice, dict):
+        for field in CAST_CLIP_FIELDS:
+            val = cast_voice.get(field)
+            if not isinstance(val, str) or not val.strip():
+                die(
+                    f"manifest cast[{speaker!r}].{field} is required and must be a "
+                    f"non-empty string — a recorded clip carries {list(CAST_CLIP_FIELDS)}"
+                )
+        extra = sorted(set(cast_voice) - set(CAST_CLIP_FIELDS))
+        if extra:
+            die(
+                f"manifest cast[{speaker!r}] has unknown field(s) {extra} — a recorded "
+                f"clip carries exactly {list(CAST_CLIP_FIELDS)}"
+            )
+        return
+    if cast_voice not in VOICES:
+        shown = "{" + ", ".join(f'"{v}"' for v in VOICES) + "}"
+        die(
+            f"manifest cast[{speaker!r}] must be one of {shown}, or a recorded clip "
+            f'{{"ref_audio": ..., "ref_text": ...}} (got {cast_voice!r})'
+        )
+
+
 def _validate_scene(i: int, lines: Any, cast: dict[str, Any] | None) -> None:
     """Structural checks for one segment's `lines` array. Dies naming the line."""
     if not isinstance(lines, list) or not lines:
@@ -853,23 +895,16 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             die(f"manifest '{field}' is required and must be a non-empty string")
 
     # The cast is validated before the segments because every line's `speaker` is
-    # checked against it (#172). A whitelist of the four bundled presets, not a free
-    # string: a typo must die rather than silently render a scene in the wrong voice,
-    # and the house voice is deliberately excluded — it is the daily show's narrator,
-    # not a panelist. Recorded cast clips are Phase 3.
+    # checked against it (#172). The house voice is deliberately excluded from the
+    # preset whitelist — it is the daily show's narrator, not a panelist.
     cast = manifest.get("cast")
     if cast is not None:
         if not isinstance(cast, dict) or not cast:
             die("manifest 'cast' must be a non-empty object mapping speaker -> voice")
-        shown = "{" + ", ".join(f'"{v}"' for v in VOICES) + "}"
         for speaker, cast_voice in cast.items():
             if not isinstance(speaker, str) or not speaker.strip():
                 die("manifest 'cast' keys must be non-empty speaker names")
-            if cast_voice not in VOICES:
-                die(
-                    f"manifest cast[{speaker!r}] must be one of {shown} (got {cast_voice!r}) — "
-                    "the lines layer ships on the bundled presets"
-                )
+            _validate_cast_voice(speaker, cast_voice)
 
     segments = manifest.get("segments")
     if not isinstance(segments, list) or not segments:
@@ -1082,6 +1117,48 @@ def _ref_audio_fingerprint(ref_audio: str | None) -> str | None:
     return hashlib.sha256(Path(ref_audio).read_bytes()).hexdigest()
 
 
+def resolve_cast_voice(speaker: str, cast_voice: Any) -> dict[str, Any]:
+    """Resolve one cast entry into the fields one line take needs: mode, log label,
+    the two reference halves, and the clip fingerprint.
+
+    A preset entry resolves to preset mode with no reference — byte-identical to the
+    pre-#177 behaviour, so every take already banked in a workdir stays valid. A
+    recorded clip resolves to CLONE mode on the same base MODEL_ID a preset uses,
+    which is what lets a mixed cast still pay exactly one model load and keeps
+    `speaker` a role rather than a fifth voice mode.
+
+    The fingerprint is the load-bearing part. Per-line takes are content-addressed,
+    so with no clip identity in the key a member re-pointed at a different clip — or
+    a clip re-recorded in place, where even the path is unchanged — keeps its old key
+    and the run replays the previous voice's banked audio under the new one's name.
+    Nothing errors: right text, right length, wrong person.
+
+    Not pure (reads the clip's bytes), which is why validate_manifest checks the
+    SHAPE and this checks the file. Both run before the ~15s model load.
+    """
+    _validate_cast_voice(speaker, cast_voice)
+    if not isinstance(cast_voice, dict):
+        return {
+            "mode": "preset",
+            "voice": cast_voice,
+            "ref_audio": None,
+            "ref_text": None,
+            "ref_fingerprint": None,
+        }
+    ref_audio = cast_voice["ref_audio"]
+    if not Path(ref_audio).is_file():
+        die(f"manifest cast[{speaker!r}] ref_audio not found: {ref_audio}")
+    return {
+        "mode": "clone",
+        # A log label only. The clip's BYTES are what identify this voice in the
+        # cache key, so the label can be readable without being load-bearing.
+        "voice": Path(ref_audio).stem,
+        "ref_audio": ref_audio,
+        "ref_text": cast_voice["ref_text"],
+        "ref_fingerprint": _ref_audio_fingerprint(ref_audio),
+    }
+
+
 def _segment_cache_key(
     text: str,
     voice_mode: str,
@@ -1236,9 +1313,10 @@ def render_segments(
     Multi-voice scenes (#172): a segment carrying `lines` renders one take per line,
     each in the voice `cast` maps its `speaker` to, and joins them into the same
     seg_NN.mp3 a single-voice segment produces — one scene, one chapter, one
-    source_url. A cast voice is a preset on the same base MODEL_ID, so a four-hander
-    still pays exactly one model load; `speaker` is a role, NOT a fifth voice mode,
-    and the four-mode precedence above is untouched.
+    source_url. A cast voice is a bundled preset or a recorded clip (#177); either
+    way it runs on the same base MODEL_ID, so a four-hander still pays exactly one
+    model load. `speaker` is a role, NOT a fifth voice mode, and the four-mode
+    precedence above — which governs the EPISODE voice — is untouched.
 
     Per-segment cache (#9): each seg_NN.mp3 carries a seg_NN.json sidecar with a
     content-hash key (text + voice settings). On a re-run with the same --workdir,
@@ -1259,11 +1337,14 @@ def render_segments(
     cast = cast or {}
     if use_design and any(segment_lines(seg) for seg in segments):
         # validate_manifest already rejects this; re-asserted here so the function is
-        # honest to a direct caller rather than rendering presets off the wrong model.
+        # honest to a direct caller rather than rendering the cast off the wrong model.
         die(
             "voice_instruct (VoiceDesign) cannot render a 'lines' cast — "
-            "presets need the base model"
+            "the cast needs the base model"
         )
+    # Resolved once per MEMBER, not per line: a clip's fingerprint costs a file read,
+    # and a four-hander scene would otherwise re-hash the same four clips every turn.
+    resolved_cast = {sp: resolve_cast_voice(sp, cv) for sp, cv in cast.items()}
 
     # Pass 1 (no model needed): prep text + compute keys + classify hit/miss. A scene
     # expands into one take per line here, so per-line hits are known before anything
@@ -1280,6 +1361,8 @@ def render_segments(
                     "text": text,
                     "mode": mode,
                     "voice": voice,
+                    "ref_audio": ref_audio,
+                    "ref_text": ref_text,
                     "key": _segment_cache_key(
                         text, mode, key_voice or "", ref_fingerprint, ref_text
                     ),
@@ -1295,19 +1378,29 @@ def render_segments(
                 if not text:
                     die(f"segment {i} line {j} has empty text")
                 speaker = line.get("speaker")
-                line_voice = cast.get(speaker) if isinstance(speaker, str) else None
-                if not line_voice:
+                spec = resolved_cast.get(speaker) if isinstance(speaker, str) else None
+                if not spec:
                     known = ", ".join(sorted(cast)) if cast else "no cast in the manifest"
                     die(f"segment {i} line {j} speaker {speaker!r} is not in the cast ({known})")
                 takes.append(
                     {
                         "text": text,
-                        # A cast voice is a preset on the base model — never the clone
-                        # or VoiceDesign engine — so its key records that mode and no
-                        # ref-audio fields, and stays stable if the EPISODE voice moves.
-                        "mode": "preset",
-                        "voice": line_voice,
-                        "key": _segment_cache_key(text, "preset", line_voice, None, None),
+                        # A cast voice runs on the base model — a preset, or a clone of
+                        # a recorded clip — never the VoiceDesign engine. Its key
+                        # records the member's OWN mode and reference, so it stays
+                        # stable when the EPISODE voice moves and changes the moment
+                        # that member's clip does.
+                        "mode": spec["mode"],
+                        "voice": spec["voice"],
+                        "ref_audio": spec["ref_audio"],
+                        "ref_text": spec["ref_text"],
+                        "key": _segment_cache_key(
+                            text,
+                            spec["mode"],
+                            spec["voice"],
+                            spec["ref_fingerprint"],
+                            spec["ref_text"],
+                        ),
                         "mp3": workdir / f"line_{i:02d}_{j:02d}.mp3",
                         "sidecar": workdir / f"line_{i:02d}_{j:02d}.json",
                     }
@@ -1376,8 +1469,11 @@ def render_segments(
                 mode=take["mode"],
                 voice=take["voice"],
                 voice_instruct=voice_instruct,
-                ref_audio=ref_audio,
-                ref_text=ref_text,
+                # Per TAKE, not per episode: a scene's lines each carry their own
+                # cast member's reference, and the episode's is only ever the
+                # fallback a plain-text segment renders with.
+                ref_audio=take["ref_audio"],
+                ref_text=take["ref_text"],
                 mp3=take["mp3"],
             )
             # Write the sidecar only AFTER the mp3 is on disk, so a crash between the

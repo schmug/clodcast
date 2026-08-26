@@ -47,16 +47,22 @@ Scenes 1, 2, 7 and 8 are **frames**: they carry `"source_url": null` and an expl
 
 ### The cast
 
-Four bundled presets, fixed for the life of the show. The manifest `cast` maps **persona → preset**; the persona is the speaker name a scene's lines carry.
+Four recorded clips, fixed for the life of the show. The manifest `cast` maps **persona → its clip**; the persona is the speaker name a scene's lines carry. `st_write.cast_map` builds it.
 
-| voice | bundled preset |
-| --- | --- |
-| `Ryan` | `Ryan` |
-| `Aiden` | `Aiden` |
-| `Ethan` | `Ethan` |
-| `Chelsie` | `Chelsie` |
+| voice | bundled clip | designed as | measured f0 |
+| --- | --- | --- | --- |
+| `Ryan` | `refs/ryan.wav` | sixties, low, slow, clipped | 113 Hz |
+| `Aiden` | `refs/aiden.wav` | late twenties, light, quick, soft | 156 Hz |
+| `Ethan` | `refs/ethan.wav` | early forties, thin, even, precise | 92 Hz |
+| `Chelsie` | `refs/chelsie.wav` | early thirties, female, brisk, crisp | 261 Hz |
 
-**The speaker is the persona, never the role.** Roles rotate per *scene* while the manifest `cast` is one map for the whole episode, so keying the cast on roles would silently freeze the rotation the assign layer exists to produce. The house voice is deliberately absent: it is the daily show's narrator, not a panelist. Recorded `ref_audio` clips replace the presets in Phase 3 (#177); the persona names are what stay put.
+Every clip is an `ref_audio` **clone**, never VoiceDesign at render time: VoiceDesign is a second model that drifts ~2.5% in pacing and audibly in timbre run to run ([`docs/durable-voices.md`](../../docs/durable-voices.md)), which would make the panel a different panel every week. Clones run on the same base model a preset does, so four voices still cost **one** model load. The clips themselves were *made* with VoiceDesign and then locked — Path A in that document, the same way the daily show's house voice was made.
+
+Each `<persona>.wav` ships beside a `<persona>.txt` holding its exact transcript, and both go into the manifest (`ref_audio` + `ref_text`). `render.py` keys a line's cache on the clip's **bytes**, so re-recording one voice re-renders only that voice's lines.
+
+**The speaker is the persona, never the role.** Roles rotate per *scene* while the manifest `cast` is one map for the whole episode, so keying the cast on roles would silently freeze the rotation the assign layer exists to produce. The house voice is deliberately absent: it is the daily show's narrator, not a panelist, and the daily show's identity is the more valuable asset.
+
+⚠️ **Three of the four voices are male, and that is the format's standing sonic risk.** The pitch ladder above is monotone and the tightest pair (`Ethan` 92 Hz / `Ryan` 113 Hz) is about three and a half semitones apart, with speech rates 11% apart on top of it — separable, but the least separable thing about the show. If a fast-cut scene ever reads as one person arguing with themselves, this table is where to look first; `refs/make_cover.py`'s sibling generator script in the PR for #177 shows how the clips were produced.
 
 ### The roles
 
@@ -163,7 +169,8 @@ A standard `render.py` manifest plus the web-only keys, all required, and the `c
   "r2_key_prefix": "surface-tension/",
   "slug_prefix": "surface-tension",
   "description_footer_text": "Posts surfaced by vote on bubbles.town - every post links its blog above. More at cortech.online.",
-  "cast": {"Ryan": "Ryan", "Aiden": "Aiden", "Ethan": "Ethan", "Chelsie": "Chelsie"},
+  "cover_image": "<root>/skills/surface-tension/refs/cover.jpg",
+  "cast": {"Ryan": {"ref_audio": "<root>/skills/surface-tension/refs/ryan.wav", "ref_text": "..."}, "Aiden": {"...": "..."}, "Ethan": {"...": "..."}, "Chelsie": {"...": "..."}},
   "segments": [
     {"title": "Cold open", "source_url": null, "lines": [{"speaker": "Ryan", "text": "..."}]},
     {"title": "A post title", "source_url": "https://example.com/a-post",
@@ -177,7 +184,7 @@ A standard `render.py` manifest plus the web-only keys, all required, and the `c
 - `"r2_key_prefix": "surface-tension/"` — the slug is date-keyed, so without a prefix an episode publishing the same day as a daily digest overwrites the daily show's `.mp3`/`.jpg` in the shared bucket (#142).
 - `"slug_prefix": "surface-tension"` — the `/podcast/<slug>/` permalink and the `isPermaLink` guid, **immutable once published** (#128). It keys on `date` alone; the prefix swaps the literal and never re-couples the slug to the title.
 - `"show_name"` and `"description_footer_text"` — without them every cover carries the daily show's branding and every set of show notes credits the daily show's OPML feeds. The footer is plain text by contract; `render.py` rejects markup.
-- **No `cover_image` yet.** Recorded cast clips and this show's own art are Phase 3 (#177); until then the episode cover is `build_cover`'s generated gradient carrying `show_name`. Add the key with the art.
+- `"cover_image": "<root>/skills/surface-tension/refs/cover.jpg"` — this show's own album art, used verbatim as the episode cover instead of `build_cover`'s generated gradient (#164). `show_name` alone only changes the *name* on the daily show's template; the art itself stays the daily show's, and that is what a podcast client renders as per-episode artwork. `st_write` emits an **absolute** path resolved off its own file — a relative value resolves against the manifest's directory, and a scheduled run's CWD is arbitrary. Pre-flight fails the run if the file is missing, non-square, or outside 1400-3000px: a directory rejects the whole *feed* over bad art, not just the episode. Regenerate it with `python3 skills/surface-tension/refs/make_cover.py`.
 - **No `show_id`.** There is no Spotify show; pre-flight does not ask for one.
 - **Title format** — the topic-first style both siblings use, with the weekly tail: `<topic>, <topic>, <topic> - Week of <Month D, YYYY>`. Three short noun phrases from the first three post scenes in running order; hyphens, never em dashes. Display-only free text — the slug and guid key on `date`.
 
@@ -229,4 +236,4 @@ Shared with the daily show: `~/.config/daily-podcast/covered.json` (URL dedup, w
 
 **2. R2.** The episode publish reads the **daily skill's** R2 config and credentials (see the warning in [Manifest](#manifest)). Nothing extra is needed here.
 
-**3. Cast and art.** Phase 3 (#177): four recorded `ref_audio` clips and this show's own cover. Until then the show runs on the four bundled presets and the generated cover.
+**3. Cast and art.** Done (#177): four recorded `ref_audio` clips under `refs/` and this show's own cover, wired through `st_write.cast_map` / `cover_image`.

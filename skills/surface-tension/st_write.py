@@ -137,6 +137,14 @@ DESCRIPTION_FOOTER = (
     "More at cortech.online."
 )
 
+# The show's bundled assets: four cast clips (`<persona>.wav` + `.txt`) and this
+# show's album art. Absolute, resolved off this file, because a scheduled run's CWD
+# is arbitrary and CLAUDE_PLUGIN_ROOT is unset under the cron. Bundled rather than
+# fetched for the same reason the house-voice clip is: a render must not depend on
+# the network for a local artifact.
+REFS_DIR = Path(__file__).resolve().parent / "refs"
+COVER_IMAGE = REFS_DIR / "cover.jpg"
+
 PLACEHOLDERS = (
     "<<TITLE>>",
     "<<URL>>",
@@ -415,16 +423,31 @@ def die(msg: str, code: int = 1) -> NoReturn:
     raise SystemExit(code)
 
 
-def cast_map() -> dict[str, str]:
-    """The manifest `cast`: speaker -> bundled preset.
+def cast_map() -> dict[str, dict[str, str]]:
+    """The manifest `cast`: persona -> that persona's recorded clip (#177).
 
     The speaker is the PERSONA, not the role. Roles rotate per scene
     (st_script_plan.scene_roles) while the manifest cast is one map for the whole
     episode, so keying it on roles would silently freeze the rotation the assign
-    layer exists to produce. Phase 3 swaps the values for recorded ref_audio
-    clips; the keys are what stay put.
+    layer exists to produce. Phase 3 swapped the VALUES from the four bundled
+    presets to recorded clips; the keys are what stayed put, which is why every
+    scene written before this change still names a valid speaker.
+
+    Each clip is a `ref_audio` clone, never VoiceDesign: the drift
+    docs/durable-voices.md measures (~2.5% in pacing, audibly in timbre, run to
+    run) would make a panel of four sound like a different panel every week. Clones
+    run on the same base model a preset does, so four voices still cost one model
+    load.
     """
-    return {voice: voice for voice in VOICES_ST}
+    cast: dict[str, dict[str, str]] = {}
+    for persona in VOICES_ST:
+        clip = REFS_DIR / f"{persona.lower()}.wav"
+        transcript = clip.with_suffix(".txt")
+        for path in (clip, transcript):
+            if not path.is_file():
+                die(f"cast clip for {persona!r} is missing: {path}")
+        cast[persona] = {"ref_audio": str(clip), "ref_text": transcript.read_text().strip()}
+    return cast
 
 
 def build_scene_segment(
@@ -485,11 +508,17 @@ def assemble_manifest(date_iso: str, title: str, summary: str, items: list[dict]
         "title": title,
         "summary": summary,
         "date": date_iso,
-        # A preset, never "house": the daily show's narrator is not a panelist,
-        # and every segment here is a `lines` scene anyway, so this is only the
-        # fallback render.py resolves for a segment that carries plain text.
+        # A preset, never "house": the daily show's narrator is not a panelist.
+        # Every segment here is a `lines` scene, so this is only the fallback
+        # render.py resolves for a segment carrying plain text — and since #177 it
+        # is no longer any panelist's voice, since the cast are clones. Nothing
+        # should ever hear it; a segment that does is a bug upstream of here.
         "voice": VOICES_ST[0],
         "cast": cast_map(),
+        # This show's own art, used verbatim instead of build_cover's generated
+        # gradient (#164). show_name alone only renames the DAILY show's template,
+        # and that template is what a podcast client renders as episode artwork.
+        "cover_image": str(COVER_IMAGE),
         "ship_mode": "web",
         "show_name": SHOW_NAME,
         "r2_manifest_name": R2_MANIFEST_NAME,

@@ -163,7 +163,20 @@ The skill supports four voice modes (set in the manifest):
 }
 ```
 
-If you want multiple recurring voices (e.g., a different reference clip per show), the cleanest approach is to add a `ref_audio` and `ref_text` field to the manifest schema and extend `render.py` to pass them through. The current default is the single bundled house voice; the multi-voice case is an open extension point.
+These four are the **episode** voice — what a plain-text segment renders in. They are still exactly four; #177 did not add a fifth.
+
+Several recurring voices in ONE episode is a different axis, and it landed as the `lines` cast (#172, #177) rather than as a fifth mode. A multi-voice segment carries `lines: [{speaker, text}, ...]` and the manifest's `cast` maps each speaker to either a preset name or its own reference clip:
+
+```jsonc
+"cast": {
+  "Ryan":    {"ref_audio": "/abs/path/ryan.wav", "ref_text": "<the clip's exact transcript>"},
+  "Chelsie": {"ref_audio": "/abs/path/chelsie.wav", "ref_text": "..."}
+}
+```
+
+Everything this document argues applies per cast member: a clip is stable where a VoiceDesign instruct drifts, and a panel of four is four times as exposed to that drift as one narrator is. Clones run on the same base model a preset does, so a four-hander still pays one model load — mixing in a `voice_instruct` loads a second model and dies rather than doing it.
+
+Two practical notes. `render.py` keys each line's cache on the clip's **bytes**, so re-recording one voice re-renders that voice's lines and leaves the rest cached — iterate on one panelist without paying for the others. And a cast clip is made exactly like the house voice: Path A above, then locked. `skills/surface-tension/refs/` is a worked example of four of them, designed apart on pitch register, pace and articulation because those are the differences that survive cloning.
 
 ## When to re-tune
 
