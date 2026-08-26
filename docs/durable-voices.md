@@ -111,6 +111,7 @@ Iterating the bundled clip surfaced these patterns. Avoid or work around them:
 | Over-enunciation | `crisp articulation`, `crisp consonants` | Drop entirely or replace with *soft articulation*, *rounded vowels* |
 | "Mystery dinner theater" — implied tension in pauses | Combination of measured pacing + dramatic instruct | Add explicit negatives: *no portentous pauses*, *no narrative weight* |
 | All variants sound the same / showy | Prompt over-relies on positive descriptors | Switch to **subtractive framing** ("no X, no Y, no Z") with one or two anchor traits |
+| Pitch lands nowhere near what the instruct asked for | **Register cues do not steer f0 reliably.** Building the Surface Tension cast, *"early forties, mid register, thin and light with no chest weight"* rendered at 92 Hz — *lower* than *"sixties, low and resonant"* at 113 Hz | Don't iterate blind. Render the candidate, **measure median f0**, and treat the instruct as a lottery ticket you re-draw. Two draws separated that pair from 15 Hz to 21 Hz |
 
 The best prompts are short, with concrete anchors (age, register, resonance) and explicit negatives for whatever has been intruding.
 
@@ -163,7 +164,20 @@ The skill supports four voice modes (set in the manifest):
 }
 ```
 
-If you want multiple recurring voices (e.g., a different reference clip per show), the cleanest approach is to add a `ref_audio` and `ref_text` field to the manifest schema and extend `render.py` to pass them through. The current default is the single bundled house voice; the multi-voice case is an open extension point.
+These four are the **episode** voice — what a plain-text segment renders in. They are still exactly four; #177 did not add a fifth.
+
+Several recurring voices in ONE episode is a different axis, and it landed as the `lines` cast (#172, #177) rather than as a fifth mode. A multi-voice segment carries `lines: [{speaker, text}, ...]` and the manifest's `cast` maps each speaker to either a preset name or its own reference clip:
+
+```jsonc
+"cast": {
+  "Ryan":    {"ref_audio": "/abs/path/ryan.wav", "ref_text": "<the clip's exact transcript>"},
+  "Chelsie": {"ref_audio": "/abs/path/chelsie.wav", "ref_text": "..."}
+}
+```
+
+Everything this document argues applies per cast member: a clip is stable where a VoiceDesign instruct drifts, and a panel of four is four times as exposed to that drift as one narrator is. Clones run on the same base model a preset does, so a four-hander still pays one model load — mixing in a `voice_instruct` loads a second model and dies rather than doing it.
+
+Two practical notes. `render.py` keys each line's cache on the clip's **bytes**, so re-recording one voice re-renders that voice's lines and leaves the rest cached — iterate on one panelist without paying for the others. And a cast clip is made exactly like the house voice: Path A above, then locked. `skills/surface-tension/refs/` is a worked example of four of them, designed apart on pitch register, pace and articulation because those are the differences that survive cloning.
 
 ## When to re-tune
 

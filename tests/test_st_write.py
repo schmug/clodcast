@@ -219,3 +219,111 @@ def test_a_scene_with_no_stance_collision_still_names_both_sides():
     stances = filled.split("STANCES")[1].split("THE BOARD")[0]
     assert f"{scene['stance']['for']} argues FOR" in stances
     assert f"{scene['stance']['against']} argues AGAINST" in stances
+
+
+# --- the recorded cast and this show's art (#177) ---------------------------
+#
+# Phase 1-2 shipped on the four bundled presets so the FORMAT could be judged
+# before any assets existed. Phase 3 swaps the values for recorded ref_audio
+# clips; what stays put is the persona names, because the roles rotate per scene
+# against them.
+
+import render  # noqa: E402  (conftest puts skills/daily-podcast on sys.path)
+
+REFS = pathlib.Path(st_write.__file__).resolve().parent / "refs"
+
+
+def test_the_cast_keys_stay_the_personas():
+    assert list(st_write.cast_map()) == list(st_script_plan.VOICES_ST)
+
+
+def test_every_persona_maps_to_a_bundled_recorded_clip():
+    for persona, entry in st_write.cast_map().items():
+        assert set(entry) == set(render.CAST_CLIP_FIELDS), persona
+        clip = pathlib.Path(entry["ref_audio"])
+        assert clip.is_file(), f"{persona}: {clip} is missing"
+        assert clip.parent == REFS, f"{persona}: the clip must ship with the skill"
+
+
+def test_the_cast_clip_paths_are_absolute():
+    # A scheduled run's CWD is arbitrary and CLAUDE_PLUGIN_ROOT is unset under the
+    # cron, so a relative clip path resolves against nothing in particular. Same
+    # reasoning the sibling show's cover_image carries.
+    for persona, entry in st_write.cast_map().items():
+        assert pathlib.Path(entry["ref_audio"]).is_absolute(), persona
+
+
+def test_each_cast_transcript_is_the_clips_own_text():
+    # ref_text is what the model believes the clip says. A transcript belonging to
+    # a different clip is not an error anywhere — it just makes that voice drift.
+    for persona, entry in st_write.cast_map().items():
+        sidecar = pathlib.Path(entry["ref_audio"]).with_suffix(".txt")
+        assert sidecar.is_file(), f"{persona}: {sidecar} is missing"
+        assert entry["ref_text"] == sidecar.read_text().strip(), persona
+
+
+def test_no_two_personas_share_a_clip():
+    clips = [e["ref_audio"] for e in st_write.cast_map().values()]
+    assert len(set(clips)) == len(clips), "two personas on one clip is one voice, twice"
+
+
+def test_the_house_voice_is_not_in_the_cast():
+    # It is the daily show's narrator. Making it a panelist here spends the more
+    # valuable identity on the newer show.
+    house = str(render.BUNDLED_HOUSE_AUDIO)
+    assert house not in [e["ref_audio"] for e in st_write.cast_map().values()]
+
+
+def test_the_bundled_cast_clips_are_usable_reference_audio():
+    # Bundled, not fetched: a render must not depend on the network for a local
+    # artifact (the house-voice clip's posture). Mono 24k PCM is what the model
+    # took to produce them and what house_voice.wav is; ~20-30s is the window
+    # docs/durable-voices.md calls the sweet spot for capturing prosody.
+    import wave
+
+    for persona, entry in st_write.cast_map().items():
+        with wave.open(entry["ref_audio"]) as w:
+            assert w.getnchannels() == 1, persona
+            assert w.getframerate() == 24000, persona
+            assert w.getsampwidth() == 2, persona
+            seconds = w.getnframes() / w.getframerate()
+        assert 15 <= seconds <= 40, f"{persona}: {seconds:.1f}s is outside the window"
+
+
+def test_the_manifest_carries_this_shows_own_art():
+    m = st_write.assemble_manifest("2026-08-31", "T", "S", [_frame()])
+    cover = pathlib.Path(m["cover_image"])
+    assert cover.is_absolute()
+    assert cover.is_file()
+    assert render.check_cover_image(cover)["ok"], render.check_cover_image(cover)["detail"]
+
+
+def test_the_bundled_show_art_is_a_valid_podcast_cover():
+    # Apple Podcasts and Spotify both require square art, 1400-3000px, and a
+    # directory rejects the whole FEED over bad art, not just the episode.
+    from PIL import Image
+
+    with Image.open(REFS / "cover.jpg") as im:
+        assert im.format == "JPEG"
+        assert im.width == im.height, f"show art must be square (got {im.size})"
+        assert 1400 <= im.width <= 3000, f"show art must be 1400-3000px (got {im.width})"
+
+
+def test_the_assembled_manifest_survives_the_renderers_validation():
+    # The end-to-end pin: st_write builds it, render.py is what refuses it. A cast
+    # shape the assembler likes and the renderer rejects fails at the top of a real
+    # weekly run, after the gather and every scene has already been paid for.
+    m = st_write.assemble_manifest("2026-08-31", "A title", "A hook.", [_frame()])
+    render.validate_manifest(m)
+    for persona, entry in m["cast"].items():
+        spec = render.resolve_cast_voice(persona, entry)
+        assert spec["mode"] == "clone", persona
+        assert spec["ref_fingerprint"], persona
+
+
+def _frame() -> dict:
+    return {
+        "kind": "frame",
+        "title": "Cold open",
+        "lines": [{"speaker": v, "text": "A turn."} for v in st_script_plan.VOICES_ST],
+    }
