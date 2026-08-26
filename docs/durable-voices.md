@@ -111,6 +111,7 @@ Iterating the bundled clip surfaced these patterns. Avoid or work around them:
 | Over-enunciation | `crisp articulation`, `crisp consonants` | Drop entirely or replace with *soft articulation*, *rounded vowels* |
 | "Mystery dinner theater" — implied tension in pauses | Combination of measured pacing + dramatic instruct | Add explicit negatives: *no portentous pauses*, *no narrative weight* |
 | All variants sound the same / showy | Prompt over-relies on positive descriptors | Switch to **subtractive framing** ("no X, no Y, no Z") with one or two anchor traits |
+| Pitch lands nowhere near what the instruct asked for | **Register cues do not steer f0 reliably.** Building the Surface Tension cast, *"early forties, mid register, thin and light with no chest weight"* rendered at 92 Hz — *lower* than *"sixties, low and resonant"* at 113 Hz | Don't iterate blind. Render the candidate, **measure median f0**, and treat the instruct as a lottery ticket you re-draw. Two draws separated that pair from 15 Hz to 21 Hz |
 
 The best prompts are short, with concrete anchors (age, register, resonance) and explicit negatives for whatever has been intruding.
 
