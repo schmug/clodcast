@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 This file is generated from conventional commits by [git-cliff](https://git-cliff.org).
 
+## [0.1.8](https://github.com/schmug/clodcast/compare/v0.1.7...v0.1.8) (2026-08-26)
+
+
+### Features
+
+* **frontier-commits:** topic-first episode titles, weekly variant of [#147](https://github.com/schmug/clodcast/issues/147) ([#161](https://github.com/schmug/clodcast/issues/161)) ([01cfedb](https://github.com/schmug/clodcast/commit/01cfedb2f9fe3ade97f55d260ba9168083cb6b57))
+* **render:** ASCII-horizon episode cover for the daily show ([#163](https://github.com/schmug/clodcast/issues/163)) ([#168](https://github.com/schmug/clodcast/issues/168)) ([c4e841c](https://github.com/schmug/clodcast/commit/c4e841c27f745bc96fb37c1245d155c9917d4487))
+* **render:** bloopers bin archives the clips the recovery deletes ([#169](https://github.com/schmug/clodcast/issues/169)) ([#170](https://github.com/schmug/clodcast/issues/170)) ([66308f7](https://github.com/schmug/clodcast/commit/66308f769dce35d882bf54001dc486b7b1eb3b86))
+* **render:** manifest cover_image supplies a show's own episode art ([#164](https://github.com/schmug/clodcast/issues/164)) ([#166](https://github.com/schmug/clodcast/issues/166)) ([5a35cd6](https://github.com/schmug/clodcast/commit/5a35cd6969d0a0232cb9881988bc6240dc86b47e))
+* **render:** multi-voice scenes via a `lines` layer inside a segment ([#172](https://github.com/schmug/clodcast/issues/172)) ([#180](https://github.com/schmug/clodcast/issues/180)) ([51cdd59](https://github.com/schmug/clodcast/commit/51cdd591d76ba18b07f8f884e8651be63238cf9f))
+* **render:** per-show episode slugs via manifest slug_prefix ([#162](https://github.com/schmug/clodcast/issues/162)) ([#167](https://github.com/schmug/clodcast/issues/167)) ([5aed501](https://github.com/schmug/clodcast/commit/5aed501d8ec1a6cd94f8e6b131253d8801406d52))
+* **surface-tension:** recorded cast clips, show art, and the render path they needed ([#177](https://github.com/schmug/clodcast/issues/177)) ([#189](https://github.com/schmug/clodcast/issues/189)) ([e7b8881](https://github.com/schmug/clodcast/commit/e7b88818a8954f2e75cfeaf2c4f19ae5284c89f6))
+* **surface-tension:** scene writer, SKILL.md and the desk's content guards ([#176](https://github.com/schmug/clodcast/issues/176)) ([#185](https://github.com/schmug/clodcast/issues/185)) ([9233706](https://github.com/schmug/clodcast/commit/9233706efda73b88e0d1ba52a04b003d6ae53e5c))
+* **surface-tension:** two-source candidate gather ranked on real votes ([#183](https://github.com/schmug/clodcast/issues/183)) ([21895fc](https://github.com/schmug/clodcast/commit/21895fc1b618ac5b8b53d2ddf91bb8235b280865))
+* **surface-tension:** week-seeded role, stance, turn and bit assignment ([#174](https://github.com/schmug/clodcast/issues/174)) ([#179](https://github.com/schmug/clodcast/issues/179)) ([1423745](https://github.com/schmug/clodcast/commit/1423745b1ce10133d96666a999c31c628a2ff93d))
+
+
+### Bug Fixes
+
+* **surface-tension:** stop the plan telling the writer to quote a caller ([#184](https://github.com/schmug/clodcast/issues/184)) ([51e0943](https://github.com/schmug/clodcast/commit/51e0943ccd6826a4dc545832ef63d1251ba7514b))
+
 ## [0.1.7](https://github.com/schmug/clodcast/compare/v0.1.6...v0.1.7) (2026-08-24)
 
 
