@@ -133,7 +133,7 @@ def test_render_py_honors_the_documented_manifest_keys():
         "ship_mode",
         "show_name",
         "description_footer_text",
-        "cover_image",
+        "cover_style",
     ):
         assert key in render_src, (
             f"SKILL.md's manifest promises {key} but render.py never mentions it"
@@ -160,32 +160,27 @@ def test_skill_md_pins_the_shows_own_cover_name():
     )
 
 
-def test_skill_md_pins_the_shows_own_episode_art():
-    # #157 swapped the NAME on the daily show's cover template; the ART stayed the
-    # daily show's — its purple/orange gradient reached every podcast client that
-    # renders per-episode images, under a channel image that is this show's real
-    # cover. cover_image points render.py at the bundled art instead (#164).
-    # Section-scoped like the other cover pin: the Manifest example is what the
-    # weekly run copies.
-    assert '"cover_image"' in _section("## Manifest"), (
-        "SKILL.md's manifest example must set cover_image; without it every episode "
-        "ships the daily show's generated gradient as its artwork"
+def test_skill_md_pins_the_shows_own_cover_style():
+    # FC used to bypass build_cover entirely with cover_image (#164), so every
+    # episode shipped byte-identical art and SKILL.md carried an untested "update
+    # both" rule against cortech.online's copy of the same JPEG. It now renders
+    # its own cover; the style is the thing that must be pinned, because
+    # render.py defaults every cover to the DAILY show's ascii-horizon design.
+    # Drop the key and the next weekly episode silently restyles, in a public
+    # feed, into art nobody has looked at.
+    assert '"cover_style": "ascii-git"' in _section("## Manifest"), (
+        "SKILL.md's manifest example must set cover_style; without it every "
+        "episode ships the daily show's ASCII-horizon art"
     )
 
 
-def test_the_bundled_show_art_is_a_valid_podcast_cover():
-    # The asset is a copy of cortech.online's public/frontier-commits-cover.jpg —
-    # bundled, not fetched, because a render must not depend on the network for a
-    # local artifact (same posture as the house-voice ref clip). Apple Podcasts and
-    # Spotify both require square art, 1400-3000px.
-    from PIL import Image
-
-    art = FC_DIR / "refs" / "cover.jpg"
-    assert art.exists(), "the bundled Frontier Commits show art is missing"
-    with Image.open(art) as im:
-        assert im.format == "JPEG"
-        assert im.width == im.height, f"show art must be square (got {im.size})"
-        assert 1400 <= im.width <= 3000, f"show art must be 1400-3000px (got {im.width})"
+def test_skill_md_no_longer_carries_the_cover_image_copy_rule():
+    # The bundled refs/cover.jpg is gone and so is the human-maintained "if that
+    # art is ever redesigned, update both" instruction. A re-added cover_image
+    # here would short-circuit the renderer and quietly restore the old problem.
+    manifest = _section("## Manifest")
+    assert "cover_image" not in manifest
+    assert not (FC_DIR / "refs" / "cover.jpg").exists()
 
 
 def test_skill_md_pins_the_shows_own_source_credit_footer():
