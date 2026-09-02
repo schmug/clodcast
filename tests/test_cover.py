@@ -301,3 +301,60 @@ def test_rail_spine_nodes_land_on_the_documented_interval():
     assert all(g % render.ASCII_RAIL_NODE_EVERY == 0 for g in gaps), gaps
     assert gaps == [render.ASCII_RAIL_NODE_EVERY, render.ASCII_RAIL_NODE_EVERY * 3]
     assert len(nodes) == 6
+
+
+# --- the weekly date fork --------------------------------------------------
+#
+# Frontier Commits titles end " - Week of August 24, 2026", not the ISO date, so
+# #168's cover_headline strip misses entirely: the tail survives into 96px type,
+# the date lands on the cover twice in two formats, and the headline is pushed to
+# COVER_HEADLINE_MAX_LINES where real topics start falling off the bottom.
+
+
+def test_week_label_reads_the_way_the_title_does():
+    # Must match the title tail EXACTLY, because the strip below is built from it.
+    assert render.week_label("2026-08-24") == "Week of August 24, 2026"
+    assert render.week_label("2026-01-05") == "Week of January 5, 2026"
+    # No zero padding on the day: "January 5", never "January 05".
+    assert "05" not in render.week_label("2026-01-05")
+
+
+def test_weekly_headline_strips_the_tail_the_date_line_prints():
+    # The one invariant that matters here: the string the cover PRINTS is the
+    # string the headline STRIPS. Built independently in two places, they drift
+    # and the bug comes back wearing a different suffix.
+    date = "2026-08-24"
+    title = f"Claude Code, the codex train, OpenAI's Python SDK - {render.week_label(date)}"
+    assert render.cover_headline_weekly(title, date) == (
+        "Claude Code, the codex train, OpenAI's Python SDK"
+    )
+
+
+def test_weekly_headline_keeps_a_mid_string_dash():
+    date = "2026-08-24"
+    title = f"grok-2.5, a well-known fork, MCP - {render.week_label(date)}"
+    assert render.cover_headline_weekly(title, date) == "grok-2.5, a well-known fork, MCP"
+
+
+def test_weekly_headline_leaves_the_legacy_em_dash_titles_alone():
+    # The two PUBLISHED episodes are titled "Frontier Commits — week of August 17,
+    # 2026" — em dash, lowercase "week", show name in front — the exact shape
+    # SKILL.md now forbids ("Never title an episode `Frontier Commits — Week of
+    # ...`"). They predate #161. Teaching the matcher this form would leave the
+    # headline reading "Frontier Commits", which is worse than leaving it alone.
+    # Pinned so a later agent does not "improve" the matcher into handling both.
+    legacy = "Frontier Commits — week of August 17, 2026"
+    assert render.cover_headline_weekly(legacy, "2026-08-17") == legacy
+
+
+def test_weekly_headline_is_a_noop_without_a_date():
+    title = "Anthropic archives claude-quickstarts"
+    assert render.cover_headline_weekly(title, "") == title
+
+
+def test_weekly_strip_does_not_touch_the_daily_iso_form():
+    # cover_headline (ISO) and cover_headline_weekly must stay independent; the
+    # daily show keeps its own path.
+    title = "Cloudflare ships Workers AI batch - 2026-08-24"
+    assert render.cover_headline_weekly(title, "2026-08-24") == title
+    assert render.cover_headline(title, "2026-08-24") == "Cloudflare ships Workers AI batch"

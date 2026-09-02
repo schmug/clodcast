@@ -1890,6 +1890,44 @@ def cover_headline(title: str, date_str: str) -> str:
     return title
 
 
+def week_label(date_str: str) -> str:
+    """`"2026-08-24"` -> `"Week of August 24, 2026"`.
+
+    The weekly shows' date form. Matches the tail their episode titles carry
+    (frontier-commits SKILL.md, "Title format") EXACTLY, because
+    cover_headline_weekly strips what this prints — see the note there.
+
+    `%-d` rather than `%d`: the title says "August 24" and "January 5", never
+    "January 05", and a padded day here would silently stop the strip matching.
+    """
+    if not date_str:
+        return ""
+    return dt.datetime.strptime(date_str, "%Y-%m-%d").strftime("Week of %B %-d, %Y")
+
+
+def cover_headline_weekly(title: str, date_str: str) -> str:
+    """The episode title with its `" - Week of <Month D, YYYY>"` tail removed.
+
+    The weekly counterpart to cover_headline. It exists because a weekly show's
+    tail is not the ISO date, so the ISO strip misses and the tail survives into
+    the largest type on the canvas — with the date then printed twice, in two
+    formats, and the headline pushed to COVER_HEADLINE_MAX_LINES where real
+    topics start dropping off the bottom.
+
+    Built from week_label deliberately: the string the cover prints IS the string
+    stripped here. Two independent implementations of "the weekly form" is the
+    same bug in a new costume.
+
+    Deliberately does NOT match the legacy `"Frontier Commits — week of ..."`
+    form the two published episodes carry (pre-#161, and forbidden by SKILL.md
+    since). Applied there it would leave the headline reading "Frontier Commits".
+    """
+    suffix = f" - {week_label(date_str)}"
+    if date_str and title.endswith(suffix):
+        return title[: -len(suffix)]
+    return title
+
+
 def _cover_face(image_font, faces, size: int, want_style: str = ""):
     """First face in `faces` that loads, preferring one whose style name contains
     `want_style` ("Bold"). Falls back to the first that loaded at all, so a host
