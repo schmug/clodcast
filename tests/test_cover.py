@@ -1,10 +1,12 @@
 """
 Invariant tests for the episode cover art (#163).
 
-`build_cover` draws one design: an ASCII sun over a horizon rule. There is no
-style selector — a show that wants its own art supplies `cover_image` (#164),
-which is what retired the old gradient renderer. Those tests live in
-tests/test_render.py alongside the rest of the cover_image gate.
+`build_cover` dispatches over a closed `cover_style` whitelist: the daily show's
+`ascii-horizon` (an ASCII sun over a horizon rule) and Frontier Commits'
+`ascii-git` (an ASCII commit rail). #168 shipped a single renderer, having
+deleted its own whitelist during a rebase — correct at the time, because FC was
+on `cover_image` and `build_cover` was never called for that show. FC now
+renders its own art, which is what brought the selector back.
 
 CI installs Pillow and fonts-dejavu-core (#164), so the render tests here run
 for real on Linux rather than skipping — which is the point: the font fallback
@@ -15,6 +17,8 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+
+import pytest
 
 import render
 
@@ -358,3 +362,55 @@ def test_weekly_strip_does_not_touch_the_daily_iso_form():
     title = "Cloudflare ships Workers AI batch - 2026-08-24"
     assert render.cover_headline_weekly(title, "2026-08-24") == title
     assert render.cover_headline(title, "2026-08-24") == "Cloudflare ships Workers AI batch"
+
+
+# --- style dispatch --------------------------------------------------------
+#
+# #168 deleted its own cover_style whitelist during the rebase, because with
+# Frontier Commits on cover_image the key would have been dead config and the
+# second renderer dead code. This change takes FC off cover_image, which removes
+# that premise — so the selector comes back, with the SAME closed-whitelist
+# posture ship_mode has: how a show looks is a property of the show, and a typo
+# must die at validation rather than silently restyle a published feed.
+
+
+def test_cover_styles_is_a_closed_whitelist():
+    assert render.COVER_STYLE_ASCII == "ascii-horizon"
+    assert render.COVER_STYLE_ASCII in render.COVER_STYLES
+
+
+def test_resolve_cover_style_defaults_to_the_house_design():
+    # Absent means the daily show's design — every existing manifest omits the key
+    # and must keep rendering exactly what it renders today.
+    assert render.resolve_cover_style({}) == render.COVER_STYLE_ASCII
+    assert render.resolve_cover_style({"cover_style": None}) == render.COVER_STYLE_ASCII
+    assert render.resolve_cover_style({"cover_style": "ascii-horizon"}) == "ascii-horizon"
+
+
+@pytest.mark.parametrize("bad", ["acsii-horizon", "ASCII-HORIZON", "", 3, [], "ascii-horizon "])
+def test_unknown_cover_style_dies_at_validation(bad):
+    # Every field but cover_style is valid, so the SystemExit can only come from
+    # the whitelist. A manifest that dies on a missing `summary` instead would
+    # pass this test forever whether or not the selector exists at all.
+    with pytest.raises(SystemExit):
+        render.validate_manifest(
+            {"title": "T", "summary": "S", "segments": [{"text": "hi"}], "cover_style": bad}
+        )
+
+
+def test_validate_manifest_accepts_every_whitelisted_cover_style():
+    # The positive control for the test above: proves the manifest it builds is
+    # otherwise valid, so the rejections there are the whitelist doing its job.
+    for style in render.COVER_STYLES:
+        render.validate_manifest(
+            {"title": "T", "summary": "S", "segments": [{"text": "hi"}], "cover_style": style}
+        )
+    render.validate_manifest({"title": "T", "summary": "S", "segments": [{"text": "hi"}]})
+
+
+def test_build_cover_dispatches_to_the_horizon_renderer(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(render, "_cover_ascii_horizon", lambda *a, **k: calls.append("horizon"))
+    render.build_cover(tmp_path / "c.jpg", "S", "2026-08-24", "t")
+    render.build_cover(tmp_path / "c.jpg", "S", "2026-08-24", "t", style="ascii-horizon")
+    assert calls == ["horizon", "horizon"]

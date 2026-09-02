@@ -1051,6 +1051,12 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
     if ship_mode is not None and ship_mode not in SHIP_MODES:
         shown = "{" + ", ".join(f'"{m}"' for m in SHIP_MODES) + "}"
         die(f"manifest 'ship_mode' must be one of {shown} or unset (got {ship_mode!r})")
+    # cover_style: closed whitelist, same posture as ship_mode. A typo must die
+    # rather than fall through to the default and quietly restyle a published show.
+    style = manifest.get("cover_style")
+    if style is not None and style not in COVER_STYLES:
+        shown = "{" + ", ".join(f'"{v}"' for v in COVER_STYLES) + "}"
+        die(f"manifest 'cover_style' must be one of {shown} or unset (got {style!r})")
     if manifest.get("date"):  # treat "" as absent, matching resolve_cover_date
         try:
             dt.date.fromisoformat(manifest["date"])
@@ -2015,7 +2021,29 @@ def _fit_lockup(draw, image_font, text: str):
     return text, font
 
 
-def build_cover(out_path: Path, show_name: str, date_str: str, title_hint: str) -> None:
+# Two cover designs live here, selected per SHOW rather than per invocation. The
+# selector is a closed whitelist for the same reason ship_mode is: how a show looks
+# is a property of the show, and a typo must die at validation rather than quietly
+# restyle a published feed.
+#
+# #168 shipped without this, having deleted its own whitelist during a rebase —
+# right at the time, because Frontier Commits was on cover_image and build_cover
+# was never called for it, so the key would have been dead config. That premise is
+# what this change removes: once a show renders its own art, the key is the thing
+# that picks which art.
+COVER_STYLE_ASCII = "ascii-horizon"
+COVER_STYLES = (COVER_STYLE_ASCII,)
+
+
+def resolve_cover_style(manifest: dict[str, Any]) -> str:
+    """Cover design for this manifest. validate_manifest whitelists the value, so
+    anything reaching here is already known-good. Absent means the house design —
+    every manifest written before this key existed must keep rendering what it
+    renders today."""
+    return manifest.get("cover_style") or COVER_STYLE_ASCII
+
+
+def _cover_ascii_horizon(out_path: Path, show_name: str, date_str: str, title_hint: str) -> None:
     """The house cover: an ASCII sun over a full-bleed horizon rule, with the
     episode's topics set large.
 
@@ -2092,6 +2120,17 @@ def build_cover(out_path: Path, show_name: str, date_str: str, title_hint: str) 
     )
 
     img.save(out_path, "JPEG", quality=88, optimize=True)
+
+
+def build_cover(
+    out_path: Path,
+    show_name: str,
+    date_str: str,
+    title_hint: str,
+    style: str = COVER_STYLE_ASCII,
+) -> None:
+    """Render this episode's cover in the show's cover style."""
+    _cover_ascii_horizon(out_path, show_name, date_str, title_hint)
 
 
 def resolve_font() -> str:
@@ -4703,7 +4742,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
         apply_cover_image(cover_image, cover)
         log(f"cover: {cover_image} (supplied)")
     else:
-        build_cover(cover, show_name, cover_date, title)
+        build_cover(cover, show_name, cover_date, title, style=resolve_cover_style(manifest))
     mark_stage(workdir, "cover")
 
     # 5: timeline + description
