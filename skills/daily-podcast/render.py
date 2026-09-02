@@ -1721,6 +1721,7 @@ COVER_SIZE = 1400
 # can be diffed by eye.
 COVER_GROUND = (16, 20, 29)  # #10141d — the ground both shows' covers sit on
 COVER_AMBER = (246, 195, 74)  # #f6c34a — --color-amber
+COVER_CYAN = (94, 227, 209)  # #5ee3d1 — --color-cyan, the weekly show's accent
 COVER_PAPER = (242, 239, 230)  # #f2efe6 — --color-text
 COVER_MUTED = (123, 126, 138)  # #7b7e8a — --color-muted
 COVER_FOOTER_INK = (76, 82, 97)  # one step below muted; the domain is a whisper
@@ -1826,6 +1827,19 @@ ASCII_RAIL = (
 
 # Layout, in COVER_SIZE px. These are the design's 640px board scaled by 2.1875.
 COVER_MARGIN = 122
+# The rail runs the FULL height — top margin to the footer's baseline — rather
+# than the sun's 350x346 corner slot, and the trunk deliberately crosses the
+# horizon rule. That is the composition, not an overflow: the history does not
+# stop at the horizon. A corner-slot version of this art was drawn first and
+# failed the thumbnail test outright — a line drawing has roughly a sixth of the
+# sun's inked cells in the same area, so at 88px it reads as lint. Running it
+# full height is what puts the mass back.
+COVER_RAIL_X = 947  # trunk lands at 947 + 10*30.4 = 1251, clear of the headline
+COVER_RAIL_Y = 74
+COVER_RAIL_CELL_W = 30.4
+COVER_RAIL_CELL_H = 30.4  # square cells: the `|` glyphs must abut to read as a line
+COVER_RAIL_SIZE = 46  # font size > cell height on purpose, so the spine is continuous
+COVER_RAIL_HEADLINE_MAX_W = 1050  # keep the headline off the trunk
 COVER_SUN_X = 923
 COVER_SUN_Y = 74
 COVER_LOCKUP_Y = 254
@@ -1836,6 +1850,7 @@ COVER_LOCKUP_MIN_SIZE = 19
 # edge, NOT to the right margin. Measuring against the full canvas width is what
 # a first pass did, and a long show name ran straight under the disc.
 COVER_LOCKUP_MAX_W = COVER_SUN_X - COVER_MARGIN - 40
+COVER_RAIL_LOCKUP_MAX_W = COVER_RAIL_X - COVER_MARGIN - 40  # the gap to the rail
 COVER_DATE_Y = 328
 COVER_DATE_SIZE = 35
 COVER_RULE_Y = 438
@@ -1997,7 +2012,7 @@ def _cover_wrap(draw, text: str, font, max_width: int) -> list[str]:
     return lines or [text]
 
 
-def _fit_lockup(draw, image_font, text: str):
+def _fit_lockup(draw, image_font, text: str, max_w: float = COVER_LOCKUP_MAX_W):
     """Shrink, then truncate, so the show-name lockup always fits beside the sun.
 
     A show name is arbitrary user config — the daily show's is still four words
@@ -2008,15 +2023,12 @@ def _fit_lockup(draw, image_font, text: str):
     size = COVER_LOCKUP_SIZE
     font = _cover_face(image_font, COVER_SANS_BOLD_FACES, size, "Bold")
     while (
-        _tracked_width(draw, text, font, COVER_LOCKUP_TRACKING) > COVER_LOCKUP_MAX_W
+        _tracked_width(draw, text, font, COVER_LOCKUP_TRACKING) > max_w
         and size > COVER_LOCKUP_MIN_SIZE
     ):
         size -= 2
         font = _cover_face(image_font, COVER_SANS_BOLD_FACES, size, "Bold")
-    while (
-        len(text) > 1
-        and _tracked_width(draw, text, font, COVER_LOCKUP_TRACKING) > COVER_LOCKUP_MAX_W
-    ):
+    while len(text) > 1 and _tracked_width(draw, text, font, COVER_LOCKUP_TRACKING) > max_w:
         text = text[:-2].rstrip() + "\u2026"
     return text, font
 
@@ -2032,7 +2044,8 @@ def _fit_lockup(draw, image_font, text: str):
 # what this change removes: once a show renders its own art, the key is the thing
 # that picks which art.
 COVER_STYLE_ASCII = "ascii-horizon"
-COVER_STYLES = (COVER_STYLE_ASCII,)
+COVER_STYLE_ASCII_GIT = "ascii-git"
+COVER_STYLES = (COVER_STYLE_ASCII, COVER_STYLE_ASCII_GIT)
 
 
 def resolve_cover_style(manifest: dict[str, Any]) -> str:
@@ -2122,6 +2135,88 @@ def _cover_ascii_horizon(out_path: Path, show_name: str, date_str: str, title_hi
     img.save(out_path, "JPEG", quality=88, optimize=True)
 
 
+def _cover_ascii_git(out_path: Path, show_name: str, date_str: str, title_hint: str) -> None:
+    """Frontier Commits' cover: an ASCII commit rail over the house horizon rule.
+
+    Shares ascii-horizon's board — margins, lockup, date, rule, bottom-anchored
+    headline, footer — because these two are ONE house design in two accents and
+    are supposed to move together. That is the opposite of the posture
+    _cover_gradient got before #168 deleted it: that one was frozen legacy, these
+    two are live siblings, and a shared helper is what keeps them from drifting
+    apart rather than how they drift.
+
+    What is NOT shared is the date: this show's titles end
+    " - Week of <Month D, YYYY>", so it uses week_label / cover_headline_weekly.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    img = Image.new("RGB", (COVER_SIZE, COVER_SIZE), COVER_GROUND)
+    d = ImageDraw.Draw(img)
+
+    mono = _cover_face(ImageFont, COVER_MONO_FACES, COVER_RAIL_SIZE)
+    date_font = _cover_face(ImageFont, COVER_SANS_TEXT_FACES, COVER_DATE_SIZE)
+    footer_font = _cover_face(ImageFont, COVER_SANS_TEXT_FACES, COVER_FOOTER_SIZE)
+
+    # Every glyph on its own computed cell, so the graph's geometry comes from
+    # ASCII_RAIL and never from the font's advance width.
+    for row, line in enumerate(ASCII_RAIL):
+        y = COVER_RAIL_Y + row * COVER_RAIL_CELL_H
+        for col, glyph in enumerate(line):
+            if glyph == " ":
+                continue
+            d.text(
+                (COVER_RAIL_X + col * COVER_RAIL_CELL_W, y),
+                glyph,
+                font=mono,
+                fill=COVER_CYAN,
+            )
+
+    # _fit_lockup shrinks then truncates so the name always clears the art. Its
+    # default budget is the gap to the SUN; the rail sits elsewhere, hence the
+    # explicit max_w. Getting this wrong is how a long show name ends up running
+    # under the art in a published feed — the bug #168's rebase had to fix once.
+    lockup, lockup_font = _fit_lockup(d, ImageFont, show_name.upper(), COVER_RAIL_LOCKUP_MAX_W)
+    _draw_tracked(
+        d,
+        (COVER_MARGIN, COVER_LOCKUP_Y),
+        lockup,
+        lockup_font,
+        COVER_CYAN,
+        COVER_LOCKUP_TRACKING,
+    )
+    d.text((COVER_MARGIN, COVER_DATE_Y), week_label(date_str), font=date_font, fill=COVER_MUTED)
+
+    d.rectangle(
+        [(0, COVER_RULE_Y), (COVER_SIZE, COVER_RULE_Y + COVER_RULE_H - 1)],
+        fill=COVER_CYAN,
+    )
+
+    headline = cover_headline_weekly(title_hint, date_str)
+    size = COVER_HEADLINE_SIZE
+    headline_font = _cover_face(ImageFont, COVER_SANS_BOLD_FACES, size, "Bold")
+    lines = _cover_wrap(d, headline, headline_font, COVER_RAIL_HEADLINE_MAX_W)
+    while len(lines) > COVER_HEADLINE_MAX_LINES and size > COVER_HEADLINE_MIN_SIZE:
+        size -= 6
+        headline_font = _cover_face(ImageFont, COVER_SANS_BOLD_FACES, size, "Bold")
+        lines = _cover_wrap(d, headline, headline_font, COVER_RAIL_HEADLINE_MAX_W)
+    lines = lines[:COVER_HEADLINE_MAX_LINES]
+
+    leading = int(size * COVER_HEADLINE_LEADING)
+    y = COVER_HEADLINE_BOTTOM - leading * len(lines)
+    for line in lines:
+        d.text((COVER_MARGIN, y), line, font=headline_font, fill=COVER_PAPER)
+        y += leading
+
+    d.text(
+        (COVER_MARGIN, COVER_FOOTER_Y),
+        COVER_FOOTER,
+        font=footer_font,
+        fill=COVER_FOOTER_INK,
+    )
+
+    img.save(out_path, "JPEG", quality=88, optimize=True)
+
+
 def build_cover(
     out_path: Path,
     show_name: str,
@@ -2130,7 +2225,10 @@ def build_cover(
     style: str = COVER_STYLE_ASCII,
 ) -> None:
     """Render this episode's cover in the show's cover style."""
-    _cover_ascii_horizon(out_path, show_name, date_str, title_hint)
+    if style == COVER_STYLE_ASCII_GIT:
+        _cover_ascii_git(out_path, show_name, date_str, title_hint)
+    else:
+        _cover_ascii_horizon(out_path, show_name, date_str, title_hint)
 
 
 def resolve_font() -> str:

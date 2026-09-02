@@ -414,3 +414,44 @@ def test_build_cover_dispatches_to_the_horizon_renderer(monkeypatch, tmp_path):
     render.build_cover(tmp_path / "c.jpg", "S", "2026-08-24", "t")
     render.build_cover(tmp_path / "c.jpg", "S", "2026-08-24", "t", style="ascii-horizon")
     assert calls == ["horizon", "horizon"]
+
+
+# --- the ascii-git renderer ------------------------------------------------
+
+
+def test_ascii_git_is_on_the_whitelist():
+    assert render.COVER_STYLE_ASCII_GIT == "ascii-git"
+    assert render.COVER_STYLE_ASCII_GIT in render.COVER_STYLES
+
+
+def test_resolve_cover_style_reads_the_manifest():
+    assert render.resolve_cover_style({"cover_style": "ascii-git"}) == "ascii-git"
+    assert render.resolve_cover_style({}) == render.COVER_STYLE_ASCII
+
+
+def test_build_cover_dispatches_each_style_to_its_own_renderer(monkeypatch, tmp_path):
+    calls = []
+    for name in ("_cover_ascii_horizon", "_cover_ascii_git"):
+        monkeypatch.setattr(render, name, lambda *a, _n=name, **k: calls.append(_n), raising=True)
+    out = tmp_path / "c.jpg"
+    render.build_cover(out, "S", "2026-08-24", "t", style=render.COVER_STYLE_ASCII)
+    render.build_cover(out, "S", "2026-08-24", "t", style=render.COVER_STYLE_ASCII_GIT)
+    assert calls == ["_cover_ascii_horizon", "_cover_ascii_git"]
+
+
+def test_ascii_git_renders_a_real_cover(tmp_path):
+    # No importorskip: CI installs Pillow and fonts-dejavu-core (#164), so this
+    # runs for real on Linux against the DejaVu fallback.
+    from PIL import Image
+
+    out = tmp_path / "fc.jpg"
+    render._cover_ascii_git(
+        out,
+        "Frontier Commits",
+        "2026-08-24",
+        "Anthropic archives claude-quickstarts - Week of August 24, 2026",
+    )
+    assert out.exists() and out.stat().st_size > 10_000
+    with Image.open(out) as im:
+        assert im.size == (render.COVER_SIZE, render.COVER_SIZE)
+        assert im.mode == "RGB"
