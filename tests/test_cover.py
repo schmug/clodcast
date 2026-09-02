@@ -184,3 +184,120 @@ def test_a_short_show_name_is_not_truncated():
 
 def _cover_face_for(image_font, size: int):
     return render._cover_face(image_font, render.COVER_SANS_BOLD_FACES, size, "Bold")
+
+
+# --- the ASCII rail (Frontier Commits) -------------------------------------
+#
+# Same posture as ASCII_SUN above: the table is PINNED ART, and these tests are
+# what make it verifiable rather than magic. The model is a commit graph —
+# `lanes` agent lanes collapsing right into a trunk, then a spine carrying nodes
+# every `node_every` rows with one branch that forks left and merges back.
+#
+# cortech.online's scripts/frontier-cover-art.ts draws this same table; if it
+# changes here, change it there too.
+
+RAIL = render.ASCII_RAIL
+
+
+def test_rail_is_the_pinned_shape():
+    assert len(RAIL) == render.ASCII_RAIL_ROWS == 40
+    assert max(len(r) for r in RAIL) == render.ASCII_RAIL_COLS == 11
+    # No row may be padded out with trailing spaces — a trailing space is an
+    # invisible cell that renders as nothing but shifts nothing, so it can only
+    # ever be a transcription slip.
+    assert all(r == r.rstrip() for r in RAIL)
+
+
+def test_rail_trunk_is_pinned_to_the_rightmost_column():
+    # Everything below the fan hangs off one spine, and that spine is what keeps
+    # the art clear of the headline underneath. A row that loses its column-10
+    # glyph is a gap in the trunk.
+    trunk = render.ASCII_RAIL_COLS - 1
+    for r, line in enumerate(RAIL[render.ASCII_RAIL_FAN_ROWS :], render.ASCII_RAIL_FAN_ROWS):
+        assert len(line) == trunk + 1, f"row {r} does not reach the trunk column"
+        assert line[trunk] in "|+=-", f"row {r} has {line[trunk]!r} in the trunk column"
+
+
+def test_rail_fan_collapses_one_lane_per_pass():
+    # Row 0 has every lane; each node row after it has one fewer, indented by the
+    # lane it just lost. This is what makes the silhouette a wedge.
+    for i in range(render.ASCII_RAIL_LANES - 1):
+        line = RAIL[2 * i]
+        nodes = [c for c, ch in enumerate(line) if ch not in " "]
+        assert nodes == list(range(2 * i, render.ASCII_RAIL_COLS, 2)), (
+            f"fan node row {2 * i} has nodes at {nodes}"
+        )
+
+
+def test_rail_merge_rows_are_backslashes_into_the_trunk():
+    trunk = render.ASCII_RAIL_COLS - 1
+    for i in range(render.ASCII_RAIL_LANES - 1):
+        line = RAIL[2 * i + 1]
+        assert line[trunk] == "|"
+        merges = [c for c, ch in enumerate(line) if ch == "\\"]
+        assert merges == list(range(2 * i + 1, trunk, 2)), (
+            f"merge row {2 * i + 1} has slashes at {merges}"
+        )
+
+
+def test_rail_ramp_never_gets_denser_going_down():
+    # The whole point of the ramp is a then->now fade. Reading top to bottom, the
+    # index into "@#*+=-" must only ever increase — a node that gets DENSER as the
+    # history gets older is the bug this test exists to catch.
+    ramp = render.ASCII_SUN_RAMP
+    seen = [ramp.index(ch) for line in RAIL for ch in line if ch in ramp]
+    assert seen == sorted(seen), f"ramp is not monotonic: {seen}"
+    assert seen[0] == 0, "the newest commit is not the densest glyph"
+    assert seen[-1] == len(ramp) - 1, "the oldest commit is not the faintest glyph"
+
+
+def test_rail_spends_only_its_fan_budget_on_the_top():
+    # The first draft let the fan burn all six ramp steps in ten rows, which left
+    # every node on the thirty-row spine as "-" and killed the fade below the
+    # horizon. The fan gets three steps; the spine gets the rest.
+    ramp = render.ASCII_SUN_RAMP
+    fan = RAIL[: render.ASCII_RAIL_FAN_ROWS]
+    fan_steps = {ramp.index(ch) for line in fan for ch in line if ch in ramp}
+    assert fan_steps == set(range(render.ASCII_RAIL_FAN_STEPS))
+
+    spine = RAIL[render.ASCII_RAIL_FAN_ROWS :]
+    spine_steps = {ramp.index(ch) for line in spine for ch in line if ch in ramp}
+    assert spine_steps == set(range(render.ASCII_RAIL_FAN_STEPS, len(ramp)))
+
+
+def test_rail_has_exactly_one_branch_that_forks_and_merges():
+    # The original tile's signature: one stub off the spine. Exactly one fork and
+    # exactly one merge, below the fan, on adjacent columns to the trunk.
+    spine = RAIL[render.ASCII_RAIL_FAN_ROWS :]
+    forks = [r for r, line in enumerate(spine) if "/" in line]
+    merges = [r for r, line in enumerate(spine) if "\\" in line]
+    assert len(forks) == 1 and len(merges) == 1
+    assert forks[0] < merges[0], "the branch merges before it forks"
+    stub_row = render.ASCII_RAIL_FAN_ROWS + forks[0]
+    assert stub_row == render.ASCII_RAIL_STUB_ROW
+    # Exactly one commit sits on the branch, and it carries the SAME weight as the
+    # trunk nodes bracketing it. A denser glyph here would read as a branch commit
+    # newer than the trunk commit above it — the first draft used "*" and broke
+    # both this and the monotonicity test.
+    ramp = render.ASCII_SUN_RAMP
+    branch_col = render.ASCII_RAIL_COLS - 3
+    branch = spine[forks[0] : merges[0] + 1]
+    on_branch = [
+        line[branch_col] for line in branch if len(line) > branch_col and line[branch_col] in ramp
+    ]
+    assert len(on_branch) == 1, f"branch carries {len(on_branch)} commits"
+
+
+def test_rail_spine_nodes_land_on_the_documented_interval():
+    trunk = render.ASCII_RAIL_COLS - 1
+    ramp = render.ASCII_SUN_RAMP
+    spine = RAIL[render.ASCII_RAIL_FAN_ROWS :]
+    nodes = [r for r, line in enumerate(spine) if line[trunk] in ramp]
+    # The stub spans five rows and swallows the TWO node slots inside it — the fork
+    # row and the merge row both fall on the interval — so the spine carries one
+    # long gap where the branch is and NODE_EVERY everywhere else. Every gap is
+    # still a multiple of the interval; that is what "fixed interval" means here.
+    gaps = sorted({b - a for a, b in zip(nodes, nodes[1:], strict=False)})
+    assert all(g % render.ASCII_RAIL_NODE_EVERY == 0 for g in gaps), gaps
+    assert gaps == [render.ASCII_RAIL_NODE_EVERY, render.ASCII_RAIL_NODE_EVERY * 3]
+    assert len(nodes) == 6

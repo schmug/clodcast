@@ -1755,6 +1755,69 @@ ASCII_SUN = (
     "      -------",
 )
 
+# The ASCII rail is Frontier Commits' pinned art — the same posture as ASCII_SUN
+# above, and schmug/cortech.online's scripts/frontier-cover-art.ts draws the same
+# table, which is what makes that show's channel tile and its episode covers one
+# picture. tests/test_cover.py re-derives it from the model below. Nothing
+# mechanical links the two repos: IF THIS TABLE CHANGES, CHANGE BOTH.
+#
+# The model: ASCII_RAIL_LANES agent lanes collapse right into a trunk over
+# ASCII_RAIL_FAN_ROWS rows, then the spine descends carrying a node roughly every
+# ASCII_RAIL_NODE_EVERY rows, with one branch forking left at ASCII_RAIL_STUB_ROW
+# and merging back four rows later. The ramp is budgeted across the FULL height:
+# the fan spends ASCII_RAIL_FAN_STEPS steps, the spine gets the remainder. A first
+# draft let the fan spend all six, which left the whole spine flat.
+ASCII_RAIL_COLS = 11
+ASCII_RAIL_ROWS = 40
+ASCII_RAIL_LANES = 6
+ASCII_RAIL_FAN_ROWS = 10
+ASCII_RAIL_FAN_STEPS = 3
+ASCII_RAIL_NODE_EVERY = 4
+ASCII_RAIL_STUB_ROW = 18
+ASCII_RAIL = (
+    "@ @ @ @ @ @",
+    " \\ \\ \\ \\ \\|",
+    "  @ @ @ @ @",
+    "   \\ \\ \\ \\|",
+    "    # # # #",
+    "     \\ \\ \\|",
+    "      # # #",
+    "       \\ \\|",
+    "        * *",
+    "         \\|",
+    "          +",
+    "          |",
+    "          |",
+    "          |",
+    "          +",
+    "          |",
+    "          |",
+    "          |",
+    "         /|",
+    "        | |",
+    "        + |",
+    "        | |",
+    "         \\|",
+    "          |",
+    "          |",
+    "          |",
+    "          =",
+    "          |",
+    "          |",
+    "          |",
+    "          =",
+    "          |",
+    "          |",
+    "          |",
+    "          -",
+    "          |",
+    "          |",
+    "          |",
+    "          -",
+    "          |",
+)
+
+
 # Layout, in COVER_SIZE px. These are the design's 640px board scaled by 2.1875.
 COVER_MARGIN = 122
 COVER_SUN_X = 923
