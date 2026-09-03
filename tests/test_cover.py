@@ -3,7 +3,7 @@ Invariant tests for the episode cover art (#163).
 
 `build_cover` dispatches over a closed `cover_style` whitelist: the daily show's
 `ascii-horizon` (an ASCII sun over a horizon rule) and Frontier Commits'
-`ascii-git` (an ASCII commit rail). #168 shipped a single renderer, having
+`commit-rail` (a vector commit rail). #168 shipped a single renderer, having
 deleted its own whitelist during a rebase — correct at the time, because FC was
 on `cover_image` and `build_cover` was never called for that show. FC now
 renders its own art, which is what brought the selector back.
@@ -190,121 +190,96 @@ def _cover_face_for(image_font, size: int):
     return render._cover_face(image_font, render.COVER_SANS_BOLD_FACES, size, "Bold")
 
 
-# --- the ASCII rail (Frontier Commits) -------------------------------------
+# --- the commit rail (Frontier Commits) ------------------------------------
 #
-# Same posture as ASCII_SUN above: the table is PINNED ART, and these tests are
-# what make it verifiable rather than magic. The model is a commit graph —
-# `lanes` agent lanes collapsing right into a trunk, then a spine carrying nodes
-# every `node_every` rows with one branch that forks left and merges back.
+# Unlike ASCII_SUN above there is no pinned table here: the rail is parametric,
+# so the constants ARE the model. These tests re-derive the node positions from
+# them and then check the things the numbers have to guarantee — that the art
+# clears the rule, the headline and the footer. A cover whose art overlaps its
+# type ships to a public feed unnoticed, which is what these exist to stop.
 #
-# cortech.online's scripts/frontier-cover-art.ts draws this same table; if it
-# changes here, change it there too.
-
-RAIL = render.ASCII_RAIL
+# The motif is a redraw of the show's channel tile in schmug/cortech.online
+# (public/frontier-commits-cover.jpg); if it changes here, change it there too.
 
 
-def test_rail_is_the_pinned_shape():
-    assert len(RAIL) == render.ASCII_RAIL_ROWS == 40
-    assert max(len(r) for r in RAIL) == render.ASCII_RAIL_COLS == 11
-    # No row may be padded out with trailing spaces — a trailing space is an
-    # invisible cell that renders as nothing but shifts nothing, so it can only
-    # ever be a transcription slip.
-    assert all(r == r.rstrip() for r in RAIL)
+def test_rail_nodes_are_evenly_spaced_down_the_trunk():
+    nodes = render._cover_rail_nodes()
+    assert len(nodes) == render.COVER_RAIL_NODES == 8
+    gaps = {b - a for a, b in zip(nodes, nodes[1:], strict=False)}
+    assert gaps == {render.COVER_RAIL_NODE_GAP}
+    # Every commit sits on the drawn trunk, or it is a dot floating in space.
+    assert nodes[0] >= render.COVER_RAIL_TOP
+    assert nodes[-1] <= render.COVER_RAIL_BOTTOM
 
 
-def test_rail_trunk_is_pinned_to_the_rightmost_column():
-    # Everything below the fan hangs off one spine, and that spine is what keeps
-    # the art clear of the headline underneath. A row that loses its column-10
-    # glyph is a gap in the trunk.
-    trunk = render.ASCII_RAIL_COLS - 1
-    for r, line in enumerate(RAIL[render.ASCII_RAIL_FAN_ROWS :], render.ASCII_RAIL_FAN_ROWS):
-        assert len(line) == trunk + 1, f"row {r} does not reach the trunk column"
-        assert line[trunk] in "|+=-", f"row {r} has {line[trunk]!r} in the trunk column"
+def test_rail_lights_the_commits_the_channel_tile_lights():
+    assert render.COVER_RAIL_LIT == (1, 4)
+    assert all(0 <= i < render.COVER_RAIL_NODES for i in render.COVER_RAIL_LIT)
 
 
-def test_rail_fan_collapses_one_lane_per_pass():
-    # Row 0 has every lane; each node row after it has one fewer, indented by the
-    # lane it just lost. This is what makes the silhouette a wedge.
-    for i in range(render.ASCII_RAIL_LANES - 1):
-        line = RAIL[2 * i]
-        nodes = [c for c, ch in enumerate(line) if ch not in " "]
-        assert nodes == list(range(2 * i, render.ASCII_RAIL_COLS, 2)), (
-            f"fan node row {2 * i} has nodes at {nodes}"
-        )
+def test_rail_branch_forks_from_a_lit_commit():
+    # A branch off an unlit node reads as decoration. Off a highlighted one it
+    # reads as the graph doing something, which is the whole point of keeping it.
+    assert render.COVER_RAIL_BRANCH_NODE in render.COVER_RAIL_LIT
 
 
-def test_rail_merge_rows_are_backslashes_into_the_trunk():
-    trunk = render.ASCII_RAIL_COLS - 1
-    for i in range(render.ASCII_RAIL_LANES - 1):
-        line = RAIL[2 * i + 1]
-        assert line[trunk] == "|"
-        merges = [c for c, ch in enumerate(line) if ch == "\\"]
-        assert merges == list(range(2 * i + 1, trunk, 2)), (
-            f"merge row {2 * i + 1} has slashes at {merges}"
-        )
+def test_rail_branch_clears_the_horizon_rule():
+    # The channel tile puts this branch near the top; here the full-bleed rule
+    # runs straight through that spot, and an elbow tangled in the rule was the
+    # first thing that looked wrong. The whole branch must sit below the rule.
+    rule_bottom = render.COVER_RULE_Y + render.COVER_RULE_H
+    assert render.COVER_RAIL_BRANCH_TOP > rule_bottom, "branch stub crosses the rule"
+    elbow_top = (
+        render._cover_rail_nodes()[render.COVER_RAIL_BRANCH_NODE] - 2 * render.COVER_RAIL_ELBOW_R
+    )
+    assert elbow_top > rule_bottom, "branch elbow crosses the rule"
 
 
-def test_rail_ramp_never_gets_denser_going_down():
-    # The whole point of the ramp is a then->now fade. Reading top to bottom, the
-    # index into "@#*+=-" must only ever increase — a node that gets DENSER as the
-    # history gets older is the bug this test exists to catch.
-    ramp = render.ASCII_SUN_RAMP
-    seen = [ramp.index(ch) for line in RAIL for ch in line if ch in ramp]
-    assert seen == sorted(seen), f"ramp is not monotonic: {seen}"
-    assert seen[0] == 0, "the newest commit is not the densest glyph"
-    assert seen[-1] == len(ramp) - 1, "the oldest commit is not the faintest glyph"
+def test_rail_clears_the_headline_column():
+    # The headline wraps inside COVER_RAIL_HEADLINE_MAX_W; the branch stub is the
+    # leftmost ink the art puts on the canvas. These two must not meet.
+    headline_right = render.COVER_MARGIN + render.COVER_RAIL_HEADLINE_MAX_W
+    stub_left = render.COVER_RAIL_X - 2 * render.COVER_RAIL_ELBOW_R - render.COVER_RAIL_STROKE // 2
+    assert stub_left > headline_right, (
+        f"headline reaches {headline_right}, art starts at {stub_left}"
+    )
 
 
-def test_rail_spends_only_its_fan_budget_on_the_top():
-    # The first draft let the fan burn all six ramp steps in ten rows, which left
-    # every node on the thirty-row spine as "-" and killed the fade below the
-    # horizon. The fan gets three steps; the spine gets the rest.
-    ramp = render.ASCII_SUN_RAMP
-    fan = RAIL[: render.ASCII_RAIL_FAN_ROWS]
-    fan_steps = {ramp.index(ch) for line in fan for ch in line if ch in ramp}
-    assert fan_steps == set(range(render.ASCII_RAIL_FAN_STEPS))
-
-    spine = RAIL[render.ASCII_RAIL_FAN_ROWS :]
-    spine_steps = {ramp.index(ch) for line in spine for ch in line if ch in ramp}
-    assert spine_steps == set(range(render.ASCII_RAIL_FAN_STEPS, len(ramp)))
+def test_rail_fits_the_canvas_and_clears_the_footer():
+    assert render.COVER_RAIL_X + render.COVER_RAIL_NODE_R < render.COVER_SIZE
+    assert render.COVER_RAIL_BOTTOM < render.COVER_FOOTER_Y, "rail runs into the footer"
+    assert render.COVER_RAIL_TOP >= 0
 
 
-def test_rail_has_exactly_one_branch_that_forks_and_merges():
-    # The original tile's signature: one stub off the spine. Exactly one fork and
-    # exactly one merge, below the fan, on adjacent columns to the trunk.
-    spine = RAIL[render.ASCII_RAIL_FAN_ROWS :]
-    forks = [r for r, line in enumerate(spine) if "/" in line]
-    merges = [r for r, line in enumerate(spine) if "\\" in line]
-    assert len(forks) == 1 and len(merges) == 1
-    assert forks[0] < merges[0], "the branch merges before it forks"
-    stub_row = render.ASCII_RAIL_FAN_ROWS + forks[0]
-    assert stub_row == render.ASCII_RAIL_STUB_ROW
-    # Exactly one commit sits on the branch, and it carries the SAME weight as the
-    # trunk nodes bracketing it. A denser glyph here would read as a branch commit
-    # newer than the trunk commit above it — the first draft used "*" and broke
-    # both this and the monotonicity test.
-    ramp = render.ASCII_SUN_RAMP
-    branch_col = render.ASCII_RAIL_COLS - 3
-    branch = spine[forks[0] : merges[0] + 1]
-    on_branch = [
-        line[branch_col] for line in branch if len(line) > branch_col and line[branch_col] in ramp
-    ]
-    assert len(on_branch) == 1, f"branch carries {len(on_branch)} commits"
+def test_rail_palette_is_the_channel_tiles():
+    # Sampled from public/frontier-commits-cover.jpg. Drifting these is how the
+    # episode art stops matching the show art a client renders above it.
+    assert render.COVER_RAIL_GREEN == (94, 234, 148)
+    assert render.COVER_RAIL_SLATE == (52, 63, 81)
+    assert render.COVER_GROUND == (16, 20, 29)
 
 
-def test_rail_spine_nodes_land_on_the_documented_interval():
-    trunk = render.ASCII_RAIL_COLS - 1
-    ramp = render.ASCII_SUN_RAMP
-    spine = RAIL[render.ASCII_RAIL_FAN_ROWS :]
-    nodes = [r for r, line in enumerate(spine) if line[trunk] in ramp]
-    # The stub spans five rows and swallows the TWO node slots inside it — the fork
-    # row and the merge row both fall on the interval — so the spine carries one
-    # long gap where the branch is and NODE_EVERY everywhere else. Every gap is
-    # still a multiple of the interval; that is what "fixed interval" means here.
-    gaps = sorted({b - a for a, b in zip(nodes, nodes[1:], strict=False)})
-    assert all(g % render.ASCII_RAIL_NODE_EVERY == 0 for g in gaps), gaps
-    assert gaps == [render.ASCII_RAIL_NODE_EVERY, render.ASCII_RAIL_NODE_EVERY * 3]
-    assert len(nodes) == 6
+def test_rendered_cover_actually_paints_the_nodes(tmp_path):
+    # The geometry tests above only check the constants agree with each other.
+    # This one checks the RENDERER agrees with the constants: read the pixels back
+    # at each computed node centre and assert the right commits came out green.
+    # Without it the whole model could drift from what is drawn and stay green.
+    from PIL import Image
+
+    out = tmp_path / "rail.jpg"
+    render._cover_commit_rail(
+        out, "Frontier Commits", "2026-08-24", "Topic - Week of August 24, 2026"
+    )
+    with Image.open(out) as im:
+        px = im.convert("RGB").load()
+        for i, cy in enumerate(render._cover_rail_nodes()):
+            lit = i in render.COVER_RAIL_LIT
+            want = render.COVER_RAIL_GREEN if lit else render.COVER_RAIL_SLATE
+            got = px[render.COVER_RAIL_X, cy]
+            # JPEG is lossy; a wide tolerance still separates green from slate.
+            assert all(abs(a - b) <= 18 for a, b in zip(got, want, strict=True)), (
+                f"node {i} at y={cy} painted {got}, expected ~{want}"
+            )
 
 
 # --- the weekly date fork --------------------------------------------------
@@ -416,36 +391,36 @@ def test_build_cover_dispatches_to_the_horizon_renderer(monkeypatch, tmp_path):
     assert calls == ["horizon", "horizon"]
 
 
-# --- the ascii-git renderer ------------------------------------------------
+# --- the commit-rail renderer ----------------------------------------------
 
 
-def test_ascii_git_is_on_the_whitelist():
-    assert render.COVER_STYLE_ASCII_GIT == "ascii-git"
-    assert render.COVER_STYLE_ASCII_GIT in render.COVER_STYLES
+def test_commit_rail_is_on_the_whitelist():
+    assert render.COVER_STYLE_COMMIT_RAIL == "commit-rail"
+    assert render.COVER_STYLE_COMMIT_RAIL in render.COVER_STYLES
 
 
 def test_resolve_cover_style_reads_the_manifest():
-    assert render.resolve_cover_style({"cover_style": "ascii-git"}) == "ascii-git"
+    assert render.resolve_cover_style({"cover_style": "commit-rail"}) == "commit-rail"
     assert render.resolve_cover_style({}) == render.COVER_STYLE_ASCII
 
 
 def test_build_cover_dispatches_each_style_to_its_own_renderer(monkeypatch, tmp_path):
     calls = []
-    for name in ("_cover_ascii_horizon", "_cover_ascii_git"):
+    for name in ("_cover_ascii_horizon", "_cover_commit_rail"):
         monkeypatch.setattr(render, name, lambda *a, _n=name, **k: calls.append(_n), raising=True)
     out = tmp_path / "c.jpg"
     render.build_cover(out, "S", "2026-08-24", "t", style=render.COVER_STYLE_ASCII)
-    render.build_cover(out, "S", "2026-08-24", "t", style=render.COVER_STYLE_ASCII_GIT)
-    assert calls == ["_cover_ascii_horizon", "_cover_ascii_git"]
+    render.build_cover(out, "S", "2026-08-24", "t", style=render.COVER_STYLE_COMMIT_RAIL)
+    assert calls == ["_cover_ascii_horizon", "_cover_commit_rail"]
 
 
-def test_ascii_git_renders_a_real_cover(tmp_path):
+def test_commit_rail_renders_a_real_cover(tmp_path):
     # No importorskip: CI installs Pillow and fonts-dejavu-core (#164), so this
     # runs for real on Linux against the DejaVu fallback.
     from PIL import Image
 
     out = tmp_path / "fc.jpg"
-    render._cover_ascii_git(
+    render._cover_commit_rail(
         out,
         "Frontier Commits",
         "2026-08-24",

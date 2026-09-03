@@ -168,7 +168,7 @@ def test_skill_md_pins_the_shows_own_cover_style():
     # render.py defaults every cover to the DAILY show's ascii-horizon design.
     # Drop the key and the next weekly episode silently restyles, in a public
     # feed, into art nobody has looked at.
-    assert '"cover_style": "ascii-git"' in _section("## Manifest"), (
+    assert '"cover_style": "commit-rail"' in _section("## Manifest"), (
         "SKILL.md's manifest example must set cover_style; without it every "
         "episode ships the daily show's ASCII-horizon art"
     )

@@ -1721,7 +1721,11 @@ COVER_SIZE = 1400
 # can be diffed by eye.
 COVER_GROUND = (16, 20, 29)  # #10141d — the ground both shows' covers sit on
 COVER_AMBER = (246, 195, 74)  # #f6c34a — --color-amber
-COVER_CYAN = (94, 227, 209)  # #5ee3d1 — --color-cyan, the weekly show's accent
+# Sampled from the show's channel tile (cortech.online public/frontier-commits-cover.jpg),
+# which is the art a podcast client renders directly ABOVE these episode covers. Matching it
+# is the whole point: the two are one picture in a subscriber's list.
+COVER_RAIL_GREEN = (94, 234, 148)  # lit commits, the lockup and the rule
+COVER_RAIL_SLATE = (52, 63, 81)  # the trunk and every unlit commit
 COVER_PAPER = (242, 239, 230)  # #f2efe6 — --color-text
 COVER_MUTED = (123, 126, 138)  # #7b7e8a — --color-muted
 COVER_FOOTER_INK = (76, 82, 97)  # one step below muted; the domain is a whisper
@@ -1762,84 +1766,37 @@ ASCII_SUN = (
     "      -------",
 )
 
-# The ASCII rail is Frontier Commits' pinned art — the same posture as ASCII_SUN
-# above, and schmug/cortech.online's scripts/frontier-cover-art.ts draws the same
-# table, which is what makes that show's channel tile and its episode covers one
-# picture. tests/test_cover.py re-derives it from the model below. Nothing
-# mechanical links the two repos: IF THIS TABLE CHANGES, CHANGE BOTH.
-#
-# The model: ASCII_RAIL_LANES agent lanes collapse right into a trunk over
-# ASCII_RAIL_FAN_ROWS rows, then the spine descends carrying a node roughly every
-# ASCII_RAIL_NODE_EVERY rows, with one branch forking left at ASCII_RAIL_STUB_ROW
-# and merging back four rows later. The ramp is budgeted across the FULL height:
-# the fan spends ASCII_RAIL_FAN_STEPS steps, the spine gets the remainder. A first
-# draft let the fan spend all six, which left the whole spine flat.
-ASCII_RAIL_COLS = 11
-ASCII_RAIL_ROWS = 40
-ASCII_RAIL_LANES = 6
-ASCII_RAIL_FAN_ROWS = 10
-ASCII_RAIL_FAN_STEPS = 3
-ASCII_RAIL_NODE_EVERY = 4
-ASCII_RAIL_STUB_ROW = 18
-ASCII_RAIL = (
-    "@ @ @ @ @ @",
-    " \\ \\ \\ \\ \\|",
-    "  @ @ @ @ @",
-    "   \\ \\ \\ \\|",
-    "    # # # #",
-    "     \\ \\ \\|",
-    "      # # #",
-    "       \\ \\|",
-    "        * *",
-    "         \\|",
-    "          +",
-    "          |",
-    "          |",
-    "          |",
-    "          +",
-    "          |",
-    "          |",
-    "          |",
-    "         /|",
-    "        | |",
-    "        + |",
-    "        | |",
-    "         \\|",
-    "          |",
-    "          |",
-    "          |",
-    "          =",
-    "          |",
-    "          |",
-    "          |",
-    "          =",
-    "          |",
-    "          |",
-    "          |",
-    "          -",
-    "          |",
-    "          |",
-    "          |",
-    "          -",
-    "          |",
-)
-
-
 # Layout, in COVER_SIZE px. These are the design's 640px board scaled by 2.1875.
 COVER_MARGIN = 122
-# The rail runs the FULL height — top margin to the footer's baseline — rather
-# than the sun's 350x346 corner slot, and the trunk deliberately crosses the
-# horizon rule. That is the composition, not an overflow: the history does not
-# stop at the horizon. A corner-slot version of this art was drawn first and
-# failed the thumbnail test outright — a line drawing has roughly a sixth of the
-# sun's inked cells in the same area, so at 88px it reads as lint. Running it
-# full height is what puts the mass back.
-COVER_RAIL_X = 947  # trunk lands at 947 + 10*30.4 = 1251, clear of the headline
-COVER_RAIL_Y = 74
-COVER_RAIL_CELL_W = 30.4
-COVER_RAIL_CELL_H = 30.4  # square cells: the `|` glyphs must abut to read as a line
-COVER_RAIL_SIZE = 46  # font size > cell height on purpose, so the spine is continuous
-COVER_RAIL_HEADLINE_MAX_W = 1050  # keep the headline off the trunk
+# The commit rail is Frontier Commits' art: a vector redraw of the motif on the show's
+# channel tile, run full height down the right edge. Vector rather than glyphs because
+# solid nodes keep their mass when a podcast client downsamples to an 88px list row —
+# an earlier ASCII version of this same graph dissolved there, which is what a cover
+# has to survive to be worth drawing.
+#
+# The geometry below IS the model — there is no pinned table, so tests re-derive every
+# node position from it and check the clearances that keep the art off the type.
+#
+# schmug/cortech.online draws the same motif in public/frontier-commits-cover.jpg and
+# (once built) scripts/frontier-cover-art.ts. Nothing mechanical links the repos:
+# IF THIS RAIL CHANGES, CHANGE BOTH.
+COVER_RAIL_X = 1240  # trunk centre; clear of the headline's right edge
+COVER_RAIL_TOP = 238
+COVER_RAIL_BOTTOM = 1204
+COVER_RAIL_NODES = 8
+COVER_RAIL_NODE_FIRST = 260
+COVER_RAIL_NODE_GAP = 118
+COVER_RAIL_NODE_R = 23
+COVER_RAIL_STROKE = 10
+COVER_RAIL_LIT = (1, 4)  # the two commits drawn in green, as on the channel tile
+# The branch forks from a LIT commit and rises. The channel tile puts it near the top,
+# but the full-bleed rule cuts straight through that spot here, so it moves down into
+# the open band — a fork off a highlighted commit reads as meaning rather than filler.
+COVER_RAIL_BRANCH_NODE = 4
+COVER_RAIL_BRANCH_TOP = 600
+COVER_RAIL_ELBOW_R = 62  # branch offset is exactly 2x this, so the arc closes the gap
+COVER_RAIL_SS = 4  # supersample factor: PIL does not antialias, and this art is curves
+COVER_RAIL_HEADLINE_MAX_W = 900  # keeps the longest line clear of the branch stub
 COVER_SUN_X = 923
 COVER_SUN_Y = 74
 COVER_LOCKUP_Y = 254
@@ -2044,8 +2001,8 @@ def _fit_lockup(draw, image_font, text: str, max_w: float = COVER_LOCKUP_MAX_W):
 # what this change removes: once a show renders its own art, the key is the thing
 # that picks which art.
 COVER_STYLE_ASCII = "ascii-horizon"
-COVER_STYLE_ASCII_GIT = "ascii-git"
-COVER_STYLES = (COVER_STYLE_ASCII, COVER_STYLE_ASCII_GIT)
+COVER_STYLE_COMMIT_RAIL = "commit-rail"
+COVER_STYLES = (COVER_STYLE_ASCII, COVER_STYLE_COMMIT_RAIL)
 
 
 def resolve_cover_style(manifest: dict[str, Any]) -> str:
@@ -2135,8 +2092,71 @@ def _cover_ascii_horizon(out_path: Path, show_name: str, date_str: str, title_hi
     img.save(out_path, "JPEG", quality=88, optimize=True)
 
 
-def _cover_ascii_git(out_path: Path, show_name: str, date_str: str, title_hint: str) -> None:
-    """Frontier Commits' cover: an ASCII commit rail over the house horizon rule.
+def _cover_rail_nodes() -> list[int]:
+    """Y centres of every commit on the trunk, derived from the geometry above.
+
+    A list rather than a pinned table because this art is parametric — the tests
+    re-derive these same values and check what the numbers have to guarantee
+    (the branch clears the rule, the trunk clears the headline) rather than
+    asserting a transcription."""
+    return [COVER_RAIL_NODE_FIRST + i * COVER_RAIL_NODE_GAP for i in range(COVER_RAIL_NODES)]
+
+
+def _draw_commit_rail(img, image_draw) -> None:
+    """Draw the rail onto `img`, supersampled so the curves come out clean.
+
+    PIL has no antialiasing, and this graphic is circles and an arc — drawn at 1x
+    the nodes come out visibly faceted. So it goes onto a transparent layer at
+    COVER_RAIL_SS scale and is resampled down before compositing. The type is
+    still drawn at 1x afterwards, which keeps it identical in treatment to the
+    daily show's cover rather than quietly rendering by a different path."""
+    from PIL import Image
+
+    ss = COVER_RAIL_SS
+    layer = Image.new("RGBA", (COVER_SIZE * ss, COVER_SIZE * ss), (0, 0, 0, 0))
+    d = image_draw.Draw(layer)
+    x = COVER_RAIL_X * ss
+    stroke = COVER_RAIL_STROKE * ss
+    nodes = _cover_rail_nodes()
+
+    d.line(
+        [(x, COVER_RAIL_TOP * ss), (x, COVER_RAIL_BOTTOM * ss)], fill=COVER_RAIL_SLATE, width=stroke
+    )
+
+    # The branch leaves the trunk on the TEXT side, so the silhouette opens toward
+    # the headline instead of crowding the canvas edge.
+    branch_y = nodes[COVER_RAIL_BRANCH_NODE] * ss
+    elbow = COVER_RAIL_ELBOW_R * ss
+    bx = x - 2 * elbow
+    d.line(
+        [(bx, COVER_RAIL_BRANCH_TOP * ss), (bx, branch_y - elbow)],
+        fill=COVER_RAIL_SLATE,
+        width=stroke,
+    )
+    d.arc(
+        [bx, branch_y - 2 * elbow, bx + 2 * elbow, branch_y],
+        90,
+        180,
+        fill=COVER_RAIL_SLATE,
+        width=stroke,
+    )
+    d.line([(x, branch_y), (bx + elbow, branch_y)], fill=COVER_RAIL_SLATE, width=stroke)
+    cap = stroke // 2
+    d.ellipse(
+        [bx - cap, COVER_RAIL_BRANCH_TOP * ss - cap, bx + cap, COVER_RAIL_BRANCH_TOP * ss + cap],
+        fill=COVER_RAIL_SLATE,
+    )
+
+    r = COVER_RAIL_NODE_R * ss
+    for i, cy in enumerate(nodes):
+        fill = COVER_RAIL_GREEN if i in COVER_RAIL_LIT else COVER_RAIL_SLATE
+        d.ellipse([x - r, cy * ss - r, x + r, cy * ss + r], fill=fill)
+
+    img.alpha_composite(layer.resize((COVER_SIZE, COVER_SIZE), Image.LANCZOS))
+
+
+def _cover_commit_rail(out_path: Path, show_name: str, date_str: str, title_hint: str) -> None:
+    """Frontier Commits' cover: a commit rail over the house horizon rule.
 
     Shares ascii-horizon's board — margins, lockup, date, rule, bottom-anchored
     headline, footer — because these two are ONE house design in two accents and
@@ -2147,29 +2167,19 @@ def _cover_ascii_git(out_path: Path, show_name: str, date_str: str, title_hint: 
 
     What is NOT shared is the date: this show's titles end
     " - Week of <Month D, YYYY>", so it uses week_label / cover_headline_weekly.
+
+    The green is the show's own, sampled from the channel tile a client renders
+    above these covers — so the episode art matches the show art with no second
+    asset to keep in sync.
     """
     from PIL import Image, ImageDraw, ImageFont
 
-    img = Image.new("RGB", (COVER_SIZE, COVER_SIZE), COVER_GROUND)
+    img = Image.new("RGBA", (COVER_SIZE, COVER_SIZE), COVER_GROUND + (255,))
+    _draw_commit_rail(img, ImageDraw)
     d = ImageDraw.Draw(img)
 
-    mono = _cover_face(ImageFont, COVER_MONO_FACES, COVER_RAIL_SIZE)
     date_font = _cover_face(ImageFont, COVER_SANS_TEXT_FACES, COVER_DATE_SIZE)
     footer_font = _cover_face(ImageFont, COVER_SANS_TEXT_FACES, COVER_FOOTER_SIZE)
-
-    # Every glyph on its own computed cell, so the graph's geometry comes from
-    # ASCII_RAIL and never from the font's advance width.
-    for row, line in enumerate(ASCII_RAIL):
-        y = COVER_RAIL_Y + row * COVER_RAIL_CELL_H
-        for col, glyph in enumerate(line):
-            if glyph == " ":
-                continue
-            d.text(
-                (COVER_RAIL_X + col * COVER_RAIL_CELL_W, y),
-                glyph,
-                font=mono,
-                fill=COVER_CYAN,
-            )
 
     # _fit_lockup shrinks then truncates so the name always clears the art. Its
     # default budget is the gap to the SUN; the rail sits elsewhere, hence the
@@ -2181,14 +2191,14 @@ def _cover_ascii_git(out_path: Path, show_name: str, date_str: str, title_hint: 
         (COVER_MARGIN, COVER_LOCKUP_Y),
         lockup,
         lockup_font,
-        COVER_CYAN,
+        COVER_RAIL_GREEN,
         COVER_LOCKUP_TRACKING,
     )
     d.text((COVER_MARGIN, COVER_DATE_Y), week_label(date_str), font=date_font, fill=COVER_MUTED)
 
     d.rectangle(
         [(0, COVER_RULE_Y), (COVER_SIZE, COVER_RULE_Y + COVER_RULE_H - 1)],
-        fill=COVER_CYAN,
+        fill=COVER_RAIL_GREEN,
     )
 
     headline = cover_headline_weekly(title_hint, date_str)
@@ -2214,7 +2224,7 @@ def _cover_ascii_git(out_path: Path, show_name: str, date_str: str, title_hint: 
         fill=COVER_FOOTER_INK,
     )
 
-    img.save(out_path, "JPEG", quality=88, optimize=True)
+    img.convert("RGB").save(out_path, "JPEG", quality=88, optimize=True)
 
 
 def build_cover(
@@ -2225,8 +2235,8 @@ def build_cover(
     style: str = COVER_STYLE_ASCII,
 ) -> None:
     """Render this episode's cover in the show's cover style."""
-    if style == COVER_STYLE_ASCII_GIT:
-        _cover_ascii_git(out_path, show_name, date_str, title_hint)
+    if style == COVER_STYLE_COMMIT_RAIL:
+        _cover_commit_rail(out_path, show_name, date_str, title_hint)
     else:
         _cover_ascii_horizon(out_path, show_name, date_str, title_hint)
 
