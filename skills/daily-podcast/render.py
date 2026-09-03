@@ -1868,19 +1868,44 @@ def cover_headline(title: str, date_str: str) -> str:
     return title
 
 
+# Both forms a caller can be holding: the manifest's ISO date, and the DISPLAY
+# form resolve_cover_date returns. build_cover is only ever handed the latter, so
+# an ISO-only parse here is a crash in the art layer AFTER a full episode of TTS
+# has been spent — which is exactly how #192 shipped, killing every weekly cover.
+WEEK_LABEL_FORMATS = ("%Y-%m-%d", "%B %d, %Y")
+
+
+def week_date_display(date_str: str) -> str:
+    """Either accepted date form -> `"August 24, 2026"`.
+
+    `%-d` on the way out rather than `%d`: the title says "August 24" and
+    "January 5", never "January 05", and a padded day would silently stop
+    cover_headline_weekly's strip from matching. Parsing accepts a padded day and
+    normalises it, so the two forms can never disagree about which one they are.
+
+    Returns an unrecognised string unchanged. resolve_cover_date has already
+    die()d on a malformed manifest date, so anything reaching here is a date; the
+    cover is art, not an invariant (see _cover_face), and a slightly-wrong label
+    beats losing a rendered episode.
+    """
+    for fmt in WEEK_LABEL_FORMATS:
+        try:
+            return dt.datetime.strptime(date_str, fmt).strftime("%B %-d, %Y")
+        except ValueError:
+            continue
+    return date_str
+
+
 def week_label(date_str: str) -> str:
-    """`"2026-08-24"` -> `"Week of August 24, 2026"`.
+    """`"2026-08-24"` (or `"August 24, 2026"`) -> `"Week of August 24, 2026"`.
 
     The weekly shows' date form. Matches the tail their episode titles carry
     (frontier-commits SKILL.md, "Title format") EXACTLY, because
     cover_headline_weekly strips what this prints — see the note there.
-
-    `%-d` rather than `%d`: the title says "August 24" and "January 5", never
-    "January 05", and a padded day here would silently stop the strip matching.
     """
     if not date_str:
         return ""
-    return dt.datetime.strptime(date_str, "%Y-%m-%d").strftime("Week of %B %-d, %Y")
+    return f"Week of {week_date_display(date_str)}"
 
 
 def cover_headline_weekly(title: str, date_str: str) -> str:
@@ -3973,6 +3998,10 @@ def capture_workdir_segments(
     except (OSError, ValueError):
         pass
     manifest_segments = manifest.get("segments") or []
+    # The caller's title wins — it is the run record's, and the record is what the
+    # weekly review reads — with the manifest as the fallback for a caller that has
+    # none. Passing it BOTH ways is what made every real sweep raise TypeError.
+    ctx.setdefault("title", manifest.get("title"))
 
     banked: list[dict[str, Any]] = []
     for path in seg_paths:
@@ -3991,7 +4020,6 @@ def capture_workdir_segments(
             text=seg.get("text"),
             source_url=seg.get("source_url"),
             chars=len(seg.get("text") or "") or None,
-            title=manifest.get("title"),
             workdir=str(wd),
             **ctx,
         )
