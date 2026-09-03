@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 This file is generated from conventional commits by [git-cliff](https://git-cliff.org).
 
+## [0.1.10](https://github.com/schmug/clodcast/compare/v0.1.9...v0.1.10) (2026-09-03)
+
+
+### Bug Fixes
+
+* **render:** weekly cover took an ISO date it is never handed ([#195](https://github.com/schmug/clodcast/issues/195)) ([02eddf5](https://github.com/schmug/clodcast/commit/02eddf5b164e7b7dee023fe1cce340f4df0e0c20))
+
 ## [0.1.9](https://github.com/schmug/clodcast/compare/v0.1.8...v0.1.9) (2026-09-03)
 
 
