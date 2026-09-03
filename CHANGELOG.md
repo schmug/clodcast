@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 This file is generated from conventional commits by [git-cliff](https://git-cliff.org).
 
+## [0.1.9](https://github.com/schmug/clodcast/compare/v0.1.8...v0.1.9) (2026-09-03)
+
+
+### Features
+
+* **render:** commit-rail episode cover for Frontier Commits ([#192](https://github.com/schmug/clodcast/issues/192)) ([6c91511](https://github.com/schmug/clodcast/commit/6c915117db5ec7b8562a47a447c0d31fbc538c76))
+
 ## [0.1.8](https://github.com/schmug/clodcast/compare/v0.1.7...v0.1.8) (2026-08-26)
 
 
