@@ -1,7 +1,10 @@
 # Frontier Commits episode cover — `ascii-git`
 
 **Date:** 2026-08-24
-**Status:** approved; **revised after #168 landed** — see [What #168 actually shipped](#what-168-actually-shipped)
+**Status:** **SUPERSEDED IN PART, 2026-09-02** — the board, the `cover_style` selector, the weekly
+date fork and the acceptance criteria all shipped as written. The ART did not: `ASCII_RAIL` was replaced
+by a vector rail before merge. See [Revision: vector rail](#revision-vector-rail-2026-09-02).
+Previously: approved; **revised after #168 landed** — see [What #168 actually shipped](#what-168-actually-shipped)
 **Base:** [#168](https://github.com/schmug/clodcast/pull/168) merged as `c4e841c`. This design was
 written against #168's pre-rebase shape and has been corrected against what is on `main`.
 **Scope:** this repo only — `render.py`'s cover renderer and the FC skill's manifest.
@@ -56,6 +59,43 @@ FC getting its own design, generated per episode with the week and the topics, w
 
 Surviving and reused unchanged: `_cover_face`, `_draw_tracked`, `_tracked_width`, `_cover_wrap`,
 `_fit_lockup`, `cover_headline`, `ASCII_SUN` and every `COVER_*` layout constant.
+
+## Revision: vector rail (2026-09-02)
+
+The ASCII rail specified below was built, reviewed against a rendered cover, and **rejected on
+looks** before merge. What replaced it, in [#192](https://github.com/schmug/clodcast/pull/192):
+
+| This spec says | What shipped |
+| --- | --- |
+| `ASCII_RAIL`, a pinned 11×40 glyph table | A **vector** rail — no table; the geometry constants are the model |
+| Ramp `@#*+=-` budgeted across the height | No ramp. Eight solid nodes, two lit, the rest slate |
+| Brand cyan `#5ee3d1` | The show's green `(94,234,148)` on slate `(52,63,81)` |
+| Six agent lanes fanning into a trunk | One trunk, one branch forking off a lit commit |
+| Style value `ascii-git` | Style value `commit-rail` — the old name described art that no longer exists |
+
+**Why.** The ASCII rail passed the 176/88px thumbnail test, but only just: at 88px the spine was
+faint and the lit commits were indistinguishable. Glyph strokes dissolve under downsampling in a
+way filled circles do not, and 88px is the size a podcast client's list row actually renders. The
+same failure mode killed the corner-slot draft; the full-height ASCII rail survived it rather than
+solved it.
+
+**Where the art now comes from.** It is a redraw of the motif already on the show's channel tile
+(`public/frontier-commits-cover.jpg`), with geometry and palette sampled from that file rather than
+invented. Its ground was already `(16, 20, 29)` — the same one this renderer uses. The two were
+always the same system; the ASCII detour was the part that did not fit.
+
+**What this does to the sibling work.** This spec and the cortech.online show-art spec were written
+as "one picture", with the episode cover landing first so a vector channel tile would not sit beside
+an ASCII episode cover. That constraint is **gone**: the episode cover now matches the *existing*
+channel tile. The website tile becomes optional cleanup rather than a required follow-up, and the
+ordering between the two repos no longer matters.
+
+**What survives unchanged.** Everything that was not the art: the shared board, `cover_style` as a
+closed whitelist, `build_cover` splitting into a dispatcher plus `_cover_ascii_horizon`, the
+`week_label` / `cover_headline_weekly` date fork, dropping `cover_image` and `refs/cover.jpg`, the
+daily show's byte-identity proof, and the non-optional thumbnail check — which is precisely the
+criterion that caught this.
+
 
 ## Non-goals
 
