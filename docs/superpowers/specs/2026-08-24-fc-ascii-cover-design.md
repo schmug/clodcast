@@ -62,8 +62,11 @@ Surviving and reused unchanged: `_cover_face`, `_draw_tracked`, `_tracked_width`
 
 ## Revision: vector rail (2026-09-02)
 
-The ASCII rail specified below was built, reviewed against a rendered cover, and **rejected on
-looks** before merge. What replaced it, in [#192](https://github.com/schmug/clodcast/pull/192):
+The ASCII rail specified below was built exactly as written, passed every gate, and was then
+**rejected on looks** at design review: shown the rendered cover, Cory said the ASCII version did
+not look right, and asked to see the previous `refs/cover.jpg` graphic in the new layout instead.
+That is the whole reason this revision exists. What replaced it, in
+[#192](https://github.com/schmug/clodcast/pull/192):
 
 | This spec says | What shipped |
 | --- | --- |
@@ -73,11 +76,19 @@ looks** before merge. What replaced it, in [#192](https://github.com/schmug/clod
 | Six agent lanes fanning into a trunk | One trunk, one branch forking off a lit commit |
 | Style value `ascii-git` | Style value `commit-rail` — the old name described art that no longer exists |
 
-**Why.** The ASCII rail passed the 176/88px thumbnail test, but only just: at 88px the spine was
-faint and the lit commits were indistinguishable. Glyph strokes dissolve under downsampling in a
-way filled circles do not, and 88px is the size a podcast client's list row actually renders. The
-same failure mode killed the corner-slot draft; the full-height ASCII rail survived it rather than
-solved it.
+**Why.** The call was aesthetic first: the ASCII rail simply did not look as good as the graphic it
+was replacing. The measurable argument agreed with it afterwards, which is the part worth recording.
+The ASCII rail *passed* the 176/88px thumbnail test — that criterion is written below and it did not
+catch this — but it passed only marginally: at 88px the spine was faint and the two lit commits were
+indistinguishable. Glyph strokes dissolve under downsampling in a way filled circles do not, and
+88px is the size a podcast client's list row actually renders. The same failure mode killed the
+corner-slot draft; the full-height ASCII rail survived it rather than solved it.
+
+**The process lesson.** A pass/fail thumbnail check is necessary and was not sufficient. Every
+automated gate was green on the ASCII version — 1215 tests, both byte-identity proofs, the
+thumbnail criterion this document calls non-optional — and the design was still wrong. Rendering
+the cover and *looking at it beside what it replaced* is what caught it. Keep that step; a spec
+that only lists mechanical criteria will ship art nobody looked at.
 
 **Where the art now comes from.** It is a redraw of the motif already on the show's channel tile
 (`public/frontier-commits-cover.jpg`), with geometry and palette sampled from that file rather than
