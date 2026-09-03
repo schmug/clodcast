@@ -430,3 +430,45 @@ def test_commit_rail_renders_a_real_cover(tmp_path):
     with Image.open(out) as im:
         assert im.size == (render.COVER_SIZE, render.COVER_SIZE)
         assert im.mode == "RGB"
+
+
+# --- the seam between resolve_cover_date and the weekly renderer -----------
+#
+# Every test above hands _cover_commit_rail an ISO date directly. Production
+# never does: _render calls build_cover(cover, show_name, resolve_cover_date(
+# manifest), ...), and resolve_cover_date returns the DISPLAY form. The rail
+# renderer then fed that to week_label, which strptimes ISO — so every weekly
+# cover died with a ValueError, after a full episode of TTS had been spent.
+# These tests exercise the composition rather than the pieces.
+
+
+def test_commit_rail_renders_the_date_build_cover_is_actually_handed(tmp_path):
+    manifest = {"date": "2026-08-31"}
+    out = tmp_path / "rail.jpg"
+
+    render.build_cover(
+        out,
+        "Frontier Commits",
+        render.resolve_cover_date(manifest),
+        "Pre-flight probe, codex, adk-python - Week of August 31, 2026",
+        style=render.COVER_STYLE_COMMIT_RAIL,
+    )
+
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_week_label_accepts_the_display_date_resolve_cover_date_returns():
+    # The two forms must agree, or the cover prints one date and the headline
+    # strip below looks for another.
+    assert render.week_label("August 31, 2026") == "Week of August 31, 2026"
+    resolved = render.resolve_cover_date({"date": "2026-08-31"})
+    assert render.week_label(resolved) == render.week_label("2026-08-31")
+
+
+def test_weekly_headline_strips_its_tail_given_the_display_date():
+    # cover_headline_weekly exists to keep the tail out of the 96px type; fed the
+    # date it is really given, it has to keep doing that.
+    title = "Pre-flight probe, codex, adk-python - Week of August 31, 2026"
+    assert render.cover_headline_weekly(title, "August 31, 2026") == (
+        "Pre-flight probe, codex, adk-python"
+    )

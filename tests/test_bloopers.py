@@ -519,3 +519,29 @@ def test_conftest_isolates_the_bin_from_real_user_state():
     real = Path.home() / ".config" / "daily-podcast"
     value = Path(render.BLOOPER_DIR)
     assert real not in value.parents and value != real
+
+
+def test_the_sweep_survives_the_context_its_only_caller_passes(monkeypatch, tmp_path):
+    """Every other sweep test calls capture_workdir_segments bare, which is exactly
+    how this stayed hidden: _sweep_bloopers_on_failure passes run_date AND title in
+    **ctx, and the sweep then passed title= explicitly as well — so bank_blooper got
+    two values for it, raised TypeError, and the run-failed trigger banked nothing
+    from any real failed run since #169."""
+    binned = _bin(monkeypatch, tmp_path)
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    (wd / "seg_01.mp3").write_bytes(b"ID3seg-1")
+    (wd / "manifest.json").write_text(
+        json.dumps({"title": "the manifest title", "segments": [{"text": "the intro"}]})
+    )
+
+    banked = render.capture_workdir_segments(
+        wd, run_date="2026-09-02", title="the run record title"
+    )
+
+    assert [r["reason"] for r in banked] == ["run-failed"]
+    assert banked[0]["run_date"] == "2026-09-02"
+    # The caller's title wins: it is the run record's, and the record is what the
+    # weekly review reads. The manifest stays the fallback (tested above).
+    assert banked[0]["title"] == "the run record title"
+    assert len(_index(binned)) == 1
