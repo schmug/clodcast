@@ -1051,6 +1051,12 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
     if ship_mode is not None and ship_mode not in SHIP_MODES:
         shown = "{" + ", ".join(f'"{m}"' for m in SHIP_MODES) + "}"
         die(f"manifest 'ship_mode' must be one of {shown} or unset (got {ship_mode!r})")
+    # cover_style: closed whitelist, same posture as ship_mode. A typo must die
+    # rather than fall through to the default and quietly restyle a published show.
+    style = manifest.get("cover_style")
+    if style is not None and style not in COVER_STYLES:
+        shown = "{" + ", ".join(f'"{v}"' for v in COVER_STYLES) + "}"
+        die(f"manifest 'cover_style' must be one of {shown} or unset (got {style!r})")
     if manifest.get("date"):  # treat "" as absent, matching resolve_cover_date
         try:
             dt.date.fromisoformat(manifest["date"])
@@ -1715,6 +1721,11 @@ COVER_SIZE = 1400
 # can be diffed by eye.
 COVER_GROUND = (16, 20, 29)  # #10141d — the ground both shows' covers sit on
 COVER_AMBER = (246, 195, 74)  # #f6c34a — --color-amber
+# Sampled from the show's channel tile (cortech.online public/frontier-commits-cover.jpg),
+# which is the art a podcast client renders directly ABOVE these episode covers. Matching it
+# is the whole point: the two are one picture in a subscriber's list.
+COVER_RAIL_GREEN = (94, 234, 148)  # lit commits, the lockup and the rule
+COVER_RAIL_SLATE = (52, 63, 81)  # the trunk and every unlit commit
 COVER_PAPER = (242, 239, 230)  # #f2efe6 — --color-text
 COVER_MUTED = (123, 126, 138)  # #7b7e8a — --color-muted
 COVER_FOOTER_INK = (76, 82, 97)  # one step below muted; the domain is a whisper
@@ -1757,6 +1768,35 @@ ASCII_SUN = (
 
 # Layout, in COVER_SIZE px. These are the design's 640px board scaled by 2.1875.
 COVER_MARGIN = 122
+# The commit rail is Frontier Commits' art: a vector redraw of the motif on the show's
+# channel tile, run full height down the right edge. Vector rather than glyphs because
+# solid nodes keep their mass when a podcast client downsamples to an 88px list row —
+# an earlier ASCII version of this same graph dissolved there, which is what a cover
+# has to survive to be worth drawing.
+#
+# The geometry below IS the model — there is no pinned table, so tests re-derive every
+# node position from it and check the clearances that keep the art off the type.
+#
+# schmug/cortech.online draws the same motif in public/frontier-commits-cover.jpg and
+# (once built) scripts/frontier-cover-art.ts. Nothing mechanical links the repos:
+# IF THIS RAIL CHANGES, CHANGE BOTH.
+COVER_RAIL_X = 1240  # trunk centre; clear of the headline's right edge
+COVER_RAIL_TOP = 238
+COVER_RAIL_BOTTOM = 1204
+COVER_RAIL_NODES = 8
+COVER_RAIL_NODE_FIRST = 260
+COVER_RAIL_NODE_GAP = 118
+COVER_RAIL_NODE_R = 23
+COVER_RAIL_STROKE = 10
+COVER_RAIL_LIT = (1, 4)  # the two commits drawn in green, as on the channel tile
+# The branch forks from a LIT commit and rises. The channel tile puts it near the top,
+# but the full-bleed rule cuts straight through that spot here, so it moves down into
+# the open band — a fork off a highlighted commit reads as meaning rather than filler.
+COVER_RAIL_BRANCH_NODE = 4
+COVER_RAIL_BRANCH_TOP = 600
+COVER_RAIL_ELBOW_R = 62  # branch offset is exactly 2x this, so the arc closes the gap
+COVER_RAIL_SS = 4  # supersample factor: PIL does not antialias, and this art is curves
+COVER_RAIL_HEADLINE_MAX_W = 900  # keeps the longest line clear of the branch stub
 COVER_SUN_X = 923
 COVER_SUN_Y = 74
 COVER_LOCKUP_Y = 254
@@ -1767,6 +1807,7 @@ COVER_LOCKUP_MIN_SIZE = 19
 # edge, NOT to the right margin. Measuring against the full canvas width is what
 # a first pass did, and a long show name ran straight under the disc.
 COVER_LOCKUP_MAX_W = COVER_SUN_X - COVER_MARGIN - 40
+COVER_RAIL_LOCKUP_MAX_W = COVER_RAIL_X - COVER_MARGIN - 40  # the gap to the rail
 COVER_DATE_Y = 328
 COVER_DATE_SIZE = 35
 COVER_RULE_Y = 438
@@ -1822,6 +1863,44 @@ def cover_headline(title: str, date_str: str) -> str:
     would spend the largest type on the canvas saying nothing. Only an exact
     trailing match is stripped — a title with a dash in the middle keeps it."""
     suffix = f" - {date_str}"
+    if date_str and title.endswith(suffix):
+        return title[: -len(suffix)]
+    return title
+
+
+def week_label(date_str: str) -> str:
+    """`"2026-08-24"` -> `"Week of August 24, 2026"`.
+
+    The weekly shows' date form. Matches the tail their episode titles carry
+    (frontier-commits SKILL.md, "Title format") EXACTLY, because
+    cover_headline_weekly strips what this prints — see the note there.
+
+    `%-d` rather than `%d`: the title says "August 24" and "January 5", never
+    "January 05", and a padded day here would silently stop the strip matching.
+    """
+    if not date_str:
+        return ""
+    return dt.datetime.strptime(date_str, "%Y-%m-%d").strftime("Week of %B %-d, %Y")
+
+
+def cover_headline_weekly(title: str, date_str: str) -> str:
+    """The episode title with its `" - Week of <Month D, YYYY>"` tail removed.
+
+    The weekly counterpart to cover_headline. It exists because a weekly show's
+    tail is not the ISO date, so the ISO strip misses and the tail survives into
+    the largest type on the canvas — with the date then printed twice, in two
+    formats, and the headline pushed to COVER_HEADLINE_MAX_LINES where real
+    topics start dropping off the bottom.
+
+    Built from week_label deliberately: the string the cover prints IS the string
+    stripped here. Two independent implementations of "the weekly form" is the
+    same bug in a new costume.
+
+    Deliberately does NOT match the legacy `"Frontier Commits — week of ..."`
+    form the two published episodes carry (pre-#161, and forbidden by SKILL.md
+    since). Applied there it would leave the headline reading "Frontier Commits".
+    """
+    suffix = f" - {week_label(date_str)}"
     if date_str and title.endswith(suffix):
         return title[: -len(suffix)]
     return title
@@ -1890,7 +1969,7 @@ def _cover_wrap(draw, text: str, font, max_width: int) -> list[str]:
     return lines or [text]
 
 
-def _fit_lockup(draw, image_font, text: str):
+def _fit_lockup(draw, image_font, text: str, max_w: float = COVER_LOCKUP_MAX_W):
     """Shrink, then truncate, so the show-name lockup always fits beside the sun.
 
     A show name is arbitrary user config — the daily show's is still four words
@@ -1901,20 +1980,40 @@ def _fit_lockup(draw, image_font, text: str):
     size = COVER_LOCKUP_SIZE
     font = _cover_face(image_font, COVER_SANS_BOLD_FACES, size, "Bold")
     while (
-        _tracked_width(draw, text, font, COVER_LOCKUP_TRACKING) > COVER_LOCKUP_MAX_W
+        _tracked_width(draw, text, font, COVER_LOCKUP_TRACKING) > max_w
         and size > COVER_LOCKUP_MIN_SIZE
     ):
         size -= 2
         font = _cover_face(image_font, COVER_SANS_BOLD_FACES, size, "Bold")
-    while (
-        len(text) > 1
-        and _tracked_width(draw, text, font, COVER_LOCKUP_TRACKING) > COVER_LOCKUP_MAX_W
-    ):
+    while len(text) > 1 and _tracked_width(draw, text, font, COVER_LOCKUP_TRACKING) > max_w:
         text = text[:-2].rstrip() + "\u2026"
     return text, font
 
 
-def build_cover(out_path: Path, show_name: str, date_str: str, title_hint: str) -> None:
+# Two cover designs live here, selected per SHOW rather than per invocation. The
+# selector is a closed whitelist for the same reason ship_mode is: how a show looks
+# is a property of the show, and a typo must die at validation rather than quietly
+# restyle a published feed.
+#
+# #168 shipped without this, having deleted its own whitelist during a rebase —
+# right at the time, because Frontier Commits was on cover_image and build_cover
+# was never called for it, so the key would have been dead config. That premise is
+# what this change removes: once a show renders its own art, the key is the thing
+# that picks which art.
+COVER_STYLE_ASCII = "ascii-horizon"
+COVER_STYLE_COMMIT_RAIL = "commit-rail"
+COVER_STYLES = (COVER_STYLE_ASCII, COVER_STYLE_COMMIT_RAIL)
+
+
+def resolve_cover_style(manifest: dict[str, Any]) -> str:
+    """Cover design for this manifest. validate_manifest whitelists the value, so
+    anything reaching here is already known-good. Absent means the house design —
+    every manifest written before this key existed must keep rendering what it
+    renders today."""
+    return manifest.get("cover_style") or COVER_STYLE_ASCII
+
+
+def _cover_ascii_horizon(out_path: Path, show_name: str, date_str: str, title_hint: str) -> None:
     """The house cover: an ASCII sun over a full-bleed horizon rule, with the
     episode's topics set large.
 
@@ -1991,6 +2090,155 @@ def build_cover(out_path: Path, show_name: str, date_str: str, title_hint: str) 
     )
 
     img.save(out_path, "JPEG", quality=88, optimize=True)
+
+
+def _cover_rail_nodes() -> list[int]:
+    """Y centres of every commit on the trunk, derived from the geometry above.
+
+    A list rather than a pinned table because this art is parametric — the tests
+    re-derive these same values and check what the numbers have to guarantee
+    (the branch clears the rule, the trunk clears the headline) rather than
+    asserting a transcription."""
+    return [COVER_RAIL_NODE_FIRST + i * COVER_RAIL_NODE_GAP for i in range(COVER_RAIL_NODES)]
+
+
+def _draw_commit_rail(img, image_draw) -> None:
+    """Draw the rail onto `img`, supersampled so the curves come out clean.
+
+    PIL has no antialiasing, and this graphic is circles and an arc — drawn at 1x
+    the nodes come out visibly faceted. So it goes onto a transparent layer at
+    COVER_RAIL_SS scale and is resampled down before compositing. The type is
+    still drawn at 1x afterwards, which keeps it identical in treatment to the
+    daily show's cover rather than quietly rendering by a different path."""
+    from PIL import Image
+
+    ss = COVER_RAIL_SS
+    layer = Image.new("RGBA", (COVER_SIZE * ss, COVER_SIZE * ss), (0, 0, 0, 0))
+    d = image_draw.Draw(layer)
+    x = COVER_RAIL_X * ss
+    stroke = COVER_RAIL_STROKE * ss
+    nodes = _cover_rail_nodes()
+
+    d.line(
+        [(x, COVER_RAIL_TOP * ss), (x, COVER_RAIL_BOTTOM * ss)], fill=COVER_RAIL_SLATE, width=stroke
+    )
+
+    # The branch leaves the trunk on the TEXT side, so the silhouette opens toward
+    # the headline instead of crowding the canvas edge.
+    branch_y = nodes[COVER_RAIL_BRANCH_NODE] * ss
+    elbow = COVER_RAIL_ELBOW_R * ss
+    bx = x - 2 * elbow
+    d.line(
+        [(bx, COVER_RAIL_BRANCH_TOP * ss), (bx, branch_y - elbow)],
+        fill=COVER_RAIL_SLATE,
+        width=stroke,
+    )
+    d.arc(
+        [bx, branch_y - 2 * elbow, bx + 2 * elbow, branch_y],
+        90,
+        180,
+        fill=COVER_RAIL_SLATE,
+        width=stroke,
+    )
+    d.line([(x, branch_y), (bx + elbow, branch_y)], fill=COVER_RAIL_SLATE, width=stroke)
+    cap = stroke // 2
+    d.ellipse(
+        [bx - cap, COVER_RAIL_BRANCH_TOP * ss - cap, bx + cap, COVER_RAIL_BRANCH_TOP * ss + cap],
+        fill=COVER_RAIL_SLATE,
+    )
+
+    r = COVER_RAIL_NODE_R * ss
+    for i, cy in enumerate(nodes):
+        fill = COVER_RAIL_GREEN if i in COVER_RAIL_LIT else COVER_RAIL_SLATE
+        d.ellipse([x - r, cy * ss - r, x + r, cy * ss + r], fill=fill)
+
+    img.alpha_composite(layer.resize((COVER_SIZE, COVER_SIZE), Image.LANCZOS))
+
+
+def _cover_commit_rail(out_path: Path, show_name: str, date_str: str, title_hint: str) -> None:
+    """Frontier Commits' cover: a commit rail over the house horizon rule.
+
+    Shares ascii-horizon's board — margins, lockup, date, rule, bottom-anchored
+    headline, footer — because these two are ONE house design in two accents and
+    are supposed to move together. That is the opposite of the posture
+    _cover_gradient got before #168 deleted it: that one was frozen legacy, these
+    two are live siblings, and a shared helper is what keeps them from drifting
+    apart rather than how they drift.
+
+    What is NOT shared is the date: this show's titles end
+    " - Week of <Month D, YYYY>", so it uses week_label / cover_headline_weekly.
+
+    The green is the show's own, sampled from the channel tile a client renders
+    above these covers — so the episode art matches the show art with no second
+    asset to keep in sync.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    img = Image.new("RGBA", (COVER_SIZE, COVER_SIZE), COVER_GROUND + (255,))
+    _draw_commit_rail(img, ImageDraw)
+    d = ImageDraw.Draw(img)
+
+    date_font = _cover_face(ImageFont, COVER_SANS_TEXT_FACES, COVER_DATE_SIZE)
+    footer_font = _cover_face(ImageFont, COVER_SANS_TEXT_FACES, COVER_FOOTER_SIZE)
+
+    # _fit_lockup shrinks then truncates so the name always clears the art. Its
+    # default budget is the gap to the SUN; the rail sits elsewhere, hence the
+    # explicit max_w. Getting this wrong is how a long show name ends up running
+    # under the art in a published feed — the bug #168's rebase had to fix once.
+    lockup, lockup_font = _fit_lockup(d, ImageFont, show_name.upper(), COVER_RAIL_LOCKUP_MAX_W)
+    _draw_tracked(
+        d,
+        (COVER_MARGIN, COVER_LOCKUP_Y),
+        lockup,
+        lockup_font,
+        COVER_RAIL_GREEN,
+        COVER_LOCKUP_TRACKING,
+    )
+    d.text((COVER_MARGIN, COVER_DATE_Y), week_label(date_str), font=date_font, fill=COVER_MUTED)
+
+    d.rectangle(
+        [(0, COVER_RULE_Y), (COVER_SIZE, COVER_RULE_Y + COVER_RULE_H - 1)],
+        fill=COVER_RAIL_GREEN,
+    )
+
+    headline = cover_headline_weekly(title_hint, date_str)
+    size = COVER_HEADLINE_SIZE
+    headline_font = _cover_face(ImageFont, COVER_SANS_BOLD_FACES, size, "Bold")
+    lines = _cover_wrap(d, headline, headline_font, COVER_RAIL_HEADLINE_MAX_W)
+    while len(lines) > COVER_HEADLINE_MAX_LINES and size > COVER_HEADLINE_MIN_SIZE:
+        size -= 6
+        headline_font = _cover_face(ImageFont, COVER_SANS_BOLD_FACES, size, "Bold")
+        lines = _cover_wrap(d, headline, headline_font, COVER_RAIL_HEADLINE_MAX_W)
+    lines = lines[:COVER_HEADLINE_MAX_LINES]
+
+    leading = int(size * COVER_HEADLINE_LEADING)
+    y = COVER_HEADLINE_BOTTOM - leading * len(lines)
+    for line in lines:
+        d.text((COVER_MARGIN, y), line, font=headline_font, fill=COVER_PAPER)
+        y += leading
+
+    d.text(
+        (COVER_MARGIN, COVER_FOOTER_Y),
+        COVER_FOOTER,
+        font=footer_font,
+        fill=COVER_FOOTER_INK,
+    )
+
+    img.convert("RGB").save(out_path, "JPEG", quality=88, optimize=True)
+
+
+def build_cover(
+    out_path: Path,
+    show_name: str,
+    date_str: str,
+    title_hint: str,
+    style: str = COVER_STYLE_ASCII,
+) -> None:
+    """Render this episode's cover in the show's cover style."""
+    if style == COVER_STYLE_COMMIT_RAIL:
+        _cover_commit_rail(out_path, show_name, date_str, title_hint)
+    else:
+        _cover_ascii_horizon(out_path, show_name, date_str, title_hint)
 
 
 def resolve_font() -> str:
@@ -4602,7 +4850,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
         apply_cover_image(cover_image, cover)
         log(f"cover: {cover_image} (supplied)")
     else:
-        build_cover(cover, show_name, cover_date, title)
+        build_cover(cover, show_name, cover_date, title, style=resolve_cover_style(manifest))
     mark_stage(workdir, "cover")
 
     # 5: timeline + description
