@@ -292,7 +292,9 @@ def test_breeze_cast_clip_lines_render_through_the_clone_form(tmp_path, fake_tts
     assert all(c["max_tokens"] == 750 and "language" not in c for c in fake_tts.calls)
 
 
-def test_a_breeze_preset_take_dies_rather_than_rendering_a_stranger(tmp_path):
+def test_a_breeze_preset_take_dies_rather_than_rendering_a_stranger(tmp_path, fake_tts):
+    # fake_tts is what makes this host-independent: _render_take imports numpy and
+    # soundfile before it dispatches, and CI has neither installed.
     with pytest.raises(SystemExit):
         render._render_take(
             object(),
