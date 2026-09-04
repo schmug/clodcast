@@ -27,9 +27,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Analysis deps for the TTS eval bench (skills/tts-eval/bench.py, #200). NEVER
-# runtime deps: nothing in a render needs a transcriber or a speaker encoder, and
-# the bench imports them function-locally so `import bench` works without them.
+# Analysis deps for the TTS eval bench (skills/tts-eval/bench.py, #200). Not
+# runtime deps: no show ships on an engine that needs them, and bench.py and
+# render.py both import them function-locally. mlx-whisper is also what render.py's
+# derailment detector (#202) transcribes with on an engine that declares it
+# (Breeze); pre-flight fails such a run before rendering when it is absent.
 bench = [
     "mlx-whisper",
     "librosa",

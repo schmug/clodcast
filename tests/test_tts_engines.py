@@ -210,6 +210,10 @@ def fake_tts(monkeypatch):
         return None
 
     monkeypatch.setattr(render, "run", fake_run)
+    # Breeze declares the derailment detector (#202); this file is about the kwargs
+    # each engine receives, so the transcriber hears every take exactly as written.
+    # (The real one would import mlx_whisper — absent on CI — against the fake numpy.)
+    monkeypatch.setattr(render, "transcribe_take", lambda path: calls[-1]["text"])
     return types.SimpleNamespace(calls=calls, model_loads=model_loads)
 
 
@@ -383,12 +387,13 @@ def test_preflight_runs_the_engine_check_under_dry_run(monkeypatch):
 # --- run log, bloopers, payloads (spec §7) -------------------------------------
 
 
-def test_tts_engine_is_appended_last_to_both_field_sets():
-    assert render.RUN_LOG_FIELDS[-1] == "tts_engine"
-    assert render.RUN_LOG_FIELDS[-2] == "bloopers_captured"  # nothing reordered
+def test_tts_engine_is_appended_to_both_field_sets_and_nothing_is_reordered():
+    # rerolled_takes (#202) was appended after it, the same append-only rule.
+    assert render.RUN_LOG_FIELDS[-3:] == ("bloopers_captured", "tts_engine", "rerolled_takes")
     assert render.BLOOPER_FIELDS[-1] == "tts_engine"
     assert render.BLOOPER_FIELDS[-2] == "workdir"
     assert render._new_run_record()["tts_engine"] is None
+    assert render._new_run_record()["rerolled_takes"] is None
 
 
 # --- docs drift (spec §9) ------------------------------------------------------
@@ -411,6 +416,8 @@ def test_skill_md_engine_table_matches_the_code():
         )
         assert cells[4] == spec.min_mlx_audio
         assert cells[5] == spec.license
+        # #202: whether the engine transcribes and re-rolls every take.
+        assert cells[6] == ("yes" if spec.detect_derailment else "no")
 
 
 def test_skill_md_manifest_schema_documents_tts_engine():

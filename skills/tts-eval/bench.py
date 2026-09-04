@@ -68,14 +68,15 @@ REFS_DIR = SCRIPT_DIR.parent / "surface-tension" / "refs"
 # the production default ever moves, the control moves with it.
 CONTROL_ENGINE = render.resolve_tts_engine({})
 
-WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"
-# The derailment rule from the registry spec ("Measurements that shape the design"):
-# WER over the threshold, any non-ASCII in the transcript, or a heard-to-script word
-# ratio outside the band. All three were needed on 2026-09-04 — the failures were
-# multilingual babble, a hallucinated clause and a skipped clause, and the
-# speech-rate gate saw none of them.
-DERAIL_WER = 0.15
-DERAIL_WORD_RATIO = (0.9, 1.1)
+# The derailment rule and the whisper model are render.py's (#202): the renderer
+# re-rolls a derailed take by the same rule the bench reports with, so there is ONE
+# definition, aliased here. A test pins the identity.
+WHISPER_MODEL = render.WHISPER_MODEL
+DERAIL_WER = render.DERAIL_WER
+DERAIL_WORD_RATIO = render.DERAIL_WORD_RATIO
+normalize_words = render.normalize_words
+word_error_rate = render.word_error_rate
+derailment = render.derailment
 ANALYSIS_SAMPLE_RATE = 16_000
 SILENCE_DBFS = -40.0  # a sample over this is "speech" for the lead/trail measurement
 F0_RANGE_HZ = (60.0, 400.0)
@@ -90,7 +91,6 @@ BENCH_DEPS = (
 TAKE_KINDS = ("line", "scene", "events", "direction")
 WORKDIR_PREFIX = "tts-eval-"
 EVENT_MARKER_RE = re.compile(r"\(([a-z]+)\)")
-_WORD_RE = re.compile(r"[^\W_]+(?:'[^\W_]+)*")
 
 
 @dataclass(frozen=True)
@@ -383,6 +383,9 @@ def render_pass(manifest: dict[str, Any], workdir: Path, *, engine: str) -> dict
             raw_text=manifest.get("raw_text", False),
             cast=manifest.get("cast"),
             engine=engine,
+            # The bench measures the engine's RAW derailment rate; render.py's own
+            # detector would re-roll the takes this bench exists to count.
+            detect_derailment=False,
         )
     finally:
         render._render_take = original
@@ -457,48 +460,8 @@ def render_engine(
 
 
 # --- metrics: pure arithmetic, no deps -----------------------------------------
-
-
-def normalize_words(text: str) -> list[str]:
-    return [w.strip("'") for w in _WORD_RE.findall(text.lower()) if w.strip("'")]
-
-
-def word_error_rate(reference: str, hypothesis: str) -> float:
-    """Levenshtein distance over normalized words, divided by the reference length.
-    Uncapped above 1.0 (insertions can exceed the script), like jiwer."""
-    ref = normalize_words(reference)
-    hyp = normalize_words(hypothesis)
-    if not ref:
-        return 0.0 if not hyp else 1.0
-    prev = list(range(len(hyp) + 1))
-    for i, r in enumerate(ref, start=1):
-        cur = [i]
-        for j, h in enumerate(hyp, start=1):
-            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (r != h)))
-        prev = cur
-    return prev[-1] / len(ref)
-
-
-def _ascii_fold(text: str) -> str:
-    """Typography is not derailment: fold the smart quotes and dashes whisper
-    sometimes emits before asking whether the transcript left the Latin script."""
-    return render.normalize_for_tts(text).replace("…", "...")
-
-
-def derailment(script: str, transcript: str) -> list[str]:
-    """The spec's rule, as reasons; empty means clean."""
-    reasons: list[str] = []
-    if word_error_rate(script, transcript) > DERAIL_WER:
-        reasons.append("wer")
-    if not _ascii_fold(transcript).isascii():
-        reasons.append("non-ascii")
-    ref = normalize_words(script)
-    hyp = normalize_words(transcript)
-    lo, hi = DERAIL_WORD_RATIO
-    ratio = len(hyp) / len(ref) if ref else None
-    if ratio is None or not lo <= ratio <= hi:
-        reasons.append("word-ratio")
-    return reasons
+#
+# normalize_words / word_error_rate / derailment are render.py's, aliased above.
 
 
 def cosine(a: list[float], b: list[float]) -> float:

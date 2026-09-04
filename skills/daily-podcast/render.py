@@ -102,6 +102,10 @@ class EngineSpec:
     max_tokens: int | None  # None: never passed to generate()
     min_mlx_audio: str
     license: str
+    # Transcribe every rendered take and re-roll a derailed one (#202). Opt-in per
+    # engine because it costs a whisper load per run and a transcription per take,
+    # and because the only engine known to derail on a clean script is Breeze.
+    detect_derailment: bool = False
 
     def has(self, capability: str) -> bool:
         return capability in self.capabilities
@@ -137,6 +141,7 @@ ENGINES: dict[str, EngineSpec] = {
         max_tokens=750,
         min_mlx_audio="0.5.1",
         license="BreezeBlue Research and Non-Commercial",
+        detect_derailment=True,
     ),
 }
 
@@ -205,6 +210,12 @@ LAST_SILENCE_MS = 0  # no silence after the final segment
 #     a four-hander sound like a hostage negotiation; dialogue wants 150-350ms.
 # It is baked into the concatenated seg_NN.mp3, so it is part of a scene's cache key.
 TURN_GAP_MS = 250
+# The pause between two CHUNKS of one narrated segment (#202): a sentence boundary
+# inside a single speaker's take, so it is neither a turn nor a chapter beat. Sized
+# from the eval ledger (2026-09-04): Breeze leaves ~0.19 s of trailing and ~0.02 s
+# of leading silence per take, so 350 ms here lands the audible pause near 0.55 s —
+# a read-aloud full stop. Baked into seg_NN.mp3, so part of a chunked segment's key.
+CHUNK_GAP_MS = 350
 # TTS speech-rate outlier gate. render.py samples Qwen3-TTS with mlx-audio's
 # defaults (no seed, temperature, or repetition penalty), and it occasionally
 # degenerates mid-segment into looping babble: on 2026-08-17 segment 6 of
@@ -393,7 +404,7 @@ BLOOPER_DIR = CONFIG_DIR / "bloopers"
 # to know what each was supposed to say and how much material is banked.
 BLOOPER_FIELDS: tuple[str, ...] = (
     "timestamp",  # ISO 8601 UTC
-    "reason",  # "gate" | "near-miss" | "run-failed" | "manual"
+    "reason",  # "gate" | "near-miss" | "run-failed" | "manual" | "derailed" (#202)
     "sha256",  # of the clip bytes; the clip's filename is its first 16 chars
     "clip",  # absolute path inside the bin
     "source",  # where it came from (workdir segment, episode mp3, ...)
@@ -407,7 +418,7 @@ BLOOPER_FIELDS: tuple[str, ...] = (
     "rate",  # measured chars/sec (rate triggers only)
     "median",  # the population median it was judged against
     "ratio",  # rate / median
-    "note",  # free text, manual captures only
+    "note",  # free text: manual captures, and a derailed take's reasons + transcript
     "workdir",
     "tts_engine",  # which engine produced the clip; null for rows written before it existed
 )
@@ -650,6 +661,7 @@ RUN_LOG_FIELDS: tuple[str, ...] = (
     "mp3_url",  # public R2 URL on a web-only ship, else null (#155)
     "bloopers_captured",  # clips banked into the bloopers bin this run (#169)
     "tts_engine",  # engine name from the manifest (spec 2026-09-04); null before it is resolved
+    "rerolled_takes",  # takes the derailment detector re-rolled (#202); null when it did not run
 )
 
 
@@ -1051,22 +1063,29 @@ def _validate_engine_capabilities(manifest: dict[str, Any], spec: EngineSpec) ->
                 )
 
 
-def _validate_take_lengths(segments: list[dict], spec: EngineSpec) -> None:
+def _validate_take_lengths(segments: list[dict], spec: EngineSpec, *, raw_text: bool) -> None:
     """Refuse any take longer than the engine's measured ceiling BEFORE the render.
     This is not a cosmetic limit: past it Breeze derails into babble about one take
     in five, and the speech-rate gate cannot see that (the rate stays normal and
-    whisper transcribes babble as words). Pure."""
+    whisper transcribes babble as words). Pure.
+
+    A plain-text segment is chunked at sentence boundaries (#202), so its ceiling
+    binds a SENTENCE: the check runs chunk_text over the same prepped text the render
+    will chunk, and dies naming the sentence it cannot cut. A scene line is one
+    take and is bounded whole — Surface Tension's lines all fit, and a line that
+    did not would be a script problem, not a rendering one."""
     cap = spec.max_take_chars
     if cap is None:
         return
     for i, seg in enumerate(segments):
         lines = segment_lines(seg)
         if lines is None:
-            n = len(seg["text"])
-            if n > cap:
+            try:
+                chunk_text(_prep_segment_text(seg["text"], raw_text), cap)
+            except ValueError as e:
                 die(
-                    f"manifest segment[{i}] is {n} chars; "
-                    f"engine {spec.name} renders at most {cap} per take"
+                    f"manifest segment[{i}]: {e} — engine {spec.name} renders at most "
+                    f"{cap} per take"
                 )
             continue
         for j, line in enumerate(lines):
@@ -1179,7 +1198,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
     # Both run after the segments loop has proved every plain segment has a string
     # `text` and every scene's lines are well-formed, so they index without re-checking.
     _validate_engine_capabilities(manifest, spec)
-    _validate_take_lengths(segments, spec)
+    _validate_take_lengths(segments, spec, raw_text=bool(manifest.get("raw_text")))
     # A second show publishes into the same R2 bucket; a bare-filename key keeps
     # its web feed out of the daily show's manifest.json without touching episode
     # object paths (#118). THREAT MODEL: the key names an R2 object the publish
@@ -1321,6 +1340,228 @@ def _prep_segment_text(text: str, raw_text: bool) -> str:
     return text if raw_text else normalize_for_tts(text)
 
 
+# --- chunked rendering (#202) ------------------------------------------------
+#
+# A short-take engine (Breeze: 500 chars, measured) cannot render a daily-show
+# segment in one take, so a plain-text segment over the engine's ceiling is split at
+# SENTENCE boundaries into balanced chunks, each rendered as its own take and joined
+# into the same seg_NN.mp3 a scene's line takes are — one chapter, one source_url,
+# chapter math untouched. Never mid-sentence: the model derails on a fragment that
+# stops where no speaker would, and the transcript check would then flag its own
+# input. A single sentence over the ceiling therefore cannot be chunked and dies at
+# validation instead.
+
+# Tokens a sentence-final "." does NOT end: titles, units, and dotted acronyms
+# (U.S., e.g.) are matched by shape below, so this list is only the bare ones.
+_SENTENCE_ABBREVIATIONS = frozenset(
+    {
+        "mr", "mrs", "ms", "dr", "prof", "st", "vs", "etc", "inc", "ltd", "co", "jr", "sr",
+        "no", "fig", "approx", "dept", "gov", "sen", "rep", "gen", "col", "lt", "sgt", "mt",
+    }
+)  # fmt: skip
+# A terminator run, optional closing quotes/brackets that belong to the sentence,
+# then whitespace — but only when what follows starts like a sentence (an optional
+# opening quote/bracket, then a capital or a digit). "3.5 shipped" has no whitespace
+# after its dot and "shipped... and" continues in lowercase, so neither splits.
+_SENTENCE_BREAK_RE = re.compile(r"""([.!?]+["')\]]*)(\s+)(?=["'(\[]*[A-Z0-9])""")
+_DOTTED_INITIALS_RE = re.compile(r"^(?:[A-Za-z]\.)*[A-Za-z]$")  # J, U.S, e.g, p.m
+
+
+def split_sentences(text: str) -> list[str]:
+    """Split prepped narration into sentences, closing punctuation attached. Pure.
+
+    A heuristic, not a parser: it errs toward NOT splitting (an abbreviation, an
+    initial, a decimal, an ellipsis into a lowercase continuation), because a
+    missed boundary merely makes a longer chunk while a false one cuts a sentence
+    in half — the failure chunking exists to avoid."""
+    out: list[str] = []
+    start = 0
+    for m in _SENTENCE_BREAK_RE.finditer(text):
+        if m.group(1) == ".":
+            before = text[start : m.start()]
+            token = before.rsplit(None, 1)[-1] if before.strip() else ""
+            token = token.lstrip("\"'([")
+            if _DOTTED_INITIALS_RE.match(token) or token.lower() in _SENTENCE_ABBREVIATIONS:
+                continue
+        sentence = text[start : m.end(1)].strip()
+        if sentence:
+            out.append(sentence)
+        start = m.end(2)
+    tail = text[start:].strip()
+    if tail:
+        out.append(tail)
+    return out
+
+
+def chunk_text(text: str, cap: int) -> list[str]:
+    """Split one segment's prepped text into takes of at most `cap` chars, at
+    sentence boundaries, sized as evenly as those boundaries allow. Pure.
+
+    Text that fits comes back UNCHANGED as a single chunk, so a segment under the
+    ceiling plans, keys and caches exactly as it did before chunking existed.
+
+    Balanced, not greedy: first-fit would pack an 1100-char lead as 500 + 500 + 100,
+    and a 100-char tail is where the transcript check is coarsest (one misheard
+    word in fifteen is already over the WER threshold). Each chunk instead aims at
+    an equal share of the text — a sentence joins the open chunk when that brings
+    it closer to the share than closing it would, and never past the cap.
+
+    Raises ValueError for a sentence longer than the cap: it cannot be rendered on
+    this engine without a mid-sentence cut, and the caller names it."""
+    if len(text) <= cap:
+        return [text]
+    sentences = split_sentences(text)
+    longest = max(sentences, key=len)
+    if len(longest) > cap:
+        raise ValueError(
+            f"a single sentence is {len(longest)} chars, over the {cap}-char take "
+            f"ceiling; chunking only cuts between sentences, so split it: "
+            f"{longest[:60]}..."
+        )
+    # Targets are CUMULATIVE boundaries (chunk j closes nearest to (j+1) shares of
+    # the whole), not a per-chunk share, so a chunk that lands short does not push
+    # every later one short too and starve the tail. Fewest chunks first; a tail
+    # that still overflows the cap means one more chunk, never a mid-sentence cut.
+    for n_chunks in range(-(-len(text) // cap), len(sentences) + 1):
+        share = len(text) / n_chunks
+        chunks: list[str] = []
+        current = ""
+        consumed = 0  # chars of `text` closed into chunks so far, joins included
+        for sentence in sentences:
+            if not current:
+                current = sentence
+                continue
+            if len(chunks) == n_chunks - 1:
+                current = f"{current} {sentence}"  # the last chunk takes the rest
+                continue
+            candidate = f"{current} {sentence}"
+            target = (len(chunks) + 1) * share
+            with_it = abs(consumed + len(candidate) - target)
+            without = abs(consumed + len(current) - target)
+            if len(candidate) <= cap and with_it <= without:
+                current = candidate
+            else:
+                chunks.append(current)
+                consumed += len(current) + 1
+                current = sentence
+        chunks.append(current)
+        if all(len(c) <= cap for c in chunks):
+            return chunks
+    return sentences  # unreachable: every sentence fits, so n_chunks == len(sentences) does
+
+
+# --- derailment detector (#202) ---------------------------------------------------
+#
+# The speech-rate gate cannot see a Breeze derailment: chars/s stays normal and
+# whisper transcribes babble as words. A transcript can. On an engine that declares
+# `detect_derailment`, every rendered take is transcribed and judged by the rule the
+# eval bench measures with — ONE definition, owned here and aliased by
+# skills/tts-eval/bench.py, so what the bench reports and what the render refuses
+# can never drift. Measured 2026-09-04 (registry spec, "Measurements that shape the
+# design"): the three failures were multilingual babble, a hallucinated clause and
+# a skipped clause, and each of the three clauses below was needed for one of them.
+#
+# The rule is coarse on a short take — WER's granularity is one word in N, so a
+# 13-word line was flagged at 0.154 for "Alright" vs "All right" — which is why
+# chunk_text balances chunks instead of leaving a short tail, and why a false
+# positive costs one re-roll rather than the run.
+WHISPER_MODEL = "mlx-community/whisper-large-v3-turbo"
+DERAIL_WER = 0.15
+DERAIL_WORD_RATIO = (0.9, 1.1)
+# A derailed take is re-rolled at most this many times before the artifact gate
+# rejects it. Bounded like the cap-prune retry (`max_prune_per_run`): the failure is
+# stochastic, so one more draw is usually enough, and an unbounded loop on a take
+# the model cannot say would render forever.
+MAX_TAKE_REROLLS = 1
+# Per-workdir report of every derailment event, rewritten on every detecting render
+# and read by _render for the gate — so a stale report can never fail a clean run.
+DERAILED_FILENAME = "derailed.json"
+_WORD_RE = re.compile(r"[^\W_]+(?:'[^\W_]+)*")
+
+
+def normalize_words(text: str) -> list[str]:
+    return [w.strip("'") for w in _WORD_RE.findall(text.lower()) if w.strip("'")]
+
+
+def word_error_rate(reference: str, hypothesis: str) -> float:
+    """Levenshtein distance over normalized words, divided by the reference length.
+    Uncapped above 1.0 (insertions can exceed the script), like jiwer. Pure."""
+    ref = normalize_words(reference)
+    hyp = normalize_words(hypothesis)
+    if not ref:
+        return 0.0 if not hyp else 1.0
+    prev = list(range(len(hyp) + 1))
+    for i, r in enumerate(ref, start=1):
+        cur = [i]
+        for j, h in enumerate(hyp, start=1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (r != h)))
+        prev = cur
+    return prev[-1] / len(ref)
+
+
+def _ascii_fold(text: str) -> str:
+    """Typography is not derailment: fold the smart quotes and dashes whisper
+    sometimes emits before asking whether the transcript left the Latin script."""
+    return normalize_for_tts(text).replace("…", "...")
+
+
+def derailment(script: str, transcript: str) -> list[str]:
+    """The spec's rule, as reasons; empty means clean. Pure."""
+    reasons: list[str] = []
+    if word_error_rate(script, transcript) > DERAIL_WER:
+        reasons.append("wer")
+    if not _ascii_fold(transcript).isascii():
+        reasons.append("non-ascii")
+    ref = normalize_words(script)
+    hyp = normalize_words(transcript)
+    lo, hi = DERAIL_WORD_RATIO
+    ratio = len(hyp) / len(ref) if ref else None
+    if ratio is None or not lo <= ratio <= hi:
+        reasons.append("word-ratio")
+    return reasons
+
+
+def transcribe_take(mp3: Path) -> str:
+    """What whisper hears in one rendered take. Function-local import: mlx-whisper is
+    the `bench` extra, needed only on an engine that declares the detector, and
+    pre-flight (`derailment-detector`) has already proved it importable. The model
+    loads once per process — mlx_whisper caches it by repo id — so a run pays one
+    load, not one per take."""
+    import mlx_whisper
+
+    result = mlx_whisper.transcribe(str(mp3), path_or_hf_repo=WHISPER_MODEL, verbose=False)
+    return str(result.get("text", "")).strip()
+
+
+def load_derailed(workdir: Path) -> list[dict[str, Any]]:
+    """The workdir's derailment report; [] when absent or unreadable (a corrupt
+    report is no evidence of a defect, the state.json posture)."""
+    try:
+        events = json.loads((Path(workdir) / DERAILED_FILENAME).read_text())
+    except (OSError, ValueError):
+        return []
+    return [e for e in events if isinstance(e, dict)] if isinstance(events, list) else []
+
+
+def derailment_problems(events: list[dict[str, Any]] | None) -> list[str]:
+    """Reject every take the detector gave up on. A re-roll that came back clean is
+    an event too (it is banked and counted) but not a problem. The wording carries
+    "derailed", which classify_incident routes to incidents/tts-degeneration.md —
+    the same failure class the speech-rate gate catches, made visible."""
+    problems: list[str] = []
+    for e in events or []:
+        if not e.get("final"):
+            continue
+        heard = str(e.get("transcript") or "")[:80]
+        problems.append(
+            f"{e.get('label')} derailed on {e.get('attempt')} attempt(s) "
+            f"({', '.join(e.get('reasons') or [])}) — heard {heard!r}; the take is banked "
+            "in the bloopers bin and kept without a cache sidecar, so re-running with the "
+            "same --workdir re-rolls only that take"
+        )
+    return problems
+
+
 # --- per-segment TTS cache (#9) --------------------------------------------
 #
 # TTS is the dominant cost of a run (minutes), so a crash on segment 9 of 12
@@ -1433,6 +1674,16 @@ def _scene_cache_key(line_keys: list[str]) -> str:
     disappearing changes the scene's key — and so does retuning TURN_GAP_MS, since
     that silence is baked into the concatenated seg_NN.mp3. Pure; no I/O."""
     payload = json.dumps({"lines": line_keys, "turn_gap_ms": TURN_GAP_MS}, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _chunked_cache_key(chunk_keys: list[str]) -> str:
+    """Content hash for a plain-text segment rendered as sentence chunks (#202): the
+    ordered chunk keys plus the chunk gap welded between them — _scene_cache_key's
+    shape with a different gap, so a scene and a chunked segment built from the
+    same takes never share a key. One chunk's text changing changes that chunk's
+    key and therefore this one; the other chunks stay cache hits. Pure; no I/O."""
+    payload = json.dumps({"chunks": chunk_keys, "chunk_gap_ms": CHUNK_GAP_MS}, sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -1622,9 +1873,23 @@ def render_segments(
     raw_text: bool = False,
     cast: dict[str, str] | None = None,
     engine: str = TTS_ENGINE_QWEN3,
+    detect_derailment: bool | None = None,
+    dry_run: bool = False,
+    blooper_ctx: dict[str, Any] | None = None,
 ) -> list[Path]:
     """
     Render each segment text to an mp3 in workdir; return list of mp3 paths.
+
+    Chunked rendering (#202): on an engine with a take ceiling, a plain-text segment
+    over it renders as sentence chunks (chunk_text) joined with CHUNK_GAP_MS into the
+    same seg_NN.mp3, keyed like a scene (_chunked_cache_key). Derailment detector
+    (#202): on an engine that declares `detect_derailment` — unless the caller
+    overrides it, as the eval bench does with False to measure the raw rate — every
+    take is transcribed and judged by `derailment`; a derailed take is BANKED to the bloopers
+    bin, then re-rolled at most MAX_TAKE_REROLLS times, and a take that is still
+    derailed keeps no sidecar and is reported in <workdir>/derailed.json for the
+    artifact gate. `dry_run` keeps the bank read-only, the capture_rate_bloopers
+    posture; `blooper_ctx` (run_date, title) labels the rows.
 
     Three voice modes:
     - `ref_audio` set (+ `ref_text`): voice cloning via Base model + generate(ref_audio=...)
@@ -1654,6 +1919,8 @@ def render_segments(
     use_design = bool(voice_instruct) and not use_clone
     mode = "clone" if use_clone else ("design" if use_design else "preset")
     eng = ENGINES[engine]
+    verify = eng.detect_derailment if detect_derailment is None else detect_derailment
+    derailed_events: list[dict[str, Any]] = []
     # Which weights this run loads. Only an engine with a SEPARATE design model
     # switches for voice_instruct; Breeze designs on its base model and so always
     # pays one load (spec §4). Resolved here, before the plans, because the id is
@@ -1697,31 +1964,45 @@ def render_segments(
     plans: list[dict[str, Any]] = []
     for i, seg in enumerate(segments, start=1):
         lines = segment_lines(seg)
+        chunked = False
         if lines is None:
             text = _take_text(seg["text"])
             if not text:
                 die(f"segment {i} has empty text")
-            takes = [
-                {
-                    "text": text,
-                    "mode": mode,
-                    "voice": voice,
-                    "ref_audio": ref_audio,
-                    "ref_text": ref_text,
-                    "key": _segment_cache_key(
-                        text,
-                        mode,
-                        key_voice or "",
-                        ref_fingerprint,
-                        ref_text,
-                        engine=engine,
-                        model_id=model_id,
-                    ),
-                    "mp3": workdir / f"seg_{i:02d}.mp3",
-                    "sidecar": workdir / f"seg_{i:02d}.json",
-                }
-            ]
-            key = takes[0]["key"]
+            # A segment over the engine's ceiling renders as sentence chunks (#202),
+            # one take each, joined below the way a scene's lines are. Text that
+            # fits comes back as itself, so the plan, files and key are the single-
+            # take ones a segment has always had; validate_manifest already refused
+            # an uncuttable sentence, and a direct caller gets the same refusal.
+            try:
+                chunks = chunk_text(text, eng.max_take_chars) if eng.max_take_chars else [text]
+            except ValueError as e:
+                die(f"segment {i}: {e}")
+            chunked = len(chunks) > 1
+            takes = []
+            for j, chunk in enumerate(chunks, start=1):
+                stem = f"chunk_{i:02d}_{j:02d}" if chunked else f"seg_{i:02d}"
+                takes.append(
+                    {
+                        "text": chunk,
+                        "mode": mode,
+                        "voice": voice,
+                        "ref_audio": ref_audio,
+                        "ref_text": ref_text,
+                        "key": _segment_cache_key(
+                            chunk,
+                            mode,
+                            key_voice or "",
+                            ref_fingerprint,
+                            ref_text,
+                            engine=engine,
+                            model_id=model_id,
+                        ),
+                        "mp3": workdir / f"{stem}.mp3",
+                        "sidecar": workdir / f"{stem}.json",
+                    }
+                )
+            key = _chunked_cache_key([t["key"] for t in takes]) if chunked else takes[0]["key"]
         else:
             takes = []
             for j, line in enumerate(lines, start=1):
@@ -1770,6 +2051,7 @@ def render_segments(
         plans.append(
             {
                 "scene": lines is not None,
+                "chunked": chunked,
                 "takes": takes,
                 "key": key,
                 "cached": _cache_hit(workdir, i, key),
@@ -1807,53 +2089,160 @@ def render_segments(
     for idx, plan in enumerate(plans):
         i = idx + 1
         mp3 = workdir / f"seg_{i:02d}.mp3"
+        segment_clean = True
         if plan["cached"]:
-            what = (
-                f"scene, {len(plan['takes'])} line take(s)"
-                if plan["scene"]
-                else f"voice={voice}, mode={mode}"
-            )
+            if plan["scene"]:
+                what = f"scene, {len(plan['takes'])} line take(s)"
+            elif plan["chunked"]:
+                what = f"{len(plan['takes'])} chunk take(s), voice={voice}, mode={mode}"
+            else:
+                what = f"voice={voice}, mode={mode}"
             log(f"[{i}/{len(segments)}] cache hit ({what}), reusing {mp3.name}")
             paths.append(mp3)
             continue
         n_takes = len(plan["takes"])
         for j, take in enumerate(plan["takes"], start=1):
-            where = f"[{i}/{len(segments)}]" + (f" line {j}/{n_takes}" if plan["scene"] else "")
+            where = f"[{i}/{len(segments)}]"
+            if plan["scene"]:
+                where += f" line {j}/{n_takes}"
+            elif plan["chunked"]:
+                where += f" chunk {j}/{n_takes}"
             if take["cached"]:
                 log(f"{where} cache hit (voice={take['voice']}), reusing {take['mp3'].name}")
                 continue
-            directed = f", instruct={take['instruct']!r}" if take.get("instruct") else ""
-            log(
-                f"{where} rendering ({len(take['text'])} chars, "
-                f"voice={take['voice']}, mode={take['mode']}{directed})..."
-            )
-            t0 = time.time()
-            dur_s = _render_take(
-                model,
-                spec=eng,
-                text=take["text"],
-                mode=take["mode"],
-                voice=take["voice"],
-                voice_instruct=voice_instruct,
-                # Per TAKE, not per episode: a scene's lines each carry their own
-                # cast member's reference, and the episode's is only ever the
-                # fallback a plain-text segment renders with.
-                ref_audio=take["ref_audio"],
-                ref_text=take["ref_text"],
-                mp3=take["mp3"],
-                instruct=take.get("instruct"),
-            )
-            # Write the sidecar only AFTER the mp3 is on disk, so a crash between the
-            # two never records a cache hit for a half-written take. _atomic_write_text
-            # ensures the sidecar itself can't be torn either.
-            _atomic_write_text(take["sidecar"], json.dumps({"key": take["key"]}))
-            elapsed = time.time() - t0
-            log(f"  -> {dur_s:.2f}s in {elapsed:.1f}s ({dur_s / elapsed:.1f}x rt)")
-        if plan["scene"]:
-            join_line_takes([t["mp3"] for t in plan["takes"]], workdir, mp3)
-            _atomic_write_text(workdir / f"seg_{i:02d}.json", json.dumps({"key": plan["key"]}))
+            attempts = 1 + MAX_TAKE_REROLLS if verify else 1
+            clean = True
+            for attempt in range(1, attempts + 1):
+                again = f" [re-roll {attempt - 1}/{MAX_TAKE_REROLLS}]" if attempt > 1 else ""
+                directed = f", instruct={take['instruct']!r}" if take.get("instruct") else ""
+                log(
+                    f"{where} rendering ({len(take['text'])} chars, "
+                    f"voice={take['voice']}, mode={take['mode']}{directed}){again}..."
+                )
+                t0 = time.time()
+                dur_s = _render_take(
+                    model,
+                    spec=eng,
+                    text=take["text"],
+                    mode=take["mode"],
+                    voice=take["voice"],
+                    voice_instruct=voice_instruct,
+                    # Per TAKE, not per episode: a scene's lines each carry their own
+                    # cast member's reference, and the episode's is only ever the
+                    # fallback a plain-text segment renders with.
+                    ref_audio=take["ref_audio"],
+                    ref_text=take["ref_text"],
+                    mp3=take["mp3"],
+                    instruct=take.get("instruct"),
+                )
+                elapsed = time.time() - t0
+                log(f"  -> {dur_s:.2f}s in {elapsed:.1f}s ({dur_s / elapsed:.1f}x rt)")
+                if not verify:
+                    break
+                transcript = transcribe_take(take["mp3"])
+                reasons = derailment(take["text"], transcript)
+                if not reasons:
+                    wer = word_error_rate(take["text"], transcript)
+                    log(f"  transcript: clean (WER {wer:.3f})")
+                    break
+                final = attempt == attempts
+                event = {
+                    "segment": i,
+                    "take": take["mp3"].stem,
+                    "label": _take_label(i, j, plan),
+                    "attempt": attempt,
+                    "final": final,
+                    "reasons": reasons,
+                    "transcript": transcript[:300],
+                    "chars": len(take["text"]),
+                }
+                # Bank FIRST — nothing between judging the take and copying it out
+                # (the capture_rate_bloopers posture): the re-render below overwrites
+                # this mp3, and a kept workdir empties itself within days.
+                _bank_derailed_take(
+                    take,
+                    event,
+                    duration_ms=int(dur_s * 1000),
+                    attempts=attempts,
+                    source_url=segments[idx].get("source_url"),
+                    workdir=workdir,
+                    engine=engine,
+                    dry_run=dry_run,
+                    ctx=blooper_ctx or {},
+                )
+                derailed_events.append(event)
+                outcome = "giving up; the artifact gate will refuse it" if final else "re-rolling"
+                log(f"  DERAILED ({', '.join(reasons)}): heard {transcript[:80]!r}; {outcome}")
+                if final:
+                    clean = False
+            if clean:
+                # Write the sidecar only AFTER the mp3 is on disk, so a crash between
+                # the two never records a cache hit for a half-written take.
+                # _atomic_write_text ensures the sidecar itself can't be torn either.
+                # A take the detector gave up on gets NO sidecar, so a same-workdir
+                # re-run re-rolls it and only it.
+                _atomic_write_text(take["sidecar"], json.dumps({"key": take["key"]}))
+            else:
+                segment_clean = False
+        if plan["scene"] or plan["chunked"]:
+            take_paths = [t["mp3"] for t in plan["takes"]]
+            if plan["scene"]:
+                join_line_takes(take_paths, workdir, mp3)
+            else:
+                join_takes(take_paths, workdir, mp3, gap_ms=CHUNK_GAP_MS, label="chunk")
+            if segment_clean:
+                _atomic_write_text(workdir / f"seg_{i:02d}.json", json.dumps({"key": plan["key"]}))
         paths.append(mp3)
+    if verify:
+        # Rewritten on every detecting render (empty when clean) so a stale report
+        # from an earlier run in this workdir can never fail this one.
+        _atomic_write_text(workdir / DERAILED_FILENAME, json.dumps(derailed_events, indent=2))
     return paths
+
+
+def _take_label(i: int, j: int, plan: dict[str, Any]) -> str:
+    """ "segment 3", "segment 3 chunk 2", "segment 3 line 2" — for the report and
+    the gate's rejection, matching the render log's numbering."""
+    if plan["scene"]:
+        return f"segment {i} line {j}"
+    if plan["chunked"]:
+        return f"segment {i} chunk {j}"
+    return f"segment {i}"
+
+
+def _bank_derailed_take(
+    take: dict[str, Any],
+    event: dict[str, Any],
+    *,
+    duration_ms: int,
+    attempts: int,
+    source_url: str | None,
+    workdir: Path,
+    engine: str,
+    dry_run: bool,
+    ctx: dict[str, Any],
+) -> None:
+    """Copy a derailed take into the bloopers bin before it is overwritten or
+    abandoned. --dry-run logs what it would have banked and mutates nothing, the
+    posture every other capture keeps; bank_blooper itself never raises."""
+    what = f"{event['label']} attempt {event['attempt']}/{attempts} ({', '.join(event['reasons'])})"
+    if dry_run:
+        log(f"  would bank derailed blooper: {what}")
+        return
+    bank_blooper(
+        take["mp3"],
+        reason="derailed",
+        segment=event["segment"],
+        chars=event["chars"],
+        duration_ms=duration_ms,
+        text=take["text"],
+        source_url=source_url,
+        note=f"attempt {event['attempt']}/{attempts}: {', '.join(event['reasons'])}; "
+        f"heard: {event['transcript']}",
+        workdir=str(workdir),
+        tts_engine=engine,
+        **ctx,
+    )
 
 
 def plan_silences(seg_paths: list[Path]) -> list[int]:
@@ -1918,19 +2307,29 @@ def join_line_takes(line_paths: list[Path], workdir: Path, out: Path) -> Path:
 
     The gap between takes is a TURN gap and stops at this function: plan_silences
     still spaces the chapters exactly as it does for a single-voice episode, and
-    nothing below seg_NN.mp3 can tell that this segment was a scene.
+    nothing below seg_NN.mp3 can tell that this segment was a scene."""
+    return join_takes(line_paths, workdir, out, gap_ms=TURN_GAP_MS, label="line")
+
+
+def join_takes(
+    take_paths: list[Path], workdir: Path, out: Path, *, gap_ms: int, label: str
+) -> Path:
+    """Weld a segment's sub-takes — a scene's lines, or a long narration's sentence
+    chunks (#202) — into one seg_NN.mp3 with `gap_ms` of silence between them. The
+    gap is the only thing the two callers disagree on, and it stops here: below
+    seg_NN.mp3 nothing can tell the segment was ever more than one take.
 
     Re-asserts mono 44.1k for the same reason every other ffmpeg call in this file
     does — the concat protocol is fragile across mismatched sample rates and channel
-    layouts, and a scene is one more place to break it."""
-    gap = write_silence(workdir, TURN_GAP_MS)
+    layouts, and a join is one more place to break it."""
+    gap = write_silence(workdir, gap_ms)
     parts: list[Path] = []
-    for k, take in enumerate(line_paths):
+    for k, take in enumerate(take_paths):
         if k:
             parts.append(gap)
         parts.append(take)
 
-    concat_list = workdir / f"{out.stem}_lines.txt"
+    concat_list = workdir / f"{out.stem}_{label}s.txt"
     concat_list.write_text("\n".join(f"file '{p}'" for p in parts) + "\n")
     run(
         [
@@ -1953,7 +2352,7 @@ def join_line_takes(line_paths: list[Path], workdir: Path, out: Path) -> Path:
             str(out),
         ]
     )
-    log(f"  joined {len(line_paths)} line take(s) -> {out.name} ({TURN_GAP_MS}ms turn gap)")
+    log(f"  joined {len(take_paths)} {label} take(s) -> {out.name} ({gap_ms}ms {label} gap)")
     return out
 
 
@@ -4474,9 +4873,15 @@ def verify_artifact(
     profile: dict[str, Any],
     segments: list[dict] | None = None,
     seg_paths: list[Path] | None = None,
+    derailed: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Local conformance gate, run after render and before upload. Returns a list of
     human-readable problems (empty == good).
+
+    `derailed` (#202) is the render's derailment report: every take the detector
+    re-rolled and still could not get a clean transcript of is a rejection here —
+    the same failure class as the speech-rate outlier, caught by a transcript
+    instead of a rate. Optional for the same reason `segments` is.
 
     Scope note, because it is easy to over-claim: the 2026-08-08 rejected artifact
     passed every check here. This gate does NOT diagnose server-side processing
@@ -4537,6 +4942,7 @@ def verify_artifact(
 
     if segments is not None and seg_paths is not None:
         errors.extend(speech_rate_problems(segments, seg_paths))
+    errors.extend(derailment_problems(derailed))
     return errors
 
 
@@ -4772,6 +5178,8 @@ def preflight(
 
     checks.append(_tts_module_check())
     checks.append(_tts_engine_check(ENGINES[engine]))
+    if ENGINES[engine].detect_derailment:
+        checks.append(_derailment_detector_check(ENGINES[engine]))
 
     if cover_image is not None:
         art = check_cover_image(cover_image)
@@ -4854,6 +5262,30 @@ def _tts_engine_check(spec: EngineSpec) -> dict[str, Any]:
     )
 
 
+def _derailment_detector_check(spec: EngineSpec) -> dict[str, Any]:
+    """Is the transcriber the engine's detector needs importable? Only appended when
+    the engine declares `detect_derailment`, under --dry-run too (a dry run renders
+    and verifies). A find_spec probe like tts-module: mlx_whisper imports MLX and
+    the run must not pay that twice. Without this, a Breeze run would render for
+    minutes and die on the first take's `import mlx_whisper`."""
+    try:
+        found = importlib.util.find_spec("mlx_whisper") is not None
+    except (ImportError, ValueError):
+        found = False
+    if found:
+        return _check(
+            "derailment-detector",
+            True,
+            f"mlx_whisper importable; every take is checked against {WHISPER_MODEL}",
+        )
+    return _check(
+        "derailment-detector",
+        False,
+        f"engine {spec.name} verifies every take against its transcript, and mlx-whisper "
+        "is not installed (python3 -m pip install --user mlx-whisper — the `bench` extra)",
+    )
+
+
 def _spotify_auth_check() -> dict[str, Any]:
     """`save-to-spotify --json shows` as an auth liveness probe. Deliberately not
     routed through run() — a failing check must be recorded, not exit the process."""
@@ -4900,6 +5332,7 @@ _INCIDENT_SIGNATURES: tuple[tuple[str, str], ...] = (
     ("preflight failed", "preflight-failed"),
     ("previously rejected", "rejected-artifact"),
     ("speech rate", "tts-degeneration"),
+    ("derailed", "tts-degeneration"),  # the transcript check's rejection (#202)
     ("manifest", "manifest-invalid"),
 )
 
@@ -5282,7 +5715,15 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
         raw_text=manifest.get("raw_text", False),
         cast=manifest.get("cast"),
         engine=engine,
+        dry_run=args.dry_run,
+        blooper_ctx={"run_date": manifest.get("date"), "title": title},
     )
+    # The derailment report (#202) is read only when the engine's detector ran: on
+    # Qwen3 nothing writes one, and a stale report from a Breeze run in the same
+    # workdir must not reach the gate.
+    derailed = load_derailed(workdir) if ENGINES[engine].detect_derailment else []
+    if ENGINES[engine].detect_derailment:
+        record["rerolled_takes"] = sum(1 for e in derailed if not e.get("final"))
     mark_stage(workdir, "segments", count=len(seg_paths))
     silences_ms = plan_silences(seg_paths)
     episode_mp3, loudnorm = concat_and_normalize(seg_paths, silences_ms, workdir)
@@ -5341,6 +5782,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
         profile=probe_audio_profile(episode_mp3),
         segments=segments,
         seg_paths=seg_paths,
+        derailed=derailed,
     )
     if artifact_errors:
         die("artifact gate failed: " + "; ".join(artifact_errors))

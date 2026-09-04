@@ -162,6 +162,10 @@ def fake_tts(monkeypatch):
         return None
 
     monkeypatch.setattr(render, "run", fake_run)
+    # Breeze declares the derailment detector (#202); these tests are about events
+    # and direction, so the transcriber hears every take exactly as written. (The
+    # real one would import mlx_whisper — absent on CI — against the fake numpy.)
+    monkeypatch.setattr(render, "transcribe_take", lambda path: calls[-1]["text"])
     return types.SimpleNamespace(calls=calls, model_loads=model_loads)
 
 
