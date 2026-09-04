@@ -230,6 +230,21 @@ def test_weekly_run_section_ships_to_the_web_and_never_polls_spotify():
         )
 
 
+def test_weekly_run_section_guards_against_a_same_week_double_ship():
+    """Two runs inside one ISO week mint the IDENTICAL slug, so the second R2
+    PUT replaces a live episode's mp3 and cover at an isPermaLink guid, behind
+    an edge cache nobody here can purge. The detector reports the collision;
+    only this prose stops the run, so its removal must go red."""
+    section = _section("## Unattended weekly run")
+    assert "already_shipped_this_week" in section, (
+        "step 3 no longer reads detect's same-week guard; a re-run inside one "
+        "ISO week would republish over the live episode's permalink"
+    )
+    assert "SKIPPED already-shipped-this-week <uri>" in section, (
+        "the skip line's exact stdout form is gone; schedulers parse it"
+    )
+
+
 def test_setup_no_longer_tells_the_operator_to_create_a_spotify_show():
     setup = _section("## Setup")
     assert "save-to-spotify --json shows" not in setup, (

@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 import fc_common
+import fc_script_plan
 
 FORK_ACTIVE_DAYS = 14
 
@@ -430,6 +431,44 @@ def mark_reported(keys: list[str], date_iso: str, episode_uri: str) -> None:
     fc_common.atomic_write_json(fc_common.reported_path(), rep)
 
 
+# Printed instead of an episode URL when a week is provably shipped but the
+# recorded identity is unusable (only a hand-edited reported.json produces this:
+# `mark` always writes one). Truthy on purpose — the guard fails CLOSED, because
+# "shipped but unnamed" must never read as "not shipped".
+UNKNOWN_EPISODE = "unknown-episode"
+
+
+def already_shipped_this_week(reported: dict, run_date: str) -> str | None:
+    """The identity of an episode already shipped in run_date's ISO week, else None.
+
+    Any two runs inside one ISO week mint the IDENTICAL slug — the manifest
+    date is the week's Monday (cover_headline_weekly strips exactly that label
+    off the title) and slug_for_date keys the permalink to it — so the second
+    run's R2 PUT replaces the live episode's mp3 and cover at an isPermaLink
+    guid, behind an immutable edge cache nobody here holds a purge credential
+    for. reported.json narrows that blast radius but does not close it: a week
+    with two fresh stories still clears min_stories_per_episode and publishes.
+
+    Compares ISO Mondays via fc_script_plan.week_index (one home for that
+    computation), never raw date strings — a Sunday run and the Monday six days
+    before it are the same week. A damaged entry is skipped, never fatal, the
+    same no-data-loss posture as covered.json pruning.
+    """
+    week = fc_script_plan.week_index(run_date)
+    found = None
+    for entry in reported.values():
+        if not isinstance(entry, dict):
+            continue
+        date = entry.get("date")
+        if not _valid_run_date(date) or fc_script_plan.week_index(date) != week:
+            continue
+        uri = entry.get("episode_uri")
+        if isinstance(uri, str) and uri:
+            return uri
+        found = UNKNOWN_EPISODE
+    return found
+
+
 def score_story(s: dict) -> float:
     # The spec's "recency" term is deliberately omitted: every detector already
     # gates on a recency window, so a score term would double-count it.
@@ -498,7 +537,8 @@ def detect_all(run_date: str, config: dict) -> dict:
         *detect_star_surge(cur, base, baseline_date, run_date, config),
         *detect_releases(snap, cutoff, cur, config),
     ]
-    cands = filter_new(cands, load_reported())
+    reported = load_reported()
+    cands = filter_new(cands, reported)
     for s in cands:
         s["score"] = round(score_story(s), 2)
     stories = select_stories(
@@ -507,6 +547,9 @@ def detect_all(run_date: str, config: dict) -> dict:
     return {
         "run_date": run_date,
         "baseline_date": baseline_date,
+        # Independent of mention-once dedup: fresh stories may well survive the
+        # filter, and this is what tells the weekly run not to spend TTS on them.
+        "already_shipped_this_week": already_shipped_this_week(reported, run_date),
         "thin": len(stories) < config["min_stories_per_episode"],
         "stories": stories,
     }
