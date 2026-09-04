@@ -884,7 +884,7 @@ def test_dry_run_exercises_the_artifact_gate(monkeypatch, tmp_path):
     _isolate_config(monkeypatch, tmp_path)
     called = {}
 
-    def fake_verify(mp3, timeline, *, duration_ms, profile, segments=None, seg_paths=None):
+    def fake_verify(mp3, timeline, *, duration_ms, profile, segments=None, seg_paths=None, **kw):
         called["ran"] = True
         # The speech-rate check needs the per-segment view; a rehearsal that
         # withheld it would silently skip that half of the gate.

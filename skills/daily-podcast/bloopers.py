@@ -1,8 +1,9 @@
 """Maintenance CLI for the bloopers bin (#169).
 
-Nothing in a run calls this. `render.py` fills the bin automatically on three
-triggers — a gate rejection, a near-miss that shipped, and a failed run's leftover
-segments — and this covers the fourth: a clip you heard yourself.
+Nothing in a run calls this. `render.py` fills the bin automatically on four
+triggers — a gate rejection, a near-miss that shipped, a failed run's leftover
+segments, and a take the transcript check re-rolled (#202) — and this covers the
+fifth: a clip you heard yourself.
 
 That fourth trigger is the one that matters most in practice. The 2026-08-17
 "birdsbirdsbirds" chapter tripped no gate (the gate did not exist yet), its workdir

@@ -356,14 +356,15 @@ Report the voice in the final summary so the user knows which one ran.
 
 The engine is a property of the show, chosen by the manifest's `tts_engine` key (default `qwen3`); a typo dies rather than falling back, the `ship_mode` posture. The four voice modes above are unchanged by the engine — it is an orthogonal axis, not a fifth mode — but an engine only renders the modes it declares, and `render.py` refuses the rest before the model load. Pre-flight prints the engine and its license on every run. This table is pinned to `render.ENGINES` by a test.
 
-| engine | model | capabilities | take ceiling | min mlx-audio | license |
-| --- | --- | --- | --- | --- | --- |
-| `qwen3` | `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit` | clone, design, preset | none | 0.4.3 | Apache 2.0 |
-| `breeze` | `mlx-community/Breeze-TTS-2-mlx-8bit` | clone, design, direction, events | 500 chars | 0.5.1 | BreezeBlue Research and Non-Commercial |
+| engine | model | capabilities | take ceiling | min mlx-audio | license | derailment check |
+| --- | --- | --- | --- | --- | --- | --- |
+| `qwen3` | `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit` | clone, design, preset | none | 0.4.3 | Apache 2.0 | no |
+| `breeze` | `mlx-community/Breeze-TTS-2-mlx-8bit` | clone, design, direction, events | 500 chars | 0.5.1 | BreezeBlue Research and Non-Commercial | yes |
 
 - `qwen3` designs on a second model (`VoiceDesign-bf16`); `breeze` designs on the same model it clones with, so a Breeze episode always pays one load.
 - `breeze` has no presets: `voice: "random"`, a preset name, or a preset cast entry dies naming the engine. Clones (`house`, cast clips) and `voice_instruct` work.
-- **The 500-character ceiling is Breeze's own, not the token cap.** Measured 2026-09-04: 0 of 24 takes at or under 533 characters derailed; 1 in 5 did at 592–1000. A plain-text segment or a scene line over it dies before the render, because the speech-rate gate cannot see a derailment (the rate stays normal and whisper hears babble as words). Every band this show writes exceeds it, so the daily show cannot select `breeze` as-is; Surface Tension's lines can.
+- **The 500-character ceiling is Breeze's own, not the token cap.** Measured 2026-09-04: 0 of 24 takes at or under 533 characters derailed; 1 in 5 did at 592–1000. The ceiling binds one **take**, and a plain-text segment over it is rendered as several: `render.py` splits it at sentence boundaries into chunks of balanced size (an 1100-character lead becomes three takes of ~370, never 500 + 500 + 100), renders each, and joins them with `CHUNK_GAP_MS` (350 ms) of silence into the same `seg_NN.mp3` — one chapter, one `source_url`, chapter math untouched. Never mid-sentence: a single sentence over the ceiling dies before the render, naming it. Every band this show writes therefore renders on `breeze`; a scene line is still one take and is bounded whole.
+- **An engine with a derailment check transcribes every take it renders** (`detect_derailment` on the engine; `breeze` today). The speech-rate gate cannot see a derailment — the rate stays normal and whisper hears babble as words — so the take is judged by the eval bench's rule instead: WER > 0.15 against the script, non-ASCII in the transcript, or a heard-to-script word ratio outside 0.9–1.1. A derailed take is banked to the [bloopers bin](#bloopers-bin-bloopers) first, then re-rolled once; a second derailment leaves the take without a cache sidecar and the artifact gate refuses the run, so re-running with the same `--workdir` re-rolls only that take. `--dry-run` runs the check and the re-roll but banks nothing. The rule is coarse on a short take (one misheard word in fourteen is already over the threshold), which is why chunks are balanced rather than tail-heavy. Needs `mlx-whisper` (the `bench` extra); pre-flight (`derailment-detector`) fails the run without it, and the whisper model loads once per run.
 - `events`: `(laugh)` / `(sigh)` in a take's text (`render.EVENT_MARKERS`, a closed list) are performed by an engine that declares it. On one that does not, `render.py` strips them from the take before the render and logs it — never refuses, a stripped marker is the same line — and every measurement (a scene's derived `text`, the speech-rate rows) reads the marker-stripped text on every engine, so an event never lengthens the measured script (#201). Paralinguistic markers still do not work on `qwen3`; they simply never reach it.
 - `direction`: a scene line may carry `"instruct"`, rendered through the clone-plus-instruct form (`generate(text, ref_audio, ref_text, instruct=…, cfg_scale=4.0)`) and folded into that take's cache key. On an engine without it the line is **refused** naming the engine, never stripped — a dropped direction is a different performance. It is an instruction over a clone, so a preset speaker cannot be directed. See *Multi-voice scenes*.
 - Breeze's weights are non-commercial with no creator or monetization exception: no sponsor reads or paid tiers on a show that renders with it.
@@ -458,10 +459,15 @@ full-key-set row per clip (same line-by-line read contract as `runs.jsonl`).
 | --- | --- | --- |
 | `gate` | the artifact gate is about to reject a segment (< `MIN_SPEECH_RATE_RATIO`) | that one segment, with the rate evidence |
 | `near-miss` | a segment PASSED but reads slow (`MIN_SPEECH_RATE_RATIO`–`NEAR_MISS_RATE_RATIO`) | that segment; the episode still ships |
+| `derailed` | the transcript check flags a take, on an engine that declares it (`breeze`) | that take, before it is re-rolled; the `note` carries the reasons and what whisper heard |
 | `run-failed` | any run dies after TTS | every `seg_*.mp3` in the workdir |
 | `manual` | you run `bloopers.py mark` | an ffmpeg trim of any audio file |
 
-Four things here are load-bearing:
+Five things here are load-bearing:
+
+- **A derailed take is banked BEFORE it is re-rolled.** The re-render overwrites
+  the take's mp3 in place, so the copy has to happen between judging the take and
+  rendering it again — no branch in between, the same rule as the gate capture.
 
 - **Capture runs BEFORE `verify_artifact`, not after.** A speech-rate rejection's
   documented recovery deletes the offending `seg_NN.mp3`, and a stale workdir

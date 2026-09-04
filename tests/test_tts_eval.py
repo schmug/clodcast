@@ -587,3 +587,19 @@ def test_pkg_resources_stub_fills_only_a_gap(monkeypatch):
     bench._ensure_pkg_resources()
     stub = sys.modules["pkg_resources"]
     assert stub.get_distribution("pytest").version == importlib.metadata.version("pytest")
+
+
+def test_the_bench_renders_with_the_derailment_detector_off(monkeypatch, tmp_path):
+    """The bench measures the engine's RAW derailment rate (#202): render.py's own
+    detector re-rolls a derailed take, which would hide exactly what the `derailed`
+    metric exists to count. The kwarg must be explicit, not the engine's default."""
+    seen: dict = {}
+
+    def fake_render_segments(segments, voice, workdir, **kw):
+        seen.update(kw)
+        return []
+
+    monkeypatch.setattr(render, "render_segments", fake_render_segments)
+    manifest = {"title": "T", "summary": "S", "tts_engine": "breeze", "segments": [{"text": "hi"}]}
+    bench.render_pass(manifest, tmp_path / "wd", engine="breeze")
+    assert seen["detect_derailment"] is False

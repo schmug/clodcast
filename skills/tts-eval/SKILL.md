@@ -89,5 +89,5 @@ python3 -m pip install --user mlx-whisper librosa resemblyzer
 
 - Not a show, and not on any schedule. Nothing in a run calls it.
 - Not a decision: which engine a show uses is a manifest change made after listening (#203).
-- Not a guard: the daily show's derailment protection is #202, which will use the same rule at render time.
+- Not a guard: `render.py` owns the derailment rule (#202) and re-rolls a derailed take by it on an engine that declares `detect_derailment`; the bench aliases that one definition and renders with the detector **off**, so the `derailed` column is the engine's raw rate, not the guard's.
 - Not a sweep: quantization and temperature variants are a later bench feature.

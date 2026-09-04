@@ -260,7 +260,8 @@ catches the gross cases and the documented recovery deletes the offending audio 
 `~/.config/daily-podcast/bloopers/` archives it first. Clips land content-addressed
 under `clips/<sha16>.mp3` with one append-only row each in `index.jsonl`, tagged by
 what tripped the capture: `gate` (about to be rejected), `near-miss` (slow but
-shipped), `run-failed` (swept from a dead run's workdir), or `manual`.
+shipped), `run-failed` (swept from a dead run's workdir), `derailed` (a take the
+transcript check re-rolled, on engines that declare it), or `manual`.
 
 Nothing in a run reads the bin back. Sift it with `jq`, and bank a clip you heard
 yourself with:
