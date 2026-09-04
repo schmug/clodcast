@@ -233,13 +233,15 @@ by no show, and 0.5.x may have moved `generate_voice_design`).
 ## Out of scope
 
 - The eval bench skill (slice 2) — it will import `render` the way `bloopers.py`
-  does.
+  does. Filed: https://github.com/schmug/clodcast/issues/200
 - Consuming `events` / `direction` anywhere; relaxing the design+cast rule per engine
-  (slice 3).
+  (slice 3). Filed: https://github.com/schmug/clodcast/issues/201
 - Switching Surface Tension (or any show) to Breeze: a one-line manifest change made
   after the ear test on the eval report, so the 4× slower weekly render and the
-  non-commercial license each get a deliberate yes.
+  non-commercial license each get a deliberate yes. Filed:
+  https://github.com/schmug/clodcast/issues/203
 - Chunked rendering of long segments, and a whisper-based derailment detector with
-  re-roll — the two ways a narrator show could ever use Breeze. Follow-up issue.
+  re-roll — the two ways a narrator show could ever use Breeze. Filed:
+  https://github.com/schmug/clodcast/issues/202
 - The bf16 Breeze variant and a sampling-temperature sweep (both may move the
   derailment rate); an `--engine` flag on `--selftest`; a `config.json` default engine.
