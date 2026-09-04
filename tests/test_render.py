@@ -1296,40 +1296,64 @@ def test_prep_segment_text_raw_bypasses_normalization():
 
 
 def test_cache_key_changes_with_text():
-    a = render._segment_cache_key("hello world", "preset", "Ryan", None, None)
-    b = render._segment_cache_key("hello there", "preset", "Ryan", None, None)
+    a = render._segment_cache_key(
+        "hello world", "preset", "Ryan", None, None, engine="qwen3", model_id=render.MODEL_ID
+    )
+    b = render._segment_cache_key(
+        "hello there", "preset", "Ryan", None, None, engine="qwen3", model_id=render.MODEL_ID
+    )
     assert a != b
 
 
 def test_cache_key_changes_with_voice_name():
-    a = render._segment_cache_key("hello", "preset", "Ryan", None, None)
-    b = render._segment_cache_key("hello", "preset", "Aiden", None, None)
+    a = render._segment_cache_key(
+        "hello", "preset", "Ryan", None, None, engine="qwen3", model_id=render.MODEL_ID
+    )
+    b = render._segment_cache_key(
+        "hello", "preset", "Aiden", None, None, engine="qwen3", model_id=render.MODEL_ID
+    )
     assert a != b
 
 
 def test_cache_key_changes_with_mode():
     # Same text + same voice label, but a different rendering engine must not collide.
-    clone = render._segment_cache_key("hello", "clone", "house", "deadbeef", "ref")
-    design = render._segment_cache_key("hello", "design", "house", None, "an instruct")
+    clone = render._segment_cache_key(
+        "hello", "clone", "house", "deadbeef", "ref", engine="qwen3", model_id=render.MODEL_ID
+    )
+    design = render._segment_cache_key(
+        "hello", "design", "house", None, "an instruct", engine="qwen3", model_id=render.MODEL_ID
+    )
     assert clone != design
 
 
 def test_cache_key_changes_with_ref_audio_fingerprint():
     # Re-recording the house clip (same text, same label) must invalidate.
-    a = render._segment_cache_key("hello", "clone", "house", "fp-old", "ref text")
-    b = render._segment_cache_key("hello", "clone", "house", "fp-new", "ref text")
+    a = render._segment_cache_key(
+        "hello", "clone", "house", "fp-old", "ref text", engine="qwen3", model_id=render.MODEL_ID
+    )
+    b = render._segment_cache_key(
+        "hello", "clone", "house", "fp-new", "ref text", engine="qwen3", model_id=render.MODEL_ID
+    )
     assert a != b
 
 
 def test_cache_key_changes_with_ref_text():
-    a = render._segment_cache_key("hello", "clone", "house", "fp", "transcript one")
-    b = render._segment_cache_key("hello", "clone", "house", "fp", "transcript two")
+    a = render._segment_cache_key(
+        "hello", "clone", "house", "fp", "transcript one", engine="qwen3", model_id=render.MODEL_ID
+    )
+    b = render._segment_cache_key(
+        "hello", "clone", "house", "fp", "transcript two", engine="qwen3", model_id=render.MODEL_ID
+    )
     assert a != b
 
 
 def test_cache_key_stable_for_same_inputs():
-    a = render._segment_cache_key("hello", "clone", "house", "fp", "ref")
-    b = render._segment_cache_key("hello", "clone", "house", "fp", "ref")
+    a = render._segment_cache_key(
+        "hello", "clone", "house", "fp", "ref", engine="qwen3", model_id=render.MODEL_ID
+    )
+    b = render._segment_cache_key(
+        "hello", "clone", "house", "fp", "ref", engine="qwen3", model_id=render.MODEL_ID
+    )
     assert a == b
     assert len(a) == 64  # sha256 hexdigest
 

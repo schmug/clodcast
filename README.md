@@ -78,7 +78,7 @@ the next version and changelog; **merging that PR** cuts the tag and GitHub Rele
   - `curl -fsSL https://saveto.spotify.com/install.sh | bash`
   - `save-to-spotify auth login`
 - **Apple Silicon Mac** (Qwen3-TTS via MLX uses Metal). Swap the renderer if you want a different TTS provider.
-- **Python 3.10+** — runtime deps are declared in [`pyproject.toml`](pyproject.toml) (`mlx-audio`, `soundfile`, `mutagen`, `Pillow`, `numpy`, `feedparser`)
+- **Python 3.10+** — runtime deps are declared in [`pyproject.toml`](pyproject.toml) (`mlx-audio>=0.5.1`, `soundfile`, `mutagen`, `Pillow`, `numpy`, `feedparser`)
   - `pip install -r requirements.txt` (or `pip install -e .` for an editable checkout)
 - **`ffmpeg`** and **`ffprobe`**
 - **`gh` CLI** on `PATH`, authenticated (`gh auth login`) — required by the `frontier-commits` skill (daily snapshot collector and per-story research)

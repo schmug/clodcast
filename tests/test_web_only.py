@@ -320,6 +320,7 @@ def test_web_only_final_json_carries_the_mp3_url_for_the_shipped_line(
     assert out["chapter_count"] == 2
     assert out["duration_s"] == 480.0
     assert out["title"] == WEB_MANIFEST["title"]
+    assert out["tts_engine"] == "qwen3"  # absent key -> default engine, reported truthfully
 
 
 def test_web_only_manifest_entry_omits_the_spotify_uri(monkeypatch, tmp_path):

@@ -58,6 +58,7 @@ Already-written segments. Skip straight to rendering.
   "date": "2026-05-22",                    // optional ISO date; stamps the cover AND keys the web slug/guid. Omit to use today (re-renders of a dated manifest reproduce its date)
   "voice": "house",                        // default; or "random" / preset name; set voice_instruct for custom VoiceDesign
   "ship_mode": "spotify",                  // optional; "spotify" (default) or "web". "web" skips save-to-spotify entirely and makes the R2 publish the ship — see "Web-only shipping"
+  "tts_engine": "qwen3",                   // optional; "qwen3" (default) or "breeze". Closed whitelist that lives on the manifest like ship_mode — see "TTS engines"
   "description_footer_text": "Sources: …", // optional; replaces the standard credit footer on the episode description (see "Episode description footer"). PLAIN TEXT: render.py escapes it into one <p> and rejects markup. Set it when rendering a SECOND show — the default footer credits the daily show's feeds
   "cast": {"anchor": "Ryan", "skeptic": "Ethan"}, // optional; speaker -> preset name OR {"ref_audio","ref_text"} clip, for multi-voice `lines` segments (see "Multi-voice scenes"). The daily show does not use this
   "segments": [
@@ -350,6 +351,21 @@ The bundled house clip is one good render of a VoiceDesign instruct (`HOUSE_VOIC
 `ref_audio` precedence: if `voice_instruct` is also set in a manifest, the explicit instruct wins (so you can A/B against the house voice without unwiring it).
 
 Report the voice in the final summary so the user knows which one ran.
+
+### TTS engines
+
+The engine is a property of the show, chosen by the manifest's `tts_engine` key (default `qwen3`); a typo dies rather than falling back, the `ship_mode` posture. The four voice modes above are unchanged by the engine — it is an orthogonal axis, not a fifth mode — but an engine only renders the modes it declares, and `render.py` refuses the rest before the model load. Pre-flight prints the engine and its license on every run. This table is pinned to `render.ENGINES` by a test.
+
+| engine | model | capabilities | take ceiling | min mlx-audio | license |
+| --- | --- | --- | --- | --- | --- |
+| `qwen3` | `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit` | clone, design, preset | none | 0.4.3 | Apache 2.0 |
+| `breeze` | `mlx-community/Breeze-TTS-2-mlx-8bit` | clone, design, direction, events | 500 chars | 0.5.1 | BreezeBlue Research and Non-Commercial |
+
+- `qwen3` designs on a second model (`VoiceDesign-bf16`); `breeze` designs on the same model it clones with, so a Breeze episode always pays one load.
+- `breeze` has no presets: `voice: "random"`, a preset name, or a preset cast entry dies naming the engine. Clones (`house`, cast clips) and `voice_instruct` work.
+- **The 500-character ceiling is Breeze's own, not the token cap.** Measured 2026-09-04: 0 of 24 takes at or under 533 characters derailed; 1 in 5 did at 592–1000. A plain-text segment or a scene line over it dies before the render, because the speech-rate gate cannot see a derailment (the rate stays normal and whisper hears babble as words). Every band this show writes exceeds it, so the daily show cannot select `breeze` as-is; Surface Tension's lines can.
+- `events` and `direction` are declared for the eval bench and future script features; nothing in `render.py` reads them yet. Paralinguistic markers still do not work on `qwen3`.
+- Breeze's weights are non-commercial with no creator or monetization exception: no sponsor reads or paid tiers on a show that renders with it.
 
 ### Multi-voice scenes (`lines`)
 
@@ -733,7 +749,7 @@ You are an unattended invocation. Ship today's episode and exit. Be decisive, do
 9. **Report once and exit.** Single-line stdout, with the R2 outcome as a trailing `r2=` field (`published`→`ok`, `skipped`→`skipped`, `failed`→`FAILED`):
 
    ```
-   SHIPPED <episode_uri> - <title> - <chapter_count> chapters - <duration_s>s - r2=ok
+   SHIPPED <episode_uri> - <title> - <chapter_count> chapters - <duration_s>s - r2=ok - engine=<tts_engine>
    ```
 
    `r2=skipped` means R2 isn't configured (benign). `r2=FAILED` means the episode is **live on Spotify** but the web-feed publish errored — still a successful run (exit 0, `covered.json` written). **Never** turn `r2=FAILED` into a `FAILED` line; the run did not fail. On genuine failure:

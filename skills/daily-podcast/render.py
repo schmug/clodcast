@@ -39,6 +39,7 @@ import argparse
 import datetime as dt
 import hashlib
 import html
+import importlib.metadata
 import importlib.util
 import json
 import math
@@ -53,19 +54,109 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 # --- constants -------------------------------------------------------------
 
-VOICES = ["Ryan", "Aiden", "Ethan", "Chelsie"]
 # The two halves of a recorded cast clip (#177) — a manifest `cast` value is either
 # a preset name from VOICES or exactly these two keys. Both are needed: the clip is
 # what the model imitates, the transcript is what it believes the clip says, and a
 # clone rendered against the wrong transcript drifts audibly.
 CAST_CLIP_FIELDS = ("ref_audio", "ref_text")
-MODEL_ID = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit"
-VOICE_DESIGN_MODEL_ID = "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16"
+
+# --- TTS engines ------------------------------------------------------------
+#
+# Which model renders an episode is a property of the SHOW, chosen by the manifest's
+# `tts_engine` key — a closed whitelist, default "qwen3" — the ship_mode posture for
+# the ship_mode reason: a re-run must render the way it rendered before, and a flag
+# that can go missing on one invocation would silently render a different voice.
+# Every engine declares what it can do, and validate_manifest refuses a voice mode
+# the chosen engine lacks BEFORE the model load; the alternative — passing a Qwen3
+# preset name through as a Breeze speaker tag — renders a stranger with no error,
+# the silent wrong-voice class #177 closed. Design: docs/superpowers/specs/
+# 2026-09-04-tts-engine-registry-design.md.
+TTS_ENGINE_QWEN3 = "qwen3"
+TTS_ENGINE_BREEZE = "breeze"
+TTS_ENGINES = (TTS_ENGINE_QWEN3, TTS_ENGINE_BREEZE)
+ENGINE_CAPABILITIES = frozenset({"preset", "clone", "design", "events", "direction"})
+
+
+@dataclass(frozen=True)
+class EngineSpec:
+    """One TTS engine: the models it loads, what it can do, the limits the renderer
+    enforces on its behalf, and what an operator must know before shipping on it.
+
+    `events` and `direction` are DECLARED, not consumed: nothing in render.py reads
+    them yet. They exist for the eval bench and for capability-gated script
+    features (spec slices 2 and 3)."""
+
+    name: str
+    label: str
+    base_model_id: str
+    design_model_id: str | None  # None: voice design runs on the base model
+    capabilities: frozenset[str]
+    presets: tuple[str, ...]
+    max_take_chars: int | None  # None: no observed ceiling
+    max_tokens: int | None  # None: never passed to generate()
+    min_mlx_audio: str
+    license: str
+
+    def has(self, capability: str) -> bool:
+        return capability in self.capabilities
+
+
+ENGINES: dict[str, EngineSpec] = {
+    TTS_ENGINE_QWEN3: EngineSpec(
+        name=TTS_ENGINE_QWEN3,
+        label="Qwen3-TTS 1.7B",
+        base_model_id="mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit",
+        design_model_id="mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16",
+        capabilities=frozenset({"preset", "clone", "design"}),
+        presets=("Ryan", "Aiden", "Ethan", "Chelsie"),
+        max_take_chars=None,
+        max_tokens=None,
+        min_mlx_audio="0.4.3",
+        license="Apache 2.0",
+    ),
+    TTS_ENGINE_BREEZE: EngineSpec(
+        name=TTS_ENGINE_BREEZE,
+        label="Breeze-TTS-2 3B",
+        base_model_id="mlx-community/Breeze-TTS-2-mlx-8bit",
+        design_model_id=None,
+        capabilities=frozenset({"clone", "design", "events", "direction"}),
+        presets=(),
+        # Measured 2026-09-04 (see the spec): 0 of 24 takes <= 533 chars derailed;
+        # 1 in 5 did at 592, 839 and 1000 chars. The derailment is the model's own
+        # past ~35 s of audio, not the token cap, and the speech-rate gate cannot see
+        # it — the rate stays normal and whisper transcribes babble as words.
+        max_take_chars=500,
+        # Explicit rather than the library default: 500 chars is ~440 frames at
+        # 12.5/s, and the cap bounds a derailed take at 60 s instead of letting it run.
+        max_tokens=750,
+        min_mlx_audio="0.5.1",
+        license="BreezeBlue Research and Non-Commercial",
+    ),
+}
+
+# The daily show's constants are aliases into the registry so nothing else moves.
+VOICES = list(ENGINES[TTS_ENGINE_QWEN3].presets)
+MODEL_ID = ENGINES[TTS_ENGINE_QWEN3].base_model_id
+VOICE_DESIGN_MODEL_ID = ENGINES[TTS_ENGINE_QWEN3].design_model_id
+
+
+def resolve_tts_engine(manifest: dict[str, Any]) -> str:
+    """The engine an episode renders on: the manifest's `tts_engine`, or "qwen3"
+    when absent. A falsy value is "absent" here and a whitelist miss in
+    validate_manifest, exactly like resolve_ship_mode / SHIP_MODES."""
+    return manifest.get("tts_engine") or TTS_ENGINE_QWEN3
+
+
+def engine_spec(manifest: dict[str, Any]) -> EngineSpec:
+    return ENGINES[resolve_tts_engine(manifest)]
+
+
 SAMPLE_RATE = 24000
 
 # The locked "house" voice for the daily podcast.
@@ -318,6 +409,7 @@ BLOOPER_FIELDS: tuple[str, ...] = (
     "ratio",  # rate / median
     "note",  # free text, manual captures only
     "workdir",
+    "tts_engine",  # which engine produced the clip; null for rows written before it existed
 )
 
 # Registry of feeds/outlets that can't be fetched for article bodies, moved out of
@@ -557,6 +649,7 @@ RUN_LOG_FIELDS: tuple[str, ...] = (
     "abandoned_episodes",  # [{episode_uri, title, source_urls}] on a poison-pill give-up
     "mp3_url",  # public R2 URL on a web-only ship, else null (#155)
     "bloopers_captured",  # clips banked into the bloopers bin this run (#169)
+    "tts_engine",  # engine name from the manifest (spec 2026-09-04); null before it is resolved
 )
 
 
@@ -880,6 +973,58 @@ def _validate_scene(i: int, lines: Any, cast: dict[str, Any] | None) -> None:
             die(f"{where}.speaker {speaker!r} is not in the manifest 'cast' ({known})")
 
 
+def _validate_engine_capabilities(manifest: dict[str, Any], spec: EngineSpec) -> None:
+    """Refuse, BEFORE the model load, any voice mode the chosen engine lacks, naming
+    the engine and the capability. Breeze has no presets: without this, `voice:
+    "Ryan"` would pass validation (Ryan is a Qwen3 preset), reach the Breeze adapter
+    as a speaker tag, and render a stranger with no error anywhere. Pure."""
+    no_presets = f"engine {spec.name} has no presets"
+    instruct = manifest.get("voice_instruct")
+    voice = manifest.get("voice", "house")
+    if instruct:
+        if not spec.has("design"):
+            die(f"manifest sets 'voice_instruct', but engine {spec.name} cannot design a voice")
+    elif voice == "house":
+        if not spec.has("clone"):
+            die(f'manifest voice "house" is a clip clone, but engine {spec.name} cannot clone')
+    elif voice == "random" or voice in VOICES:
+        if not spec.has("preset"):
+            die(f"manifest voice {voice!r} is a preset, but {no_presets}")
+    for speaker, cast_voice in (manifest.get("cast") or {}).items():
+        if isinstance(cast_voice, dict):
+            if not spec.has("clone"):
+                die(f"manifest cast[{speaker!r}] is a clip, but engine {spec.name} cannot clone")
+        elif not spec.has("preset"):
+            die(f"manifest cast[{speaker!r}] = {cast_voice!r} is a preset, but {no_presets}")
+
+
+def _validate_take_lengths(segments: list[dict], spec: EngineSpec) -> None:
+    """Refuse any take longer than the engine's measured ceiling BEFORE the render.
+    This is not a cosmetic limit: past it Breeze derails into babble about one take
+    in five, and the speech-rate gate cannot see that (the rate stays normal and
+    whisper transcribes babble as words). Pure."""
+    cap = spec.max_take_chars
+    if cap is None:
+        return
+    for i, seg in enumerate(segments):
+        lines = segment_lines(seg)
+        if lines is None:
+            n = len(seg["text"])
+            if n > cap:
+                die(
+                    f"manifest segment[{i}] is {n} chars; "
+                    f"engine {spec.name} renders at most {cap} per take"
+                )
+            continue
+        for j, line in enumerate(lines):
+            n = len(line.get("text") or "") if isinstance(line, dict) else 0
+            if n > cap:
+                die(
+                    f"manifest segment[{i}] line {j} is {n} chars; "
+                    f"engine {spec.name} renders at most {cap} per take"
+                )
+
+
 def validate_manifest(manifest: dict[str, Any]) -> None:
     """
     Fail fast (via die) on a malformed manifest BEFORE the ~15s model load, naming
@@ -893,6 +1038,16 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         val = manifest.get(field)
         if not isinstance(val, str) or not val.strip():
             die(f"manifest '{field}' is required and must be a non-empty string")
+
+    # Engine is a closed set for the same reason as ship_mode: a typo must die rather
+    # than fall back to Qwen3 and quietly render a show on the wrong model. Resolved
+    # first so a bad engine name is named before its capabilities are consulted; the
+    # capability and take-length checks hang off `spec` at the end.
+    engine = manifest.get("tts_engine")
+    if engine is not None and engine not in TTS_ENGINES:
+        shown = "{" + ", ".join(f'"{e}"' for e in TTS_ENGINES) + "}"
+        die(f"manifest 'tts_engine' must be one of {shown} or unset (got {engine!r})")
+    spec = engine_spec(manifest)
 
     # The cast is validated before the segments because every line's `speaker` is
     # checked against it (#172). The house voice is deliberately excluded from the
@@ -963,6 +1118,10 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
     for field in ("voice_instruct", "show_id"):
         if manifest.get(field) is not None and not isinstance(manifest[field], str):
             die(f"manifest '{field}' must be a string")
+    # Both run after the segments loop has proved every plain segment has a string
+    # `text` and every scene's lines are well-formed, so they index without re-checking.
+    _validate_engine_capabilities(manifest, spec)
+    _validate_take_lengths(segments, spec)
     # A second show publishes into the same R2 bucket; a bare-filename key keeps
     # its web feed out of the daily show's manifest.json without touching episode
     # object paths (#118). THREAT MODEL: the key names an R2 object the publish
@@ -1171,6 +1330,9 @@ def _segment_cache_key(
     voice: str,
     ref_fingerprint: str | None,
     ref_text: str | None,
+    *,
+    engine: str,
+    model_id: str,
 ) -> str:
     """Content hash identifying one rendered segment. Any input that changes the
     audio the model would produce changes the key:
@@ -1179,6 +1341,12 @@ def _segment_cache_key(
       - `voice`       : preset name, or the VoiceDesign instruct in design mode
       - `ref_fingerprint` : hash of the ref-audio bytes (clone mode only)
       - `ref_text`    : the clone transcript (clone mode only)
+      - `engine`, `model_id` : which model rendered it. Unconditional: a key that
+        omits the model is the silent-replay class #177 closed, one level up — a
+        workdir rendered under Qwen3 and re-run under Breeze would replay Qwen3's
+        audio under the new engine's name with no error. Every sidecar written
+        before this field existed misses once; auto workdirs are per-date and
+        deleted on success, so that is at most one same-day resume.
     Serialized through json so field boundaries can't collide (e.g. "a"+"bc" vs
     "ab"+"c"). Pure; no I/O."""
     payload = json.dumps(
@@ -1188,6 +1356,8 @@ def _segment_cache_key(
             "voice": voice,
             "ref_fingerprint": ref_fingerprint,
             "ref_text": ref_text,
+            "engine": engine,
+            "model_id": model_id,
         },
         sort_keys=True,
     )
@@ -1227,9 +1397,78 @@ def _cache_hit(workdir: Path, i: int, key: str) -> bool:
 # --- audio rendering -------------------------------------------------------
 
 
+# Voice design on Breeze is classifier-free guidance over the instruction; 4.0 is
+# the publisher's documented default and the value the 2026-09-04 eval used.
+BREEZE_CFG_SCALE = 4.0
+
+
+def _generate_qwen3(
+    model: Any,
+    spec: EngineSpec,
+    *,
+    text: str,
+    mode: str,
+    voice: str,
+    voice_instruct: str | None,
+    ref_audio: str | None,
+    ref_text: str | None,
+) -> list[Any]:
+    """The single-engine renderer's three branches, kwargs byte-for-byte."""
+    if mode == "clone":
+        return list(
+            model.generate(text=text, language="English", ref_audio=ref_audio, ref_text=ref_text)
+        )
+    if mode == "design":
+        return list(
+            model.generate_voice_design(text=text, language="English", instruct=voice_instruct)
+        )
+    return list(model.generate(text=text, voice=voice, language="English"))
+
+
+def _generate_breeze(
+    model: Any,
+    spec: EngineSpec,
+    *,
+    text: str,
+    mode: str,
+    voice: str,
+    voice_instruct: str | None,
+    ref_audio: str | None,
+    ref_text: str | None,
+) -> list[Any]:
+    """Breeze clones and designs on ONE model through generate(); the cap is passed
+    explicitly (spec §2). No preset branch: validate_manifest refuses presets on
+    this engine, and a direct caller that reaches here dies rather than handing a
+    Qwen3 preset name to Breeze as a speaker tag."""
+    if mode == "clone":
+        return list(
+            model.generate(
+                text=text, ref_audio=ref_audio, ref_text=ref_text, max_tokens=spec.max_tokens
+            )
+        )
+    if mode == "design":
+        return list(
+            model.generate(
+                text=text,
+                instruct=voice_instruct,
+                cfg_scale=BREEZE_CFG_SCALE,
+                max_tokens=spec.max_tokens,
+            )
+        )
+    die(f"engine {spec.name} has no presets; refusing to render mode {mode!r} (voice {voice!r})")
+    return []  # unreachable; die() exits
+
+
+_ENGINE_GENERATORS = {
+    TTS_ENGINE_QWEN3: _generate_qwen3,
+    TTS_ENGINE_BREEZE: _generate_breeze,
+}
+
+
 def _render_take(
     model: Any,
     *,
+    spec: EngineSpec,
     text: str,
     mode: str,
     voice: str,
@@ -1247,31 +1486,16 @@ def _render_take(
     import numpy as np
     import soundfile as sf
 
-    if mode == "clone":
-        results = list(
-            model.generate(
-                text=text,
-                language="English",
-                ref_audio=ref_audio,
-                ref_text=ref_text,
-            )
-        )
-    elif mode == "design":
-        results = list(
-            model.generate_voice_design(
-                text=text,
-                language="English",
-                instruct=voice_instruct,
-            )
-        )
-    else:
-        results = list(
-            model.generate(
-                text=text,
-                voice=voice,
-                language="English",
-            )
-        )
+    results = _ENGINE_GENERATORS[spec.name](
+        model,
+        spec,
+        text=text,
+        mode=mode,
+        voice=voice,
+        voice_instruct=voice_instruct,
+        ref_audio=ref_audio,
+        ref_text=ref_text,
+    )
     audio = np.concatenate([np.array(r.audio) for r in results])
     wav = mp3.with_suffix(".wav")
     sf.write(wav, audio, SAMPLE_RATE)
@@ -1305,6 +1529,7 @@ def render_segments(
     ref_text: str | None = None,
     raw_text: bool = False,
     cast: dict[str, str] | None = None,
+    engine: str = TTS_ENGINE_QWEN3,
 ) -> list[Path]:
     """
     Render each segment text to an mp3 in workdir; return list of mp3 paths.
@@ -1336,6 +1561,12 @@ def render_segments(
     use_clone = bool(ref_audio)
     use_design = bool(voice_instruct) and not use_clone
     mode = "clone" if use_clone else ("design" if use_design else "preset")
+    eng = ENGINES[engine]
+    # Which weights this run loads. Only an engine with a SEPARATE design model
+    # switches for voice_instruct; Breeze designs on its base model and so always
+    # pays one load (spec §4). Resolved here, before the plans, because the id is
+    # part of every take's key. (`spec` below is a resolved CAST member, not this.)
+    model_id = eng.design_model_id if (use_design and eng.design_model_id) else eng.base_model_id
     # In design mode the instruct is what shapes the voice, so it must be part of
     # the key; otherwise the voice label is. Resolve the ref-audio fingerprint once.
     key_voice = voice_instruct if use_design else voice
@@ -1370,7 +1601,13 @@ def render_segments(
                     "ref_audio": ref_audio,
                     "ref_text": ref_text,
                     "key": _segment_cache_key(
-                        text, mode, key_voice or "", ref_fingerprint, ref_text
+                        text,
+                        mode,
+                        key_voice or "",
+                        ref_fingerprint,
+                        ref_text,
+                        engine=engine,
+                        model_id=model_id,
                     ),
                     "mp3": workdir / f"seg_{i:02d}.mp3",
                     "sidecar": workdir / f"seg_{i:02d}.json",
@@ -1406,6 +1643,8 @@ def render_segments(
                             spec["voice"],
                             spec["ref_fingerprint"],
                             spec["ref_text"],
+                            engine=engine,
+                            model_id=model_id,
                         ),
                         "mp3": workdir / f"line_{i:02d}_{j:02d}.mp3",
                         "sidecar": workdir / f"line_{i:02d}_{j:02d}.json",
@@ -1433,8 +1672,7 @@ def render_segments(
     pending = [t for p in plans if not p["cached"] for t in p["takes"] if not t["cached"]]
     model = None
     if pending:
-        model_id = VOICE_DESIGN_MODEL_ID if use_design else MODEL_ID
-        log(f"loading {model_id}...")
+        log(f"loading {model_id} ({engine})...")
         t0 = time.time()
         from mlx_audio.tts.utils import load_model
 
@@ -1471,6 +1709,7 @@ def render_segments(
             t0 = time.time()
             dur_s = _render_take(
                 model,
+                spec=eng,
                 text=take["text"],
                 mode=take["mode"],
                 voice=take["voice"],
@@ -2964,6 +3203,7 @@ def _resume(
             title=data.get("title", title),
             voice=data.get("voice"),
             voice_mode=data.get("voice_mode"),
+            tts_engine=data.get("tts_engine"),
             chapter_count=chapter_count,
             duration_s=duration_s,
             segment_count=len(segments),
@@ -2979,6 +3219,7 @@ def _resume(
                 "title": data.get("title", title),
                 "voice": data.get("voice"),
                 "voice_mode": data.get("voice_mode"),
+                "tts_engine": data.get("tts_engine"),
                 "chapter_count": chapter_count,
                 "duration_s": duration_s,
                 "r2_status": r2_status,
@@ -3003,6 +3244,7 @@ def _ship_web_only(
     title: str,
     voice: str,
     voice_mode: str,
+    tts_engine: str,
     loudnorm: dict[str, Any] | None,
     episode_duration_ms: int,
     record: dict[str, Any],
@@ -3075,6 +3317,7 @@ def _ship_web_only(
                 "title": title,
                 "voice": voice,
                 "voice_mode": voice_mode,
+                "tts_engine": tts_engine,
                 "chapter_count": chapter_count,
                 "duration_s": duration_s,
                 "loudnorm": loudnorm,
@@ -4353,6 +4596,7 @@ def preflight(
     record: dict[str, Any] | None = None,
     web_only: bool = False,
     cover_image: Path | None = None,
+    engine: str = TTS_ENGINE_QWEN3,
 ) -> tuple[bool, list[dict[str, Any]]]:
     """Verify everything the run depends on BEFORE spending a render on it.
 
@@ -4365,7 +4609,10 @@ def preflight(
     R2 check from optional to required. What remains is the local subset plus R2.
 
     `cover_image` (#164) is checked only when the manifest supplies one — a local
-    check, so a --dry-run rehearsal gates the same art a real run would ship."""
+    check, so a --dry-run rehearsal gates the same art a real run would ship.
+
+    `engine` is the manifest's tts_engine: its check (mlx-audio floor + license line)
+    runs right after tts-module, under --dry-run too, because a dry run renders."""
     checks: list[dict[str, Any]] = []
     log("preflight: verifying dependencies, credentials, and capacity...")
 
@@ -4399,6 +4646,7 @@ def preflight(
     )
 
     checks.append(_tts_module_check())
+    checks.append(_tts_engine_check(ENGINES[engine]))
 
     if cover_image is not None:
         art = check_cover_image(cover_image)
@@ -4441,6 +4689,43 @@ def _tts_module_check() -> dict[str, Any]:
         "tts-module",
         spec is not None,
         "mlx_audio importable" if spec else "mlx_audio not installed (see requirements.txt)",
+    )
+
+
+def _installed_mlx_audio_version() -> str | None:
+    """The installed mlx-audio distribution version, None when absent. Metadata
+    only — no import of mlx_audio, same posture as _tts_module_check. A seam so
+    tests never depend on what the host has installed."""
+    try:
+        return importlib.metadata.version("mlx-audio")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _version_tuple(version: str) -> tuple[int, ...]:
+    """ "0.5.10" -> (0, 5, 10). Numeric, so 0.5.10 > 0.5.9; a dev/rc suffix is
+    ignored. Deliberately not `packaging` — one more runtime dependency for one
+    comparison."""
+    return tuple(int(p) for p in re.findall(r"\d+", version)[:3])
+
+
+def _tts_engine_check(spec: EngineSpec) -> dict[str, Any]:
+    """Is the installed mlx-audio new enough for this engine, and does the operator
+    know what they are shipping on? The PASS line carries the label and the
+    LICENSE, because pre-flight is exactly the moment someone is deciding. Absence
+    of the package is tts-module's finding, not this check's: CI has no mlx-audio
+    and stubs that check, and on a real host tts-module already fails the run."""
+    installed = _installed_mlx_audio_version()
+    who = f"{spec.name} ({spec.label}; {spec.license})"
+    if installed is None:
+        return _check("tts-engine", True, f"{who}; mlx-audio not installed — see tts-module")
+    if _version_tuple(installed) >= _version_tuple(spec.min_mlx_audio):
+        return _check("tts-engine", True, f"{who} on mlx-audio {installed}")
+    return _check(
+        "tts-engine",
+        False,
+        f"{spec.name} needs mlx-audio >= {spec.min_mlx_audio}; installed {installed} "
+        f"(python3 -m pip install --user --upgrade 'mlx-audio>={spec.min_mlx_audio}')",
     )
 
 
@@ -4715,6 +5000,7 @@ def _sweep_bloopers_on_failure(record: dict[str, Any]) -> None:
             error_message=record.get("error_message"),
             run_date=record.get("run_date"),
             title=record.get("title"),
+            tts_engine=record.get("tts_engine"),
         )
         record["bloopers_captured"] = (record.get("bloopers_captured") or 0) + len(banked)
     except Exception as e:  # noqa: BLE001 — a failed sweep must not mask the real failure
@@ -4756,6 +5042,11 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
     except (json.JSONDecodeError, OSError) as e:
         die(f"manifest is not valid JSON: {e}")
     validate_manifest(manifest)
+    engine = resolve_tts_engine(manifest)
+    # Recorded here, not beside voice_mode: a pre-flight failure (mlx-audio below
+    # the engine's floor) should name the engine. A refusal inside validate_manifest
+    # leaves it null — the engine was never resolved, and null never guesses.
+    record["tts_engine"] = engine
     # A `lines` scene carries no author-written text, and a segment measuring zero
     # chars is invisible to speech_rate_rows — which would silently disarm the
     # TTS-degeneration gate and the bloopers bin for the whole show (#172). Derive it
@@ -4831,6 +5122,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
             record=record,
             web_only=web_only,
             cover_image=cover_image,
+            engine=engine,
         )
         if not ok:
             failed = ", ".join(c["name"] for c in checks if not c["ok"])
@@ -4844,6 +5136,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
     record["voice_mode"] = voice_mode
 
     log(f"workdir: {workdir}")
+    log(f"tts_engine: {engine} ({ENGINES[engine].label})")
     if ref_audio:
         log(f"voice: {voice} (ref_audio clone)")
         log(f"ref_audio: {ref_audio}")
@@ -4863,6 +5156,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
         ref_text=ref_text,
         raw_text=manifest.get("raw_text", False),
         cast=manifest.get("cast"),
+        engine=engine,
     )
     mark_stage(workdir, "segments", count=len(seg_paths))
     silences_ms = plan_silences(seg_paths)
@@ -4912,6 +5206,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
             run_date=manifest.get("date"),
             title=manifest.get("title"),
             workdir=str(workdir),
+            tts_engine=engine,
         )
     )
     artifact_errors = verify_artifact(
@@ -4962,6 +5257,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
                     "timeline": str(timeline_path),
                     "voice": voice,
                     "voice_mode": voice_mode,
+                    "tts_engine": engine,
                     "chapter_count": chapter_count,
                     "duration_s": duration_s,
                     "loudnorm": loudnorm,
@@ -4988,6 +5284,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
             title=title,
             voice=voice,
             voice_mode=voice_mode,
+            tts_engine=engine,
             loudnorm=loudnorm,
             episode_duration_ms=episode_duration_ms,
             record=record,
@@ -5018,6 +5315,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
                 "title": title,
                 "voice": voice,
                 "voice_mode": voice_mode,
+                "tts_engine": engine,
             },
             indent=2,
         ),
@@ -5082,6 +5380,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
                 "title": title,
                 "voice": voice,
                 "voice_mode": voice_mode,
+                "tts_engine": engine,
                 "chapter_count": chapter_count,
                 "duration_s": duration_s,
                 "loudnorm": loudnorm,

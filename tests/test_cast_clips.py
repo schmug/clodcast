@@ -293,7 +293,9 @@ def test_a_preset_cast_members_key_is_unchanged_by_the_clone_path(tmp_path, fake
     every scene on the next resume."""
     text = "A preset line."
     prepped = render._prep_segment_text(text, False)
-    expected = render._segment_cache_key(prepped, "preset", "Aiden", None, None)
+    expected = render._segment_cache_key(
+        prepped, "preset", "Aiden", None, None, engine="qwen3", model_id=render.MODEL_ID
+    )
 
     render.render_segments([_scene(("Ada", text))], "Ryan", tmp_path, cast={"Ada": "Aiden"})
 
