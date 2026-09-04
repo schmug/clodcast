@@ -27,6 +27,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Analysis deps for the TTS eval bench (skills/tts-eval/bench.py, #200). NEVER
+# runtime deps: nothing in a render needs a transcriber or a speaker encoder, and
+# the bench imports them function-locally so `import bench` works without them.
+bench = [
+    "mlx-whisper",
+    "librosa",
+    "resemblyzer",
+]
 dev = [
     "pytest>=8.0",
     # ruff is pinned exactly (not a floor) so lint results are reproducible across
@@ -75,4 +83,5 @@ known-first-party = [
     "st_gather",
     "st_script_plan",
     "st_write",
+    "bench",
 ]
