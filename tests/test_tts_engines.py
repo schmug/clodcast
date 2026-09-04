@@ -54,3 +54,80 @@ def test_the_daily_shows_constants_alias_the_qwen3_entry():
     assert render.VOICE_DESIGN_MODEL_ID == q.design_model_id
     assert render.VOICES == list(q.presets) == ["Ryan", "Aiden", "Ethan", "Chelsie"]
     assert q.max_take_chars is None and q.max_tokens is None
+
+
+# --- capabilities gate the voice modes; the ceiling gates the text (spec §3) ------
+
+
+@pytest.mark.parametrize("voice", ["random", "Ryan", "Chelsie"])
+def test_breeze_refuses_a_preset_episode_voice(voice, capsys):
+    with pytest.raises(SystemExit):
+        render.validate_manifest(_manifest(tts_engine="breeze", voice=voice))
+    assert "breeze has no presets" in capsys.readouterr().err
+
+
+def test_breeze_refuses_a_preset_cast_entry(capsys):
+    m = _manifest(
+        tts_engine="breeze",
+        cast={"anchor": "Ryan"},
+        segments=[{"lines": [{"speaker": "anchor", "text": "hi"}]}],
+    )
+    with pytest.raises(SystemExit):
+        render.validate_manifest(m)
+    assert "cast['anchor']" in capsys.readouterr().err
+
+
+def test_breeze_accepts_clones_and_a_designed_voice():
+    clip = {"ref_audio": "/tmp/ryan.wav", "ref_text": "a transcript"}
+    render.validate_manifest(_manifest(tts_engine="breeze"))  # voice defaults to "house"
+    render.validate_manifest(
+        _manifest(
+            tts_engine="breeze",
+            cast={"a": clip},
+            segments=[{"lines": [{"speaker": "a", "text": "hi"}]}],
+        )
+    )
+    render.validate_manifest(
+        _manifest(tts_engine="breeze", voice="custom", voice_instruct="a calm man")
+    )
+
+
+@pytest.mark.parametrize("engine", ["qwen3", "breeze"])
+def test_voice_instruct_with_a_cast_still_dies_on_every_engine(engine):
+    clip = {"ref_audio": "/tmp/ryan.wav", "ref_text": "a transcript"}
+    m = _manifest(
+        tts_engine=engine,
+        voice_instruct="a calm man",
+        cast={"a": clip},
+        segments=[{"lines": [{"speaker": "a", "text": "hi"}]}],
+    )
+    with pytest.raises(SystemExit):
+        render.validate_manifest(m)
+
+
+def test_qwen3_still_accepts_random_and_presets():
+    for voice in ("random", "Ryan", "house"):
+        render.validate_manifest(_manifest(voice=voice))
+
+
+def test_breeze_refuses_a_segment_over_its_take_ceiling(capsys):
+    with pytest.raises(SystemExit):
+        render.validate_manifest(_manifest(tts_engine="breeze", segments=[{"text": "x" * 501}]))
+    assert "renders at most 500 per take" in capsys.readouterr().err
+    render.validate_manifest(_manifest(tts_engine="breeze", segments=[{"text": "x" * 500}]))
+
+
+def test_breeze_refuses_a_scene_line_over_its_take_ceiling(capsys):
+    clip = {"ref_audio": "/tmp/ryan.wav", "ref_text": "a transcript"}
+    m = _manifest(
+        tts_engine="breeze",
+        cast={"a": clip},
+        segments=[{"lines": [{"speaker": "a", "text": "ok"}, {"speaker": "a", "text": "y" * 501}]}],
+    )
+    with pytest.raises(SystemExit):
+        render.validate_manifest(m)
+    assert "segment[0] line 1 is 501 chars" in capsys.readouterr().err
+
+
+def test_qwen3_has_no_take_ceiling():
+    render.validate_manifest(_manifest(segments=[{"text": "x" * 3000}]))

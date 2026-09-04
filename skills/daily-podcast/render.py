@@ -971,6 +971,58 @@ def _validate_scene(i: int, lines: Any, cast: dict[str, Any] | None) -> None:
             die(f"{where}.speaker {speaker!r} is not in the manifest 'cast' ({known})")
 
 
+def _validate_engine_capabilities(manifest: dict[str, Any], spec: EngineSpec) -> None:
+    """Refuse, BEFORE the model load, any voice mode the chosen engine lacks, naming
+    the engine and the capability. Breeze has no presets: without this, `voice:
+    "Ryan"` would pass validation (Ryan is a Qwen3 preset), reach the Breeze adapter
+    as a speaker tag, and render a stranger with no error anywhere. Pure."""
+    no_presets = f"engine {spec.name} has no presets"
+    instruct = manifest.get("voice_instruct")
+    voice = manifest.get("voice", "house")
+    if instruct:
+        if not spec.has("design"):
+            die(f"manifest sets 'voice_instruct', but engine {spec.name} cannot design a voice")
+    elif voice == "house":
+        if not spec.has("clone"):
+            die(f'manifest voice "house" is a clip clone, but engine {spec.name} cannot clone')
+    elif voice == "random" or voice in VOICES:
+        if not spec.has("preset"):
+            die(f"manifest voice {voice!r} is a preset, but {no_presets}")
+    for speaker, cast_voice in (manifest.get("cast") or {}).items():
+        if isinstance(cast_voice, dict):
+            if not spec.has("clone"):
+                die(f"manifest cast[{speaker!r}] is a clip, but engine {spec.name} cannot clone")
+        elif not spec.has("preset"):
+            die(f"manifest cast[{speaker!r}] = {cast_voice!r} is a preset, but {no_presets}")
+
+
+def _validate_take_lengths(segments: list[dict], spec: EngineSpec) -> None:
+    """Refuse any take longer than the engine's measured ceiling BEFORE the render.
+    This is not a cosmetic limit: past it Breeze derails into babble about one take
+    in five, and the speech-rate gate cannot see that (the rate stays normal and
+    whisper transcribes babble as words). Pure."""
+    cap = spec.max_take_chars
+    if cap is None:
+        return
+    for i, seg in enumerate(segments):
+        lines = segment_lines(seg)
+        if lines is None:
+            n = len(seg["text"])
+            if n > cap:
+                die(
+                    f"manifest segment[{i}] is {n} chars; "
+                    f"engine {spec.name} renders at most {cap} per take"
+                )
+            continue
+        for j, line in enumerate(lines):
+            n = len(line.get("text") or "") if isinstance(line, dict) else 0
+            if n > cap:
+                die(
+                    f"manifest segment[{i}] line {j} is {n} chars; "
+                    f"engine {spec.name} renders at most {cap} per take"
+                )
+
+
 def validate_manifest(manifest: dict[str, Any]) -> None:
     """
     Fail fast (via die) on a malformed manifest BEFORE the ~15s model load, naming
@@ -984,6 +1036,16 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         val = manifest.get(field)
         if not isinstance(val, str) or not val.strip():
             die(f"manifest '{field}' is required and must be a non-empty string")
+
+    # Engine is a closed set for the same reason as ship_mode: a typo must die rather
+    # than fall back to Qwen3 and quietly render a show on the wrong model. Resolved
+    # first so a bad engine name is named before its capabilities are consulted; the
+    # capability and take-length checks hang off `spec` at the end.
+    engine = manifest.get("tts_engine")
+    if engine is not None and engine not in TTS_ENGINES:
+        shown = "{" + ", ".join(f'"{e}"' for e in TTS_ENGINES) + "}"
+        die(f"manifest 'tts_engine' must be one of {shown} or unset (got {engine!r})")
+    spec = engine_spec(manifest)
 
     # The cast is validated before the segments because every line's `speaker` is
     # checked against it (#172). The house voice is deliberately excluded from the
@@ -1054,6 +1116,10 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
     for field in ("voice_instruct", "show_id"):
         if manifest.get(field) is not None and not isinstance(manifest[field], str):
             die(f"manifest '{field}' must be a string")
+    # Both run after the segments loop has proved every plain segment has a string
+    # `text` and every scene's lines are well-formed, so they index without re-checking.
+    _validate_engine_capabilities(manifest, spec)
+    _validate_take_lengths(segments, spec)
     # A second show publishes into the same R2 bucket; a bare-filename key keeps
     # its web feed out of the daily show's manifest.json without touching episode
     # object paths (#118). THREAT MODEL: the key names an R2 object the publish
@@ -1135,14 +1201,6 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
                 "manifest 'description_footer_text' is plain text (render.py escapes "
                 f"it into the footer <p>); remove the markup (got {footer_text!r})"
             )
-    # Engine is a closed set for the same reason as ship_mode: a typo must die rather
-    # than fall back to Qwen3 and quietly render a show on the wrong model. Checked
-    # here, after the voice checks, so a bad engine name is named before its
-    # capabilities are consulted (Task 2 hangs the capability checks off it).
-    engine = manifest.get("tts_engine")
-    if engine is not None and engine not in TTS_ENGINES:
-        shown = "{" + ", ".join(f'"{e}"' for e in TTS_ENGINES) + "}"
-        die(f"manifest 'tts_engine' must be one of {shown} or unset (got {engine!r})")
     # Ship mode is a closed set (#155): an unrecognized value must never fall back
     # to the Spotify default, because for an RSS-first show that means uploading to
     # a deprecated show instead of failing. Typos ("webb", "WEB") die here.
