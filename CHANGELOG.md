@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 This file is generated from conventional commits by [git-cliff](https://git-cliff.org).
 
+## [0.1.11](https://github.com/schmug/clodcast/compare/v0.1.10...v0.1.11) (2026-09-04)
+
+
+### Features
+
+* **frontier-commits:** guard the weekly run against a same-week double ship ([#198](https://github.com/schmug/clodcast/issues/198)) ([6c451eb](https://github.com/schmug/clodcast/commit/6c451ebb88a3f3d92850e0af9ca454fc7638045f)), closes [#197](https://github.com/schmug/clodcast/issues/197)
+
 ## [0.1.10](https://github.com/schmug/clodcast/compare/v0.1.9...v0.1.10) (2026-09-03)
 
 
