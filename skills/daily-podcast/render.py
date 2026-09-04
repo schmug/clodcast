@@ -4490,6 +4490,15 @@ _INCIDENT_SIGNATURES: tuple[tuple[str, str], ...] = (
     ("preflight failed", "preflight-failed"),
     ("previously rejected", "rejected-artifact"),
     ("speech rate", "tts-degeneration"),
+    # strptime's two rejection strings, not "ValueError": the run hook records only
+    # `f"{type(e).__name__}: {e}"`, and the exception type alone would drag every
+    # unrelated ValueError into a playbook about date forms. Both literals are
+    # strptime-exclusive and cover one bug shape — a date handed to a parser told to
+    # expect the other form. Above "manifest" only because that needle is broad;
+    # a malformed manifest date never reaches here (resolve_cover_date and
+    # validate_manifest both die() with their own diagnostic first).
+    ("does not match format", "date-format-crash"),
+    ("unconverted data remains", "date-format-crash"),
     ("manifest", "manifest-invalid"),
 )
 
