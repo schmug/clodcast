@@ -1395,9 +1395,78 @@ def _cache_hit(workdir: Path, i: int, key: str) -> bool:
 # --- audio rendering -------------------------------------------------------
 
 
+# Voice design on Breeze is classifier-free guidance over the instruction; 4.0 is
+# the publisher's documented default and the value the 2026-09-04 eval used.
+BREEZE_CFG_SCALE = 4.0
+
+
+def _generate_qwen3(
+    model: Any,
+    spec: EngineSpec,
+    *,
+    text: str,
+    mode: str,
+    voice: str,
+    voice_instruct: str | None,
+    ref_audio: str | None,
+    ref_text: str | None,
+) -> list[Any]:
+    """The single-engine renderer's three branches, kwargs byte-for-byte."""
+    if mode == "clone":
+        return list(
+            model.generate(text=text, language="English", ref_audio=ref_audio, ref_text=ref_text)
+        )
+    if mode == "design":
+        return list(
+            model.generate_voice_design(text=text, language="English", instruct=voice_instruct)
+        )
+    return list(model.generate(text=text, voice=voice, language="English"))
+
+
+def _generate_breeze(
+    model: Any,
+    spec: EngineSpec,
+    *,
+    text: str,
+    mode: str,
+    voice: str,
+    voice_instruct: str | None,
+    ref_audio: str | None,
+    ref_text: str | None,
+) -> list[Any]:
+    """Breeze clones and designs on ONE model through generate(); the cap is passed
+    explicitly (spec §2). No preset branch: validate_manifest refuses presets on
+    this engine, and a direct caller that reaches here dies rather than handing a
+    Qwen3 preset name to Breeze as a speaker tag."""
+    if mode == "clone":
+        return list(
+            model.generate(
+                text=text, ref_audio=ref_audio, ref_text=ref_text, max_tokens=spec.max_tokens
+            )
+        )
+    if mode == "design":
+        return list(
+            model.generate(
+                text=text,
+                instruct=voice_instruct,
+                cfg_scale=BREEZE_CFG_SCALE,
+                max_tokens=spec.max_tokens,
+            )
+        )
+    die(f"engine {spec.name} has no presets; refusing to render mode {mode!r} (voice {voice!r})")
+    return []  # unreachable; die() exits
+
+
+_ENGINE_GENERATORS = {
+    TTS_ENGINE_QWEN3: _generate_qwen3,
+    TTS_ENGINE_BREEZE: _generate_breeze,
+}
+
+
 def _render_take(
     model: Any,
     *,
+    spec: EngineSpec,
     text: str,
     mode: str,
     voice: str,
@@ -1415,31 +1484,16 @@ def _render_take(
     import numpy as np
     import soundfile as sf
 
-    if mode == "clone":
-        results = list(
-            model.generate(
-                text=text,
-                language="English",
-                ref_audio=ref_audio,
-                ref_text=ref_text,
-            )
-        )
-    elif mode == "design":
-        results = list(
-            model.generate_voice_design(
-                text=text,
-                language="English",
-                instruct=voice_instruct,
-            )
-        )
-    else:
-        results = list(
-            model.generate(
-                text=text,
-                voice=voice,
-                language="English",
-            )
-        )
+    results = _ENGINE_GENERATORS[spec.name](
+        model,
+        spec,
+        text=text,
+        mode=mode,
+        voice=voice,
+        voice_instruct=voice_instruct,
+        ref_audio=ref_audio,
+        ref_text=ref_text,
+    )
     audio = np.concatenate([np.array(r.audio) for r in results])
     wav = mp3.with_suffix(".wav")
     sf.write(wav, audio, SAMPLE_RATE)
@@ -1473,6 +1527,7 @@ def render_segments(
     ref_text: str | None = None,
     raw_text: bool = False,
     cast: dict[str, str] | None = None,
+    engine: str = TTS_ENGINE_QWEN3,
 ) -> list[Path]:
     """
     Render each segment text to an mp3 in workdir; return list of mp3 paths.
@@ -1504,6 +1559,12 @@ def render_segments(
     use_clone = bool(ref_audio)
     use_design = bool(voice_instruct) and not use_clone
     mode = "clone" if use_clone else ("design" if use_design else "preset")
+    eng = ENGINES[engine]
+    # Which weights this run loads. Only an engine with a SEPARATE design model
+    # switches for voice_instruct; Breeze designs on its base model and so always
+    # pays one load (spec §4). Resolved here, before the plans, because the id is
+    # part of every take's key. (`spec` below is a resolved CAST member, not this.)
+    model_id = eng.design_model_id if (use_design and eng.design_model_id) else eng.base_model_id
     # In design mode the instruct is what shapes the voice, so it must be part of
     # the key; otherwise the voice label is. Resolve the ref-audio fingerprint once.
     key_voice = voice_instruct if use_design else voice
@@ -1543,8 +1604,8 @@ def render_segments(
                         key_voice or "",
                         ref_fingerprint,
                         ref_text,
-                        engine=TTS_ENGINE_QWEN3,
-                        model_id=VOICE_DESIGN_MODEL_ID if use_design else MODEL_ID,
+                        engine=engine,
+                        model_id=model_id,
                     ),
                     "mp3": workdir / f"seg_{i:02d}.mp3",
                     "sidecar": workdir / f"seg_{i:02d}.json",
@@ -1580,8 +1641,8 @@ def render_segments(
                             spec["voice"],
                             spec["ref_fingerprint"],
                             spec["ref_text"],
-                            engine=TTS_ENGINE_QWEN3,
-                            model_id=VOICE_DESIGN_MODEL_ID if use_design else MODEL_ID,
+                            engine=engine,
+                            model_id=model_id,
                         ),
                         "mp3": workdir / f"line_{i:02d}_{j:02d}.mp3",
                         "sidecar": workdir / f"line_{i:02d}_{j:02d}.json",
@@ -1609,8 +1670,7 @@ def render_segments(
     pending = [t for p in plans if not p["cached"] for t in p["takes"] if not t["cached"]]
     model = None
     if pending:
-        model_id = VOICE_DESIGN_MODEL_ID if use_design else MODEL_ID
-        log(f"loading {model_id}...")
+        log(f"loading {model_id} ({engine})...")
         t0 = time.time()
         from mlx_audio.tts.utils import load_model
 
@@ -1647,6 +1707,7 @@ def render_segments(
             t0 = time.time()
             dur_s = _render_take(
                 model,
+                spec=eng,
                 text=take["text"],
                 mode=take["mode"],
                 voice=take["voice"],
@@ -4932,6 +4993,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
     except (json.JSONDecodeError, OSError) as e:
         die(f"manifest is not valid JSON: {e}")
     validate_manifest(manifest)
+    engine = resolve_tts_engine(manifest)
     # A `lines` scene carries no author-written text, and a segment measuring zero
     # chars is invisible to speech_rate_rows — which would silently disarm the
     # TTS-degeneration gate and the bloopers bin for the whole show (#172). Derive it
@@ -5020,6 +5082,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
     record["voice_mode"] = voice_mode
 
     log(f"workdir: {workdir}")
+    log(f"tts_engine: {engine} ({ENGINES[engine].label})")
     if ref_audio:
         log(f"voice: {voice} (ref_audio clone)")
         log(f"ref_audio: {ref_audio}")
@@ -5039,6 +5102,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
         ref_text=ref_text,
         raw_text=manifest.get("raw_text", False),
         cast=manifest.get("cast"),
+        engine=engine,
     )
     mark_stage(workdir, "segments", count=len(seg_paths))
     silences_ms = plan_silences(seg_paths)

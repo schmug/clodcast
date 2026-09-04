@@ -6,6 +6,11 @@ load. Qwen3's path is byte-identical to the single-engine renderer it replaces."
 
 from __future__ import annotations
 
+import json
+import sys
+import types
+from pathlib import Path
+
 import pytest
 
 import render
@@ -144,3 +149,173 @@ def test_cache_key_changes_with_the_engine_and_the_model_id():
     assert k != render._segment_cache_key(**base, engine="qwen3", model_id="m2")
     # Still sensitive to everything it was sensitive to before.
     assert k != render._segment_cache_key(**{**base, "text": "u"}, engine="qwen3", model_id="m1")
+
+
+# --- dispatch (spec §4) --------------------------------------------------------
+
+
+class _FakeAudioResult:
+    def __init__(self, n: int = 4):
+        self.audio = [0.0] * n
+
+
+@pytest.fixture
+def fake_tts(monkeypatch):
+    """tests/test_lines.py's fake_tts, recording the FULL kwargs and the method
+    name, because this file is about the kwargs each engine receives."""
+    calls: list[dict] = []
+    model_loads: list[str] = []
+
+    class FakeModel:
+        def generate(self, text, **kw):
+            calls.append({"method": "generate", "text": text, **kw})
+            return [_FakeAudioResult()]
+
+        def generate_voice_design(self, text, **kw):
+            calls.append({"method": "generate_voice_design", "text": text, **kw})
+            return [_FakeAudioResult()]
+
+    fake_np = types.ModuleType("numpy")
+    fake_np.concatenate = lambda arrs: [x for a in arrs for x in a]
+    fake_np.array = lambda x: list(x)
+    monkeypatch.setitem(sys.modules, "numpy", fake_np)
+    fake_sf = types.ModuleType("soundfile")
+    fake_sf.write = lambda path, audio, sr: Path(path).write_bytes(b"\x00")
+    monkeypatch.setitem(sys.modules, "soundfile", fake_sf)
+    mlx_audio = types.ModuleType("mlx_audio")
+    mlx_tts = types.ModuleType("mlx_audio.tts")
+    mlx_utils = types.ModuleType("mlx_audio.tts.utils")
+
+    def _load_model(model_id):
+        model_loads.append(model_id)
+        return FakeModel()
+
+    mlx_utils.load_model = _load_model
+    monkeypatch.setitem(sys.modules, "mlx_audio", mlx_audio)
+    monkeypatch.setitem(sys.modules, "mlx_audio.tts", mlx_tts)
+    monkeypatch.setitem(sys.modules, "mlx_audio.tts.utils", mlx_utils)
+
+    def fake_run(cmd, **kw):
+        Path(cmd[-1]).write_bytes(b"\x00")  # ffmpeg writes its output last
+        return None
+
+    monkeypatch.setattr(render, "run", fake_run)
+    return types.SimpleNamespace(calls=calls, model_loads=model_loads)
+
+
+def _clip(tmp_path):
+    ref = tmp_path / "ref.wav"
+    ref.write_bytes(b"RIFF")
+    return str(ref)
+
+
+def test_qwen3_clone_kwargs_are_byte_identical_to_the_single_engine_renderer(tmp_path, fake_tts):
+    ref = _clip(tmp_path)
+    render.render_segments(
+        [{"text": "hello there"}], "house", tmp_path, ref_audio=ref, ref_text="hi", engine="qwen3"
+    )
+    assert fake_tts.model_loads == [render.MODEL_ID]
+    assert fake_tts.calls == [
+        {
+            "method": "generate",
+            "text": "hello there",
+            "language": "English",
+            "ref_audio": ref,
+            "ref_text": "hi",
+        }
+    ]
+
+
+def test_qwen3_preset_kwargs_are_unchanged(tmp_path, fake_tts):
+    render.render_segments([{"text": "hello there"}], "Ryan", tmp_path, engine="qwen3")
+    assert fake_tts.calls == [
+        {"method": "generate", "text": "hello there", "voice": "Ryan", "language": "English"}
+    ]
+
+
+def test_qwen3_design_still_loads_the_second_model(tmp_path, fake_tts):
+    render.render_segments(
+        [{"text": "hello there"}], "custom", tmp_path, voice_instruct="a calm man", engine="qwen3"
+    )
+    assert fake_tts.model_loads == [render.VOICE_DESIGN_MODEL_ID]
+    assert fake_tts.calls == [
+        {
+            "method": "generate_voice_design",
+            "text": "hello there",
+            "language": "English",
+            "instruct": "a calm man",
+        }
+    ]
+
+
+def test_breeze_clone_passes_the_cap_and_no_language(tmp_path, fake_tts):
+    ref = _clip(tmp_path)
+    render.render_segments(
+        [{"text": "hello there"}], "house", tmp_path, ref_audio=ref, ref_text="hi", engine="breeze"
+    )
+    assert fake_tts.model_loads == [render.ENGINES["breeze"].base_model_id]
+    assert fake_tts.calls == [
+        {
+            "method": "generate",
+            "text": "hello there",
+            "ref_audio": ref,
+            "ref_text": "hi",
+            "max_tokens": 750,
+        }
+    ]
+
+
+def test_breeze_design_runs_on_the_base_model(tmp_path, fake_tts):
+    render.render_segments(
+        [{"text": "hello there"}], "custom", tmp_path, voice_instruct="a calm man", engine="breeze"
+    )
+    assert fake_tts.model_loads == [render.ENGINES["breeze"].base_model_id]
+    assert fake_tts.calls == [
+        {
+            "method": "generate",
+            "text": "hello there",
+            "instruct": "a calm man",
+            "cfg_scale": 4.0,
+            "max_tokens": 750,
+        }
+    ]
+
+
+def test_breeze_cast_clip_lines_render_through_the_clone_form(tmp_path, fake_tts):
+    ref = _clip(tmp_path)
+    seg = {"lines": [{"speaker": "a", "text": "one"}, {"speaker": "a", "text": "two"}]}
+    render.render_segments(
+        [seg], "Ryan", tmp_path, cast={"a": {"ref_audio": ref, "ref_text": "hi"}}, engine="breeze"
+    )
+    assert fake_tts.model_loads == [render.ENGINES["breeze"].base_model_id]
+    assert [c["text"] for c in fake_tts.calls] == ["one", "two"]
+    assert all(c["max_tokens"] == 750 and "language" not in c for c in fake_tts.calls)
+
+
+def test_a_breeze_preset_take_dies_rather_than_rendering_a_stranger(tmp_path):
+    with pytest.raises(SystemExit):
+        render._render_take(
+            object(),
+            spec=render.ENGINES["breeze"],
+            text="x",
+            mode="preset",
+            voice="Ryan",
+            voice_instruct=None,
+            ref_audio=None,
+            ref_text=None,
+            mp3=tmp_path / "a.mp3",
+        )
+
+
+def test_the_take_key_records_the_engine_that_rendered_it(tmp_path, fake_tts):
+    ref = _clip(tmp_path)
+    render.render_segments(
+        [{"text": "hello there"}], "house", tmp_path, ref_audio=ref, ref_text="hi", engine="qwen3"
+    )
+    k_qwen = json.loads((tmp_path / "seg_01.json").read_text())["key"]
+    render.render_segments(
+        [{"text": "hello there"}], "house", tmp_path, ref_audio=ref, ref_text="hi", engine="breeze"
+    )
+    k_breeze = json.loads((tmp_path / "seg_01.json").read_text())["key"]
+    assert k_qwen != k_breeze
+    assert len(fake_tts.calls) == 2  # the second engine did not reuse the first's take
