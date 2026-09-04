@@ -39,6 +39,7 @@ import argparse
 import datetime as dt
 import hashlib
 import html
+import importlib.metadata
 import importlib.util
 import json
 import math
@@ -53,19 +54,109 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 # --- constants -------------------------------------------------------------
 
-VOICES = ["Ryan", "Aiden", "Ethan", "Chelsie"]
 # The two halves of a recorded cast clip (#177) — a manifest `cast` value is either
 # a preset name from VOICES or exactly these two keys. Both are needed: the clip is
 # what the model imitates, the transcript is what it believes the clip says, and a
 # clone rendered against the wrong transcript drifts audibly.
 CAST_CLIP_FIELDS = ("ref_audio", "ref_text")
-MODEL_ID = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit"
-VOICE_DESIGN_MODEL_ID = "mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16"
+
+# --- TTS engines ------------------------------------------------------------
+#
+# Which model renders an episode is a property of the SHOW, chosen by the manifest's
+# `tts_engine` key — a closed whitelist, default "qwen3" — the ship_mode posture for
+# the ship_mode reason: a re-run must render the way it rendered before, and a flag
+# that can go missing on one invocation would silently render a different voice.
+# Every engine declares what it can do, and validate_manifest refuses a voice mode
+# the chosen engine lacks BEFORE the model load; the alternative — passing a Qwen3
+# preset name through as a Breeze speaker tag — renders a stranger with no error,
+# the silent wrong-voice class #177 closed. Design: docs/superpowers/specs/
+# 2026-09-04-tts-engine-registry-design.md.
+TTS_ENGINE_QWEN3 = "qwen3"
+TTS_ENGINE_BREEZE = "breeze"
+TTS_ENGINES = (TTS_ENGINE_QWEN3, TTS_ENGINE_BREEZE)
+ENGINE_CAPABILITIES = frozenset({"preset", "clone", "design", "events", "direction"})
+
+
+@dataclass(frozen=True)
+class EngineSpec:
+    """One TTS engine: the models it loads, what it can do, the limits the renderer
+    enforces on its behalf, and what an operator must know before shipping on it.
+
+    `events` and `direction` are DECLARED, not consumed: nothing in render.py reads
+    them yet. They exist for the eval bench and for capability-gated script
+    features (spec slices 2 and 3)."""
+
+    name: str
+    label: str
+    base_model_id: str
+    design_model_id: str | None  # None: voice design runs on the base model
+    capabilities: frozenset[str]
+    presets: tuple[str, ...]
+    max_take_chars: int | None  # None: no observed ceiling
+    max_tokens: int | None  # None: never passed to generate()
+    min_mlx_audio: str
+    license: str
+
+    def has(self, capability: str) -> bool:
+        return capability in self.capabilities
+
+
+ENGINES: dict[str, EngineSpec] = {
+    TTS_ENGINE_QWEN3: EngineSpec(
+        name=TTS_ENGINE_QWEN3,
+        label="Qwen3-TTS 1.7B",
+        base_model_id="mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit",
+        design_model_id="mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16",
+        capabilities=frozenset({"preset", "clone", "design"}),
+        presets=("Ryan", "Aiden", "Ethan", "Chelsie"),
+        max_take_chars=None,
+        max_tokens=None,
+        min_mlx_audio="0.4.3",
+        license="Apache 2.0",
+    ),
+    TTS_ENGINE_BREEZE: EngineSpec(
+        name=TTS_ENGINE_BREEZE,
+        label="Breeze-TTS-2 3B",
+        base_model_id="mlx-community/Breeze-TTS-2-mlx-8bit",
+        design_model_id=None,
+        capabilities=frozenset({"clone", "design", "events", "direction"}),
+        presets=(),
+        # Measured 2026-09-04 (see the spec): 0 of 24 takes <= 533 chars derailed;
+        # 1 in 5 did at 592, 839 and 1000 chars. The derailment is the model's own
+        # past ~35 s of audio, not the token cap, and the speech-rate gate cannot see
+        # it — the rate stays normal and whisper transcribes babble as words.
+        max_take_chars=500,
+        # Explicit rather than the library default: 500 chars is ~440 frames at
+        # 12.5/s, and the cap bounds a derailed take at 60 s instead of letting it run.
+        max_tokens=750,
+        min_mlx_audio="0.5.1",
+        license="BreezeBlue Research and Non-Commercial",
+    ),
+}
+
+# The daily show's constants are aliases into the registry so nothing else moves.
+VOICES = list(ENGINES[TTS_ENGINE_QWEN3].presets)
+MODEL_ID = ENGINES[TTS_ENGINE_QWEN3].base_model_id
+VOICE_DESIGN_MODEL_ID = ENGINES[TTS_ENGINE_QWEN3].design_model_id
+
+
+def resolve_tts_engine(manifest: dict[str, Any]) -> str:
+    """The engine an episode renders on: the manifest's `tts_engine`, or "qwen3"
+    when absent. A falsy value is "absent" here and a whitelist miss in
+    validate_manifest, exactly like resolve_ship_mode / SHIP_MODES."""
+    return manifest.get("tts_engine") or TTS_ENGINE_QWEN3
+
+
+def engine_spec(manifest: dict[str, Any]) -> EngineSpec:
+    return ENGINES[resolve_tts_engine(manifest)]
+
+
 SAMPLE_RATE = 24000
 
 # The locked "house" voice for the daily podcast.
@@ -1044,6 +1135,14 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
                 "manifest 'description_footer_text' is plain text (render.py escapes "
                 f"it into the footer <p>); remove the markup (got {footer_text!r})"
             )
+    # Engine is a closed set for the same reason as ship_mode: a typo must die rather
+    # than fall back to Qwen3 and quietly render a show on the wrong model. Checked
+    # here, after the voice checks, so a bad engine name is named before its
+    # capabilities are consulted (Task 2 hangs the capability checks off it).
+    engine = manifest.get("tts_engine")
+    if engine is not None and engine not in TTS_ENGINES:
+        shown = "{" + ", ".join(f'"{e}"' for e in TTS_ENGINES) + "}"
+        die(f"manifest 'tts_engine' must be one of {shown} or unset (got {engine!r})")
     # Ship mode is a closed set (#155): an unrecognized value must never fall back
     # to the Spotify default, because for an RSS-first show that means uploading to
     # a deprecated show instead of failing. Typos ("webb", "WEB") die here.
