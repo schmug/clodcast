@@ -343,12 +343,19 @@ def test_bench_renders_candidate_and_control_and_writes_both_artifacts(
         rows = on_disk["engines"][name]["takes"]
         assert len(rows) == 22
         assert on_disk["engines"][name]["license"] == render.ENGINES[name].license
-        # The fake engine reads markers aloud (Qwen3's behaviour), so the events
-        # take alone carries two inserted words — and names them.
         assert all(r["wer"] == 0.0 for r in rows if r["kind"] != "events")
         events = next(r for r in rows if r["kind"] == "events")
-        assert 0 < events["wer"] < bench.DERAIL_WER
-        assert events["markers_heard"] == ["laugh", "sigh"]
+        if render.ENGINES[name].has("events"):
+            # The fake engine reads markers aloud, so on the engine that is HANDED
+            # them the events take alone carries two inserted words — and names them.
+            assert 0 < events["wer"] < bench.DERAIL_WER
+            assert events["markers_heard"] == ["laugh", "sigh"]
+        else:
+            # render.py strips the markers before an engine without `events` sees
+            # them (#201), so the probe measures the take a show would ship — which
+            # has none to hear. The bench renders through the registry, never
+            # around it, and this is that invariant showing.
+            assert events["wer"] == 0.0 and events["markers_heard"] == []
         assert all(r["derailed"] is False for r in rows)
         # Every clone take was cloned from its own clip and recognised as it.
         clone_rows = [r for r in rows if r["kind"] != "direction"]

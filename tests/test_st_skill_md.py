@@ -182,3 +182,24 @@ def test_skill_md_carries_the_unarguable_post_gate():
     assert "not every post is arguable" in text
     for cue in ("grief", "illness"):
         assert cue in text, f"the unarguable-post gate must name {cue}"
+
+
+def test_skill_md_tts_rules_table_matches_the_code():
+    """Which markers and which direction words are allowed on which engine (#201)
+    are code (`render.EVENT_MARKERS`, `st_write.DIRECTIONS`, the per-scene
+    budget) — the table is what the writer's prompt and a human both read."""
+    rows = _first_table_after("### TTS rules")
+    assert [r[0] for r in rows] == list(render.ENGINES), "the TTS rules table drifted"
+    for row in rows:
+        spec = render.ENGINES[row[0]]
+        markers = ", ".join(f"({m})" for m in render.EVENT_MARKERS)
+        assert row[1] == (markers if spec.has("events") else "none"), row[0]
+        words = ", ".join(st_write.DIRECTIONS)
+        assert row[2] == (words if spec.has("direction") else "none"), row[0]
+        budget = st_write.MAX_DIRECTED_LINES_PER_SCENE if spec.has("direction") else 0
+        assert row[3] == str(budget), row[0]
+
+
+def test_skill_md_manifest_documents_a_directed_line():
+    manifest = _section("## Manifest")
+    assert '"instruct"' in manifest, "the documented manifest must show a directed line"

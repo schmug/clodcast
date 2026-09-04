@@ -869,6 +869,35 @@ def resolve_cover_image(manifest: dict[str, Any], manifest_path: Path) -> Path |
 
 LINE_TEXT_JOINER = " "
 
+# --- vocal events (#201) ----------------------------------------------------
+#
+# The closed list of inline markers an engine with the `events` capability
+# PERFORMS instead of reading: `(laugh)`, `(sigh)`. Measured 2026-09-04 (the
+# registry spec): Breeze laughs and sighs, Qwen3 says "Loff" and "Sigh". A marker
+# is therefore never script. Every measurement of a take reads the text with the
+# markers gone — the derived scene `text`, the speech-rate rows — or an event-heavy
+# scene measures longer than it sounds and the rate gate (#186) skews low. On an
+# engine WITHOUT `events` the renderer strips them from the take before the model
+# sees it, and only logs: a stripped marker is the same line. Direction is the
+# opposite case (refused, never stripped) because a dropped `instruct` is a
+# different performance and nothing would say so. The list is closed on purpose:
+# an unlisted `(cough)` is text to this code, not a marker to be quietly deleted.
+EVENT_MARKERS = ("laugh", "sigh")
+EVENT_MARKER_RE = re.compile(r"\((?:" + "|".join(map(re.escape, EVENT_MARKERS)) + r")\)")
+
+
+def strip_event_markers(text: str) -> str:
+    """The spoken text: every listed marker removed and the gap it leaves closed
+    (a doubled space, a space before punctuation). The identity on a marker-free
+    string — byte for byte, whitespace included — so a clean take's cache key and
+    measurement are untouched by this function existing. Pure."""
+    if not EVENT_MARKER_RE.search(text):
+        return text
+    out = EVENT_MARKER_RE.sub("", text)
+    out = re.sub(r"\s+([,.;:!?])", r"\1", out)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    return out.strip()
+
 
 def segment_lines(seg: Any) -> list[Any] | None:
     """The segment's non-empty `lines` array, or None for a single-voice segment.
@@ -880,12 +909,15 @@ def segment_lines(seg: Any) -> list[Any] | None:
 
 
 def lines_text(lines: list[Any]) -> str:
-    """The spoken text of a scene: its line texts, in order, joined."""
-    return LINE_TEXT_JOINER.join(
-        line["text"].strip()
+    """The spoken text of a scene: its line texts, in order, joined, with every
+    event marker gone (#201) — a performed laugh is not script, so it must not
+    count toward the measured one."""
+    spoken = (
+        strip_event_markers(line["text"]).strip()
         for line in lines
-        if isinstance(line, dict) and isinstance(line.get("text"), str) and line["text"].strip()
+        if isinstance(line, dict) and isinstance(line.get("text"), str)
     )
+    return LINE_TEXT_JOINER.join(text for text in spoken if text)
 
 
 def materialize_line_text(manifest: dict[str, Any]) -> None:
@@ -968,6 +1000,9 @@ def _validate_scene(i: int, lines: Any, cast: dict[str, Any] | None) -> None:
             die(f"{where} missing required field 'speaker'")
         if not isinstance(line.get("text"), str) or not line["text"].strip():
             die(f"{where} field 'text' must be a non-empty string")
+        instruct = line.get("instruct")
+        if instruct is not None and (not isinstance(instruct, str) or not instruct.strip()):
+            die(f"{where} field 'instruct' must be a non-empty string when present")
         if not cast or speaker not in cast:
             known = ", ".join(sorted(cast)) if cast else "the manifest has no 'cast'"
             die(f"{where}.speaker {speaker!r} is not in the manifest 'cast' ({known})")
@@ -990,12 +1025,30 @@ def _validate_engine_capabilities(manifest: dict[str, Any], spec: EngineSpec) ->
     elif voice == "random" or voice in VOICES:
         if not spec.has("preset"):
             die(f"manifest voice {voice!r} is a preset, but {no_presets}")
-    for speaker, cast_voice in (manifest.get("cast") or {}).items():
+    cast = manifest.get("cast") or {}
+    for speaker, cast_voice in cast.items():
         if isinstance(cast_voice, dict):
             if not spec.has("clone"):
                 die(f"manifest cast[{speaker!r}] is a clip, but engine {spec.name} cannot clone")
         elif not spec.has("preset"):
             die(f"manifest cast[{speaker!r}] = {cast_voice!r} is a preset, but {no_presets}")
+    # Per-line direction (#201) is REFUSED, never stripped, on an engine without it:
+    # a dropped `instruct` is a different performance and nothing downstream would
+    # say so. It is `instruct` over a CLONE — Breeze's direction form carries the
+    # clip reference and the instruction together — so a preset speaker cannot be
+    # directed even on an engine that has both capabilities.
+    for i, seg in enumerate(manifest.get("segments") or []):
+        for j, line in enumerate(segment_lines(seg) or []):
+            if not isinstance(line, dict) or line.get("instruct") is None:
+                continue
+            where = f"manifest segment[{i}] line {j}"
+            if not spec.has("direction"):
+                die(f"{where} carries 'instruct', but engine {spec.name} cannot direct a voice")
+            if not isinstance(cast.get(line.get("speaker")), dict):
+                die(
+                    f"{where} carries 'instruct', but cast[{line.get('speaker')!r}] is a "
+                    "preset — direction is an instruction over a clone reference"
+                )
 
 
 def _validate_take_lengths(segments: list[dict], spec: EngineSpec) -> None:
@@ -1090,17 +1143,22 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         ):
             die(f"manifest segment[{i}].source_url must be an http(s) URL (got {url!r})")
 
-    # A cast is presets on the base MODEL_ID; voice_instruct routes the episode to
-    # VOICE_DESIGN_MODEL_ID — a SECOND model, roughly doubling the ~15s load, that
-    # also drifts run to run (docs/durable-voices.md). One episode cannot be rendered
-    # from both, so the combination dies here rather than quietly rendering a cast
-    # off the wrong model. Clone mode is fine: it shares the base model.
-    if manifest.get("voice_instruct") and any(
-        isinstance(seg, dict) and seg.get("lines") for seg in segments
+    # A cast runs on the base model; on an engine with a SEPARATE design model
+    # (qwen3's VoiceDesign-bf16) voice_instruct routes the episode there — a second
+    # ~15s load that also drifts run to run (docs/durable-voices.md). One episode
+    # cannot be rendered from both, so the combination dies here rather than quietly
+    # rendering a cast off the wrong model. Per engine since #201: Breeze designs on
+    # the model it clones with (`design_model_id is None`), so a designed narrator
+    # and a cloned cast are one load there. Clone mode is fine everywhere.
+    if (
+        manifest.get("voice_instruct")
+        and spec.design_model_id is not None
+        and any(isinstance(seg, dict) and seg.get("lines") for seg in segments)
     ):
         die(
-            "manifest sets 'voice_instruct' and carries 'lines' segments — VoiceDesign is a "
-            "second model and a multi-voice cast runs on the base model's presets; drop one"
+            "manifest sets 'voice_instruct' and carries 'lines' segments — on engine "
+            f"{spec.name} VoiceDesign is a second model and a multi-voice cast runs on the "
+            "base model; drop one"
         )
 
     voice = manifest.get("voice")
@@ -1333,6 +1391,7 @@ def _segment_cache_key(
     *,
     engine: str,
     model_id: str,
+    instruct: str | None = None,
 ) -> str:
     """Content hash identifying one rendered segment. Any input that changes the
     audio the model would produce changes the key:
@@ -1347,20 +1406,24 @@ def _segment_cache_key(
         audio under the new engine's name with no error. Every sidecar written
         before this field existed misses once; auto workdirs are per-date and
         deleted on success, so that is at most one same-day resume.
+      - `instruct`    : a line's per-take direction (#201) — a directed take is a
+        different take. Folded in ONLY when set, so every undirected take's key is
+        byte-identical to the one it had before the field existed and nothing
+        already banked in a workdir misses.
     Serialized through json so field boundaries can't collide (e.g. "a"+"bc" vs
     "ab"+"c"). Pure; no I/O."""
-    payload = json.dumps(
-        {
-            "text": text,
-            "mode": voice_mode,
-            "voice": voice,
-            "ref_fingerprint": ref_fingerprint,
-            "ref_text": ref_text,
-            "engine": engine,
-            "model_id": model_id,
-        },
-        sort_keys=True,
-    )
+    fields = {
+        "text": text,
+        "mode": voice_mode,
+        "voice": voice,
+        "ref_fingerprint": ref_fingerprint,
+        "ref_text": ref_text,
+        "engine": engine,
+        "model_id": model_id,
+    }
+    if instruct is not None:
+        fields["instruct"] = instruct
+    payload = json.dumps(fields, sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -1412,8 +1475,14 @@ def _generate_qwen3(
     voice_instruct: str | None,
     ref_audio: str | None,
     ref_text: str | None,
+    instruct: str | None = None,
 ) -> list[Any]:
-    """The single-engine renderer's three branches, kwargs byte-for-byte."""
+    """The single-engine renderer's three branches, kwargs byte-for-byte. A
+    per-take direction has no form here (no `direction` capability), and
+    validate_manifest refuses it upstream; a direct caller dies rather than
+    rendering the line undirected as if nothing had been asked."""
+    if instruct:
+        die(f"engine {spec.name} cannot direct a voice; refusing a take with instruct {instruct!r}")
     if mode == "clone":
         return list(
             model.generate(text=text, language="English", ref_audio=ref_audio, ref_text=ref_text)
@@ -1435,12 +1504,29 @@ def _generate_breeze(
     voice_instruct: str | None,
     ref_audio: str | None,
     ref_text: str | None,
+    instruct: str | None = None,
 ) -> list[Any]:
     """Breeze clones and designs on ONE model through generate(); the cap is passed
     explicitly (spec §2). No preset branch: validate_manifest refuses presets on
     this engine, and a direct caller that reaches here dies rather than handing a
-    Qwen3 preset name to Breeze as a speaker tag."""
+    Qwen3 preset name to Breeze as a speaker tag.
+
+    A directed take (#201) is the clone form plus `instruct` — the clip reference
+    and the instruction together, which is what the adapter calls "direction" —
+    under the same CFG scale design uses. An undirected clone's kwargs are
+    unchanged, so its banked takes stay valid."""
     if mode == "clone":
+        if instruct:
+            return list(
+                model.generate(
+                    text=text,
+                    ref_audio=ref_audio,
+                    ref_text=ref_text,
+                    instruct=instruct,
+                    cfg_scale=BREEZE_CFG_SCALE,
+                    max_tokens=spec.max_tokens,
+                )
+            )
         return list(
             model.generate(
                 text=text, ref_audio=ref_audio, ref_text=ref_text, max_tokens=spec.max_tokens
@@ -1476,13 +1562,18 @@ def _render_take(
     ref_audio: str | None,
     ref_text: str | None,
     mp3: Path,
+    instruct: str | None = None,
 ) -> float:
     """Render ONE take — a whole segment, or one line of a multi-voice scene — to a
     mono-44.1k mp3. Returns the generated audio's duration in seconds.
 
     Both callers share this body so the per-line path cannot drift from the
     per-segment one: the mono-44.1k re-assertion in particular is a place the concat
-    invariant can be broken, and there is now one of it rather than two."""
+    invariant can be broken, and there is now one of it rather than two.
+
+    `instruct` is a LINE's direction (#201), distinct from the episode's
+    `voice_instruct`: the latter designs a voice from nothing, the former tells a
+    clone how to deliver one take."""
     import numpy as np
     import soundfile as sf
 
@@ -1495,6 +1586,7 @@ def _render_take(
         voice_instruct=voice_instruct,
         ref_audio=ref_audio,
         ref_text=ref_text,
+        instruct=instruct,
     )
     audio = np.concatenate([np.array(r.audio) for r in results])
     wav = mp3.with_suffix(".wav")
@@ -1572,13 +1664,29 @@ def render_segments(
     key_voice = voice_instruct if use_design else voice
     ref_fingerprint = _ref_audio_fingerprint(ref_audio)
     cast = cast or {}
-    if use_design and any(segment_lines(seg) for seg in segments):
+    if use_design and eng.design_model_id and any(segment_lines(seg) for seg in segments):
         # validate_manifest already rejects this; re-asserted here so the function is
         # honest to a direct caller rather than rendering the cast off the wrong model.
+        # Per engine (#201): only where design is a SEPARATE model is there a wrong one.
         die(
-            "voice_instruct (VoiceDesign) cannot render a 'lines' cast — "
+            f"voice_instruct (VoiceDesign) cannot render a 'lines' cast on engine {engine} — "
             "the cast needs the base model"
         )
+    # An engine without `events` would read a marker aloud ("Loff"), so the take it
+    # renders is the marker-stripped text — the same line, minus what it cannot
+    # perform. Counted and logged rather than refused (#201); the spoken script every
+    # measurement reads is already marker-free (lines_text / speech_rate_rows).
+    hears_events = eng.has("events")
+    stripped_takes = 0
+
+    def _take_text(raw: str) -> str:
+        nonlocal stripped_takes
+        text = _prep_segment_text(raw, raw_text)
+        if not hears_events and EVENT_MARKER_RE.search(text):
+            stripped_takes += 1
+            text = strip_event_markers(text)
+        return text
+
     # Resolved once per MEMBER, not per line: a clip's fingerprint costs a file read,
     # and a four-hander scene would otherwise re-hash the same four clips every turn.
     resolved_cast = {sp: resolve_cast_voice(sp, cv) for sp, cv in cast.items()}
@@ -1590,7 +1698,7 @@ def render_segments(
     for i, seg in enumerate(segments, start=1):
         lines = segment_lines(seg)
         if lines is None:
-            text = _prep_segment_text(seg["text"], raw_text)
+            text = _take_text(seg["text"])
             if not text:
                 die(f"segment {i} has empty text")
             takes = [
@@ -1617,7 +1725,7 @@ def render_segments(
         else:
             takes = []
             for j, line in enumerate(lines, start=1):
-                text = _prep_segment_text(line.get("text") or "", raw_text)
+                text = _take_text(line.get("text") or "")
                 if not text:
                     die(f"segment {i} line {j} has empty text")
                 speaker = line.get("speaker")
@@ -1625,6 +1733,7 @@ def render_segments(
                 if not spec:
                     known = ", ".join(sorted(cast)) if cast else "no cast in the manifest"
                     die(f"segment {i} line {j} speaker {speaker!r} is not in the cast ({known})")
+                instruct = line.get("instruct") or None
                 takes.append(
                     {
                         "text": text,
@@ -1637,6 +1746,10 @@ def render_segments(
                         "voice": spec["voice"],
                         "ref_audio": spec["ref_audio"],
                         "ref_text": spec["ref_text"],
+                        # A directed take is a different take (#201): the direction
+                        # is in its key, and only there — an undirected line's key
+                        # is unchanged, so its banked audio still counts.
+                        "instruct": instruct,
                         "key": _segment_cache_key(
                             text,
                             spec["mode"],
@@ -1645,6 +1758,7 @@ def render_segments(
                             spec["ref_text"],
                             engine=engine,
                             model_id=model_id,
+                            instruct=instruct,
                         ),
                         "mp3": workdir / f"line_{i:02d}_{j:02d}.mp3",
                         "sidecar": workdir / f"line_{i:02d}_{j:02d}.json",
@@ -1662,6 +1776,12 @@ def render_segments(
             }
         )
 
+    if stripped_takes:
+        markers = ", ".join(f"({m})" for m in EVENT_MARKERS)
+        log(
+            f"events: stripped {markers} from {stripped_takes} take(s) — "
+            f"engine {engine} reads a marker aloud instead of performing it"
+        )
     n_hits = sum(p["cached"] for p in plans)
     if n_hits:
         log(f"cache: {n_hits}/{len(segments)} segment(s) reusable from {workdir}")
@@ -1702,9 +1822,10 @@ def render_segments(
             if take["cached"]:
                 log(f"{where} cache hit (voice={take['voice']}), reusing {take['mp3'].name}")
                 continue
+            directed = f", instruct={take['instruct']!r}" if take.get("instruct") else ""
             log(
                 f"{where} rendering ({len(take['text'])} chars, "
-                f"voice={take['voice']}, mode={take['mode']})..."
+                f"voice={take['voice']}, mode={take['mode']}{directed})..."
             )
             t0 = time.time()
             dur_s = _render_take(
@@ -1720,6 +1841,7 @@ def render_segments(
                 ref_audio=take["ref_audio"],
                 ref_text=take["ref_text"],
                 mp3=take["mp3"],
+                instruct=take.get("instruct"),
             )
             # Write the sidecar only AFTER the mp3 is on disk, so a crash between the
             # two never records a cache hit for a half-written take. _atomic_write_text
@@ -4295,7 +4417,10 @@ def speech_rate_rows(segments: list[dict], seg_paths: list[Path]) -> list[dict[s
     for i, seg in enumerate(segments[: len(seg_paths)]):
         if not seg.get("source_url"):
             continue
-        chars = len(seg.get("text") or "")
+        # Spoken chars only: an event marker is performed, not read (#201), so a
+        # scene's derived text already lacks them and a plain segment's is
+        # stripped here — the one measurement both the gate and the bin share.
+        chars = len(strip_event_markers(seg.get("text") or ""))
         duration_ms = mp3_duration_ms(seg_paths[i])
         if chars <= 0 or duration_ms <= 0:
             continue  # unmeasurable: no evidence of a defect, so don't invent one

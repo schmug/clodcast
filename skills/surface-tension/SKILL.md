@@ -118,7 +118,15 @@ Row = the week's table; column = post position. The for-side reads this row; the
 
 ### TTS rules
 
-No headings, no lists, no URLs read aloud, no stage directions, no paralinguistic markers (they do not work on this model). Spell out anything a reader would skim.
+No headings, no lists, no URLs read aloud, no stage directions. Spell out anything a reader would skim. What a line may carry beyond its words depends on the engine the manifest names (#201), and the writer is told only what its engine can do — `st_write.performance_rules` fills the prompt's PERFORMANCE block from the engine's capabilities. This table is pinned to `render.EVENT_MARKERS`, `st_write.DIRECTIONS` and `st_write.MAX_DIRECTED_LINES_PER_SCENE` by a test.
+
+| engine | markers | direction words | directed lines per scene |
+| --- | --- | --- | --- |
+| `qwen3` | none | none | 0 |
+| `breeze` | (laugh), (sigh) | slower, faster, amused, exasperated, weary, urgent, warm | 1 |
+
+- **Markers** are the closed `render.EVENT_MARKERS` list: performed inline by an engine with `events`, read aloud as words ("Loff", "Sigh") by one without. On that engine `st_write.lines_for_engine` strips them at assembly and `render.py` strips them again before the render — stripped, never refused, because a stripped marker is the same line. Every measurement (the scene floor, the speech-rate gate) reads the spoken text with the markers gone on every engine, so an event never lengthens the measured script. A parenthesised word outside the list is refused at `classify_scene` and costs that one scene: nobody performs it, so it could only be a stage direction.
+- **Direction** is a per-line `instruct` over a clone. The writer emits one WORD from `st_write.DIRECTIONS` (pace or affect) and the engine hears the instruct that word maps to, so the phrasing can be tuned after a listen without changing the writer contract. Free text is not accepted: a full voice description bent identity in the 2026-09-04 eval (Ethan 93 Hz → 183 Hz, similarity 0.96 → 0.88). At most one directed line per scene until that drift is measured against a listen; a second is refused at `classify_scene`. On an engine without `direction` a directed line is **refused** at assembly, naming the engine, never stripped — a dropped direction is a different performance and nothing would say so.
 
 ### Content rules
 
@@ -181,7 +189,8 @@ A standard `render.py` manifest plus the web-only keys, all required, and the `c
 ```
 
 - `"ship_mode": "web"` — the web-only ship (#155). Omitting it is not a degraded run but a different one: `render.py` defaults to a Spotify upload. In this mode R2 config is **required** (absent fails pre-flight before any render), a failed publish fails the run, and `covered.json` is written only after the publish succeeds.
-- `"tts_engine"` is deliberately absent, so the show renders on `qwen3`. Moving it to another engine is this key plus the episode `voice`: `st_write` emits the `Ryan` preset there (a fallback no scene ever renders with), and an engine without presets — Breeze — refuses it before the model load, so the switch sets `"voice": "house"` alongside (the daily skill's *TTS engines* table lists the engines). Breeze's 500-character take ceiling fits every line this show writes; its weights are non-commercial, so a show on it carries no sponsor reads.
+- `"tts_engine"` is deliberately absent, so the show renders on `qwen3`. Moving it to another engine is one argument, `st_write.assemble_manifest(..., engine="breeze")` (#201): the key is written, every scene and frame is gated through that engine's capabilities (*TTS rules*), and the episode `voice` follows it — the `Ryan` preset where the engine has presets (a fallback no scene ever renders with), the `house` clone where it does not, since Breeze refuses a preset name before the model load (the daily skill's *TTS engines* table lists the engines). `fill_scene_prompt` must be handed the same `engine`, or the writer is offered what the gate then refuses. Breeze's 500-character take ceiling fits every line this show writes; its weights are non-commercial, so a show on it carries no sponsor reads.
+- `"instruct"` on a line — `{"speaker": "Ethan", "text": "...", "instruct": "Plainly exasperated, but keeping composure."}` — is the expanded direction (`st_write.DIRECTIONS[word]`), rendered through the engine's clone-plus-instruct form and folded into that take's cache key, so redirecting one line re-renders that line alone. Only on an engine with `direction`; the example above names no engine and so carries none.
 - `"r2_key_prefix": "surface-tension/"` — the slug is date-keyed, so without a prefix an episode publishing the same day as a daily digest overwrites the daily show's `.mp3`/`.jpg` in the shared bucket (#142).
 - `"slug_prefix": "surface-tension"` — the `/podcast/<slug>/` permalink and the `isPermaLink` guid, **immutable once published** (#128). It keys on `date` alone; the prefix swaps the literal and never re-couples the slug to the title.
 - `"show_name"` and `"description_footer_text"` — without them every cover carries the daily show's branding and every set of show notes credits the daily show's OPML feeds. The footer is plain text by contract; `render.py` rejects markup.
