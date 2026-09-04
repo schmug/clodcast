@@ -102,7 +102,7 @@ shared verbatim; only the tail differs. `--dry-run` is unchanged in both.
 - **The engine and the loaded model id are in every take's cache key, unconditionally.** A key without them replays Qwen3's banked audio under Breeze's name on a re-run — #177 one level up. Every sidecar written before this field existed misses once.
 - **Qwen3's path is byte-identical.** `_generate_qwen3` carries the three original branches with their original kwargs; `MODEL_ID` / `VOICE_DESIGN_MODEL_ID` / `VOICES` are aliases into the qwen3 entry. Only an engine with a separate `design_model_id` switches models for `voice_instruct`; Breeze designs on its base model and always pays one load. The universal "`voice_instruct` + `lines` cast dies" rule stays universal until per-line direction lands.
 
-Pre-flight's `tts-engine` check fails when the installed mlx-audio is below the engine's floor and prints the engine's license on every run; an absent package is `tts-module`'s finding. `tts_engine` is appended LAST to `RUN_LOG_FIELDS` and `BLOOPER_FIELDS`, null on paths that never resolve one. No show sets the key yet; switching one is a one-line assembler change made deliberately.
+Pre-flight's `tts-engine` check fails when the installed mlx-audio is below the engine's floor and prints the engine's license on every run; an absent package is `tts-module`'s finding. `tts_engine` is appended LAST to `RUN_LOG_FIELDS` and `BLOOPER_FIELDS`, null on paths that never resolve one. No show sets the key yet; switching one is a deliberate assembler change of the key plus, where the assembler emits a preset episode voice (Surface Tension does), a clone `voice` the new engine can render.
 
 ### The reliability layer (pre-flight, artifact gate, durable state, incidents)
 
