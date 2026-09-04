@@ -92,6 +92,18 @@ shared verbatim; only the tail differs. `--dry-run` is unchanged in both.
   episode URI — there is no episode URI in this mode, and a null would lose the trail
   from a covered URL back to the episode that covered it.
 
+### One renderer, two engines (`tts_engine`)
+
+`render.py` renders on the engine its manifest names — `"qwen3"` (the default when absent) or `"breeze"` — through a frozen `EngineSpec` per engine in `ENGINES` (design: [docs/superpowers/specs/2026-09-04-tts-engine-registry-design.md](docs/superpowers/specs/2026-09-04-tts-engine-registry-design.md)). Five things are load-bearing.
+
+- **The engine lives on the MANIFEST, closed whitelist, same posture as `ship_mode`.** A re-run must render the way it rendered before, and a flag that can go missing on one invocation would silently render a different voice. No CLI flag, no `config.json` default; a typo dies.
+- **Capabilities gate validation, before the model load.** `_validate_engine_capabilities` refuses `voice: "random"`, a preset name, or a preset cast entry on an engine without `preset`, and `voice_instruct` on one without `design`. The alternative on Breeze is passing a Qwen3 preset name through as a speaker tag and rendering a stranger with no error — the silent wrong-voice class #177 closed. `events` / `direction` are declared on the Breeze spec and read by nothing yet.
+- **The take ceiling is enforced before the render because the gate cannot see a derailment.** Breeze derails about one take in five past ~35 s of audio regardless of the token cap (measured 2026-09-04, in the spec); `_validate_take_lengths` refuses anything over `max_take_chars` (500 for Breeze, none for Qwen3), and `max_tokens` is passed explicitly to bound a derailed take. The speech-rate gate stays normal on a derailed take and whisper transcribes babble as words, so nothing downstream would catch it. Every daily-show band exceeds Breeze's ceiling by design until chunked rendering or verify-and-retry exists.
+- **The engine and the loaded model id are in every take's cache key, unconditionally.** A key without them replays Qwen3's banked audio under Breeze's name on a re-run — #177 one level up. Every sidecar written before this field existed misses once.
+- **Qwen3's path is byte-identical.** `_generate_qwen3` carries the three original branches with their original kwargs; `MODEL_ID` / `VOICE_DESIGN_MODEL_ID` / `VOICES` are aliases into the qwen3 entry. Only an engine with a separate `design_model_id` switches models for `voice_instruct`; Breeze designs on its base model and always pays one load. The universal "`voice_instruct` + `lines` cast dies" rule stays universal until per-line direction lands.
+
+Pre-flight's `tts-engine` check fails when the installed mlx-audio is below the engine's floor and prints the engine's license on every run; an absent package is `tts-module`'s finding. `tts_engine` is appended LAST to `RUN_LOG_FIELDS` and `BLOOPER_FIELDS`, null on paths that never resolve one. No show sets the key yet; switching one is a one-line assembler change made deliberately.
+
 ### The reliability layer (pre-flight, artifact gate, durable state, incidents)
 
 Added after an audit of every failure mode this pipeline hit in production. The

@@ -179,6 +179,10 @@ Everything this document argues applies per cast member: a clip is stable where 
 
 Two practical notes. `render.py` keys each line's cache on the clip's **bytes**, so re-recording one voice re-renders that voice's lines and leaves the rest cached — iterate on one panelist without paying for the others. And a cast clip is made exactly like the house voice: Path A above, then locked. `skills/surface-tension/refs/` is a worked example of four of them, designed apart on pitch register, pace and articulation because those are the differences that survive cloning.
 
+### The engine is a separate axis
+
+`tts_engine` on the manifest (default `qwen3`) picks the model; it does not add a fifth voice mode. Every mode above means the same thing on every engine that declares it, and `render.py` refuses a mode the engine lacks before loading anything (the daily skill's *TTS engines* table lists who declares what). `breeze` (Breeze-TTS-2) has no presets and clones and designs on one model — so its VoiceDesign still drifts run to run, and the locked-clip rule in this document applies to it unchanged.
+
 ## When to re-tune
 
 Common triggers and the right response:

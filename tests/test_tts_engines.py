@@ -377,3 +377,30 @@ def test_tts_engine_is_appended_last_to_both_field_sets():
     assert render.BLOOPER_FIELDS[-1] == "tts_engine"
     assert render.BLOOPER_FIELDS[-2] == "workdir"
     assert render._new_run_record()["tts_engine"] is None
+
+
+# --- docs drift (spec §9) ------------------------------------------------------
+
+
+def test_skill_md_engine_table_matches_the_code():
+    """SKILL.md is the production path (a claude -p follows it), so the engines
+    table is pinned to ENGINES the way the shape table is pinned to SHAPE_ORDERS."""
+    lines = (render.SCRIPT_DIR / "SKILL.md").read_text().splitlines()
+    header = next((i for i, ln in enumerate(lines) if ln.startswith("| engine | model |")), None)
+    assert header is not None, "SKILL.md lost the TTS engines table"
+    body = lines[header + 2 : header + 2 + len(render.ENGINES)]
+    for (name, spec), line in zip(render.ENGINES.items(), body, strict=True):
+        cells = [c.strip().strip("`") for c in line.strip().strip("|").split("|")]
+        assert cells[0] == name
+        assert cells[1] == spec.base_model_id
+        assert cells[2] == ", ".join(sorted(spec.capabilities))
+        assert cells[3] == (
+            "none" if spec.max_take_chars is None else f"{spec.max_take_chars} chars"
+        )
+        assert cells[4] == spec.min_mlx_audio
+        assert cells[5] == spec.license
+
+
+def test_skill_md_manifest_schema_documents_tts_engine():
+    text = (render.SCRIPT_DIR / "SKILL.md").read_text()
+    assert '"tts_engine": "qwen3"' in text
