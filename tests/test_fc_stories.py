@@ -431,6 +431,74 @@ def test_load_reported_degrades_on_malformed():
     assert fc_stories.load_reported() == {}
 
 
+# --- the same-ISO-week ship guard -------------------------------------------
+
+
+def test_already_shipped_this_week_spans_the_sunday_monday_boundary():
+    """A Sunday cron fire and the Monday six days earlier are ONE ISO week, and
+    both mint the identical slug — a raw date-string compare would miss it and
+    let the second run republish over the first one's live permalink."""
+    url = "https://audio.example/frontier-commits/week-of-august-31-2026.mp3"
+    rep = {"NEW_REPO:acme/x:new": {"date": "2026-08-31", "episode_uri": url}}
+
+    assert fc_stories.already_shipped_this_week(rep, "2026-08-31") == url  # the Monday itself
+    assert fc_stories.already_shipped_this_week(rep, "2026-09-06") == url  # Sunday, same week
+    assert fc_stories.already_shipped_this_week(rep, "2026-09-07") is None  # the next Monday
+    assert fc_stories.already_shipped_this_week(rep, "2026-08-30") is None  # the Sunday before
+
+
+def test_already_shipped_this_week_sees_the_live_september_3_entries():
+    """Episode two shipped 2026-09-03; the weekly cron's next fire was 2026-09-06,
+    inside that same ISO week. That collision is what this guard exists to stop."""
+    url = "https://audio.example/frontier-commits/week-of-august-31-2026.mp3"
+    rep = {"RELEASE:openai/x:v1": {"date": "2026-09-03", "episode_uri": url}}
+
+    assert fc_stories.already_shipped_this_week(rep, "2026-09-04") == url
+    assert fc_stories.already_shipped_this_week(rep, "2026-09-08") is None  # the following week
+
+
+def test_already_shipped_this_week_skips_malformed_entries_without_dying():
+    """Same no-data-loss posture as covered.json pruning: a damaged entry is
+    skipped, never fatal, and never fabricates a week that did not ship."""
+    rep = {
+        "a": "not-a-dict",
+        "b": {"episode_uri": "no date at all"},
+        "c": {"date": None, "episode_uri": "u"},
+        "d": {"date": "20260903", "episode_uri": "u"},  # compact form: not YYYY-MM-DD
+        "e": {"date": "2026-13-45", "episode_uri": "u"},
+        "f": {"date": "2026-08-24", "episode_uri": "an earlier week"},
+    }
+    assert fc_stories.already_shipped_this_week(rep, "2026-09-04") is None
+    assert fc_stories.already_shipped_this_week({}, "2026-09-04") is None
+
+
+def test_already_shipped_this_week_fails_closed_when_the_uri_is_unusable():
+    """ "Shipped but unnamed" must not read as "not shipped" — the field stays
+    truthy so the weekly run still skips."""
+    rep = {"k": {"date": "2026-09-03", "episode_uri": ""}}
+    assert fc_stories.already_shipped_this_week(rep, "2026-09-04") == fc_stories.UNKNOWN_EPISODE
+    assert fc_stories.UNKNOWN_EPISODE, "the fail-closed sentinel must be truthy"
+
+
+def test_detect_all_flags_a_week_that_already_shipped():
+    """The guard is a pure function of (reported.json, run_date) and is
+    independent of mention-once dedup: fresh stories still surface, but the
+    field tells the weekly run not to spend TTS on them."""
+    url = "https://audio.example/frontier-commits/week-of-august-31-2026.mp3"
+    _write_snap("2026-08-28", {"acme": {}})
+    _write_snap("2026-09-04", {"acme": {"n": _repo(created_at="2026-09-02T00:00:00Z")}})
+    cfg = _cfg(orgs=[{"name": "acme", "filter": "none"}])
+
+    out = fc_stories.detect_all("2026-09-04", cfg)
+    assert out["already_shipped_this_week"] is None
+
+    fc_stories.mark_reported(["NEW_REPO:acme/unrelated:new"], "2026-09-03", url)
+    again = fc_stories.detect_all("2026-09-04", cfg)
+    assert again["already_shipped_this_week"] == url
+    assert [s["key"] for s in again["stories"]] == ["NEW_REPO:acme/n:new"]
+    assert fc_stories.detect_all("2026-09-07", cfg)["already_shipped_this_week"] is None
+
+
 def test_mark_reported_round_trips_and_merges():
     fc_stories.mark_reported(["A:o/r:new"], "2026-08-25", "spotify:episode:e1")
     fc_stories.mark_reported(["B:o/r:new"], "2026-09-01", "spotify:episode:e2")
@@ -639,7 +707,13 @@ def test_cli_detect_prints_contract_and_mark_round_trips(tmp_path, capsys):
     rc = fc_stories.main(["detect", "--date", "2026-08-25"])
     assert rc == 0
     out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    assert set(out) == {"run_date", "baseline_date", "thin", "stories"}
+    assert set(out) == {
+        "run_date",
+        "baseline_date",
+        "already_shipped_this_week",
+        "thin",
+        "stories",
+    }
 
     f = tmp_path / "stories.json"
     f.write_text(json.dumps(out))
