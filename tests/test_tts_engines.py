@@ -319,3 +319,50 @@ def test_the_take_key_records_the_engine_that_rendered_it(tmp_path, fake_tts):
     k_breeze = json.loads((tmp_path / "seg_01.json").read_text())["key"]
     assert k_qwen != k_breeze
     assert len(fake_tts.calls) == 2  # the second engine did not reuse the first's take
+
+
+# --- pre-flight (spec §6) ------------------------------------------------------
+
+
+def test_engine_check_fails_when_mlx_audio_is_too_old(monkeypatch):
+    monkeypatch.setattr(render, "_installed_mlx_audio_version", lambda: "0.4.9")
+    c = render._tts_engine_check(render.ENGINES["breeze"])
+    assert c["name"] == "tts-engine" and c["ok"] is False
+    assert "needs mlx-audio >= 0.5.1" in c["detail"] and "0.4.9" in c["detail"]
+
+
+@pytest.mark.parametrize("installed", ["0.5.1", "0.5.10", "1.0.0"])
+def test_engine_check_passes_at_or_above_the_floor_and_names_the_license(monkeypatch, installed):
+    monkeypatch.setattr(render, "_installed_mlx_audio_version", lambda: installed)
+    c = render._tts_engine_check(render.ENGINES["breeze"])
+    assert c["ok"] is True
+    assert "BreezeBlue Research and Non-Commercial" in c["detail"]
+    assert "Breeze-TTS-2 3B" in c["detail"]
+
+
+def test_engine_check_leaves_an_absent_package_to_the_module_check(monkeypatch):
+    monkeypatch.setattr(render, "_installed_mlx_audio_version", lambda: None)
+    c = render._tts_engine_check(render.ENGINES["qwen3"])
+    assert c["ok"] is True and "tts-module" in c["detail"]
+
+
+def test_version_tuple_compares_dotted_strings_numerically():
+    assert render._version_tuple("0.5.10") > render._version_tuple("0.5.9")
+    assert render._version_tuple("0.4.3") == (0, 4, 3)
+    assert render._version_tuple("1.2.3.dev4") == (1, 2, 3)
+
+
+def test_preflight_runs_the_engine_check_under_dry_run(monkeypatch):
+    monkeypatch.setattr(render.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    monkeypatch.setattr(
+        render, "_tts_module_check", lambda: render._check("tts-module", True, "stub")
+    )
+    monkeypatch.setattr(
+        render, "check_r2_credentials", lambda cfg, required=False: {"ok": True, "detail": "stub"}
+    )
+    monkeypatch.setattr(render, "_installed_mlx_audio_version", lambda: "0.4.3")
+    ok, checks = render.preflight({}, show_id="spotify:show:x", dry_run=True, engine="breeze")
+    names = [c["name"] for c in checks]
+    assert "tts-engine" in names and names.index("tts-engine") == names.index("tts-module") + 1
+    assert ok is False
+    assert next(c for c in checks if c["name"] == "tts-engine")["ok"] is False

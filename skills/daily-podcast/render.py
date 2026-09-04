@@ -4590,6 +4590,7 @@ def preflight(
     record: dict[str, Any] | None = None,
     web_only: bool = False,
     cover_image: Path | None = None,
+    engine: str = TTS_ENGINE_QWEN3,
 ) -> tuple[bool, list[dict[str, Any]]]:
     """Verify everything the run depends on BEFORE spending a render on it.
 
@@ -4602,7 +4603,10 @@ def preflight(
     R2 check from optional to required. What remains is the local subset plus R2.
 
     `cover_image` (#164) is checked only when the manifest supplies one — a local
-    check, so a --dry-run rehearsal gates the same art a real run would ship."""
+    check, so a --dry-run rehearsal gates the same art a real run would ship.
+
+    `engine` is the manifest's tts_engine: its check (mlx-audio floor + license line)
+    runs right after tts-module, under --dry-run too, because a dry run renders."""
     checks: list[dict[str, Any]] = []
     log("preflight: verifying dependencies, credentials, and capacity...")
 
@@ -4636,6 +4640,7 @@ def preflight(
     )
 
     checks.append(_tts_module_check())
+    checks.append(_tts_engine_check(ENGINES[engine]))
 
     if cover_image is not None:
         art = check_cover_image(cover_image)
@@ -4678,6 +4683,43 @@ def _tts_module_check() -> dict[str, Any]:
         "tts-module",
         spec is not None,
         "mlx_audio importable" if spec else "mlx_audio not installed (see requirements.txt)",
+    )
+
+
+def _installed_mlx_audio_version() -> str | None:
+    """The installed mlx-audio distribution version, None when absent. Metadata
+    only — no import of mlx_audio, same posture as _tts_module_check. A seam so
+    tests never depend on what the host has installed."""
+    try:
+        return importlib.metadata.version("mlx-audio")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _version_tuple(version: str) -> tuple[int, ...]:
+    """ "0.5.10" -> (0, 5, 10). Numeric, so 0.5.10 > 0.5.9; a dev/rc suffix is
+    ignored. Deliberately not `packaging` — one more runtime dependency for one
+    comparison."""
+    return tuple(int(p) for p in re.findall(r"\d+", version)[:3])
+
+
+def _tts_engine_check(spec: EngineSpec) -> dict[str, Any]:
+    """Is the installed mlx-audio new enough for this engine, and does the operator
+    know what they are shipping on? The PASS line carries the label and the
+    LICENSE, because pre-flight is exactly the moment someone is deciding. Absence
+    of the package is tts-module's finding, not this check's: CI has no mlx-audio
+    and stubs that check, and on a real host tts-module already fails the run."""
+    installed = _installed_mlx_audio_version()
+    who = f"{spec.name} ({spec.label}; {spec.license})"
+    if installed is None:
+        return _check("tts-engine", True, f"{who}; mlx-audio not installed — see tts-module")
+    if _version_tuple(installed) >= _version_tuple(spec.min_mlx_audio):
+        return _check("tts-engine", True, f"{who} on mlx-audio {installed}")
+    return _check(
+        "tts-engine",
+        False,
+        f"{spec.name} needs mlx-audio >= {spec.min_mlx_audio}; installed {installed} "
+        f"(python3 -m pip install --user --upgrade 'mlx-audio>={spec.min_mlx_audio}')",
     )
 
 
@@ -5069,6 +5111,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
             record=record,
             web_only=web_only,
             cover_image=cover_image,
+            engine=engine,
         )
         if not ok:
             failed = ", ".join(c["name"] for c in checks if not c["ok"])
