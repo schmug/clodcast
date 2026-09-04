@@ -97,8 +97,14 @@ def test_breeze_accepts_clones_and_a_designed_voice():
     )
 
 
-@pytest.mark.parametrize("engine", ["qwen3", "breeze"])
-def test_voice_instruct_with_a_cast_still_dies_on_every_engine(engine):
+@pytest.mark.parametrize(
+    ("engine", "dies"),
+    [("qwen3", True), ("breeze", False)],
+    ids=["qwen3-second-model", "breeze-one-model"],
+)
+def test_voice_instruct_with_a_cast_dies_only_where_design_is_a_second_model(engine, dies):
+    """Per engine since #201: the rule guards against rendering a cast off the
+    wrong model, and only an engine with a SEPARATE design model has one."""
     clip = {"ref_audio": "/tmp/ryan.wav", "ref_text": "a transcript"}
     m = _manifest(
         tts_engine=engine,
@@ -106,7 +112,11 @@ def test_voice_instruct_with_a_cast_still_dies_on_every_engine(engine):
         cast={"a": clip},
         segments=[{"lines": [{"speaker": "a", "text": "hi"}]}],
     )
-    with pytest.raises(SystemExit):
+    assert (render.ENGINES[engine].design_model_id is not None) == dies
+    if dies:
+        with pytest.raises(SystemExit):
+            render.validate_manifest(m)
+    else:
         render.validate_manifest(m)
 
 
