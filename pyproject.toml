@@ -10,7 +10,7 @@ requires-python = ">=3.10"
 # dev tools below, never the full project. Bounds are left open; pin only at a
 # known compat boundary (none today).
 dependencies = [
-    "mlx-audio",
+    "mlx-audio>=0.5.1",
     "soundfile",
     "mutagen",
     "Pillow",
