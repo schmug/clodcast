@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 This file is generated from conventional commits by [git-cliff](https://git-cliff.org).
 
+## [0.1.13](https://github.com/schmug/clodcast/compare/v0.1.12...v0.1.13) (2026-09-04)
+
+
+### Features
+
+* **render:** chunked rendering and a derailment detector for short-take engines ([#202](https://github.com/schmug/clodcast/issues/202)) ([#212](https://github.com/schmug/clodcast/issues/212)) ([1c1561e](https://github.com/schmug/clodcast/commit/1c1561e52ffb3bb94c84391849da69ce908a9547))
+* **render:** gate vocal events and per-line voice direction on the engine's capabilities ([#213](https://github.com/schmug/clodcast/issues/213)) ([e3d2600](https://github.com/schmug/clodcast/commit/e3d26008f8e20cacdffb007aa4d9083890ccf121))
+* **tts-eval:** bench a TTS engine from the registry against the production engine ([#209](https://github.com/schmug/clodcast/issues/209)) ([9aeab3d](https://github.com/schmug/clodcast/commit/9aeab3d7c06c2e3357201a5add9d6c8ec1738e9e))
+
 ## [0.1.12](https://github.com/schmug/clodcast/compare/v0.1.11...v0.1.12) (2026-09-04)
 
 
