@@ -131,3 +131,16 @@ def test_breeze_refuses_a_scene_line_over_its_take_ceiling(capsys):
 
 def test_qwen3_has_no_take_ceiling():
     render.validate_manifest(_manifest(segments=[{"text": "x" * 3000}]))
+
+
+# --- cache key (spec §5) -------------------------------------------------------
+
+
+def test_cache_key_changes_with_the_engine_and_the_model_id():
+    base = dict(text="t", voice_mode="clone", voice="house", ref_fingerprint="abc", ref_text="r")
+    k = render._segment_cache_key(**base, engine="qwen3", model_id="m1")
+    assert k == render._segment_cache_key(**base, engine="qwen3", model_id="m1")
+    assert k != render._segment_cache_key(**base, engine="breeze", model_id="m1")
+    assert k != render._segment_cache_key(**base, engine="qwen3", model_id="m2")
+    # Still sensitive to everything it was sensitive to before.
+    assert k != render._segment_cache_key(**{**base, "text": "u"}, engine="qwen3", model_id="m1")

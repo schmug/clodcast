@@ -1328,6 +1328,9 @@ def _segment_cache_key(
     voice: str,
     ref_fingerprint: str | None,
     ref_text: str | None,
+    *,
+    engine: str,
+    model_id: str,
 ) -> str:
     """Content hash identifying one rendered segment. Any input that changes the
     audio the model would produce changes the key:
@@ -1336,6 +1339,12 @@ def _segment_cache_key(
       - `voice`       : preset name, or the VoiceDesign instruct in design mode
       - `ref_fingerprint` : hash of the ref-audio bytes (clone mode only)
       - `ref_text`    : the clone transcript (clone mode only)
+      - `engine`, `model_id` : which model rendered it. Unconditional: a key that
+        omits the model is the silent-replay class #177 closed, one level up — a
+        workdir rendered under Qwen3 and re-run under Breeze would replay Qwen3's
+        audio under the new engine's name with no error. Every sidecar written
+        before this field existed misses once; auto workdirs are per-date and
+        deleted on success, so that is at most one same-day resume.
     Serialized through json so field boundaries can't collide (e.g. "a"+"bc" vs
     "ab"+"c"). Pure; no I/O."""
     payload = json.dumps(
@@ -1345,6 +1354,8 @@ def _segment_cache_key(
             "voice": voice,
             "ref_fingerprint": ref_fingerprint,
             "ref_text": ref_text,
+            "engine": engine,
+            "model_id": model_id,
         },
         sort_keys=True,
     )
@@ -1527,7 +1538,13 @@ def render_segments(
                     "ref_audio": ref_audio,
                     "ref_text": ref_text,
                     "key": _segment_cache_key(
-                        text, mode, key_voice or "", ref_fingerprint, ref_text
+                        text,
+                        mode,
+                        key_voice or "",
+                        ref_fingerprint,
+                        ref_text,
+                        engine=TTS_ENGINE_QWEN3,
+                        model_id=VOICE_DESIGN_MODEL_ID if use_design else MODEL_ID,
                     ),
                     "mp3": workdir / f"seg_{i:02d}.mp3",
                     "sidecar": workdir / f"seg_{i:02d}.json",
@@ -1563,6 +1580,8 @@ def render_segments(
                             spec["voice"],
                             spec["ref_fingerprint"],
                             spec["ref_text"],
+                            engine=TTS_ENGINE_QWEN3,
+                            model_id=VOICE_DESIGN_MODEL_ID if use_design else MODEL_ID,
                         ),
                         "mp3": workdir / f"line_{i:02d}_{j:02d}.mp3",
                         "sidecar": workdir / f"line_{i:02d}_{j:02d}.json",
