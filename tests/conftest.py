@@ -32,6 +32,12 @@ sys.path.insert(0, str(ST_SKILL_DIR))
 
 import st_gather  # noqa: E402  (must follow the sys.path insert above)
 
+# The TTS eval bench (#200) is a fourth flat skill directory; bench.py imports
+# render the way bloopers.py does, and this insert is what lets the tests import
+# it from the repo root.
+TTS_EVAL_DIR = Path(__file__).resolve().parent.parent / "skills" / "tts-eval"
+sys.path.insert(0, str(TTS_EVAL_DIR))
+
 # Every user-level state path render.py can WRITE to. Redirected per-test below.
 # Read-only paths (the bundled house-voice refs, blocked_sources.json) are left
 # alone — tests legitimately assert against the shipped files.
