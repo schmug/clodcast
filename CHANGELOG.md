@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 This file is generated from conventional commits by [git-cliff](https://git-cliff.org).
 
+## [0.1.12](https://github.com/schmug/clodcast/compare/v0.1.11...v0.1.12) (2026-09-04)
+
+
+### Features
+
+* **render:** tts_engine registry with Breeze-TTS-2 as engine two ([#206](https://github.com/schmug/clodcast/issues/206)) ([21f4722](https://github.com/schmug/clodcast/commit/21f4722ed775be01b41b855b2bcdafd2dde37420))
+
 ## [0.1.11](https://github.com/schmug/clodcast/compare/v0.1.10...v0.1.11) (2026-09-04)
 
 
