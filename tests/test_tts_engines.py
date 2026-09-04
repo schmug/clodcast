@@ -366,3 +366,14 @@ def test_preflight_runs_the_engine_check_under_dry_run(monkeypatch):
     assert "tts-engine" in names and names.index("tts-engine") == names.index("tts-module") + 1
     assert ok is False
     assert next(c for c in checks if c["name"] == "tts-engine")["ok"] is False
+
+
+# --- run log, bloopers, payloads (spec §7) -------------------------------------
+
+
+def test_tts_engine_is_appended_last_to_both_field_sets():
+    assert render.RUN_LOG_FIELDS[-1] == "tts_engine"
+    assert render.RUN_LOG_FIELDS[-2] == "bloopers_captured"  # nothing reordered
+    assert render.BLOOPER_FIELDS[-1] == "tts_engine"
+    assert render.BLOOPER_FIELDS[-2] == "workdir"
+    assert render._new_run_record()["tts_engine"] is None

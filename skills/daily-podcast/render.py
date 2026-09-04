@@ -409,6 +409,7 @@ BLOOPER_FIELDS: tuple[str, ...] = (
     "ratio",  # rate / median
     "note",  # free text, manual captures only
     "workdir",
+    "tts_engine",  # which engine produced the clip; null for rows written before it existed
 )
 
 # Registry of feeds/outlets that can't be fetched for article bodies, moved out of
@@ -648,6 +649,7 @@ RUN_LOG_FIELDS: tuple[str, ...] = (
     "abandoned_episodes",  # [{episode_uri, title, source_urls}] on a poison-pill give-up
     "mp3_url",  # public R2 URL on a web-only ship, else null (#155)
     "bloopers_captured",  # clips banked into the bloopers bin this run (#169)
+    "tts_engine",  # engine name from the manifest (spec 2026-09-04); null before it is resolved
 )
 
 
@@ -3201,6 +3203,7 @@ def _resume(
             title=data.get("title", title),
             voice=data.get("voice"),
             voice_mode=data.get("voice_mode"),
+            tts_engine=data.get("tts_engine"),
             chapter_count=chapter_count,
             duration_s=duration_s,
             segment_count=len(segments),
@@ -3216,6 +3219,7 @@ def _resume(
                 "title": data.get("title", title),
                 "voice": data.get("voice"),
                 "voice_mode": data.get("voice_mode"),
+                "tts_engine": data.get("tts_engine"),
                 "chapter_count": chapter_count,
                 "duration_s": duration_s,
                 "r2_status": r2_status,
@@ -3240,6 +3244,7 @@ def _ship_web_only(
     title: str,
     voice: str,
     voice_mode: str,
+    tts_engine: str,
     loudnorm: dict[str, Any] | None,
     episode_duration_ms: int,
     record: dict[str, Any],
@@ -3312,6 +3317,7 @@ def _ship_web_only(
                 "title": title,
                 "voice": voice,
                 "voice_mode": voice_mode,
+                "tts_engine": tts_engine,
                 "chapter_count": chapter_count,
                 "duration_s": duration_s,
                 "loudnorm": loudnorm,
@@ -4994,6 +5000,7 @@ def _sweep_bloopers_on_failure(record: dict[str, Any]) -> None:
             error_message=record.get("error_message"),
             run_date=record.get("run_date"),
             title=record.get("title"),
+            tts_engine=record.get("tts_engine"),
         )
         record["bloopers_captured"] = (record.get("bloopers_captured") or 0) + len(banked)
     except Exception as e:  # noqa: BLE001 — a failed sweep must not mask the real failure
@@ -5036,6 +5043,10 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
         die(f"manifest is not valid JSON: {e}")
     validate_manifest(manifest)
     engine = resolve_tts_engine(manifest)
+    # Recorded here, not beside voice_mode: a pre-flight failure (mlx-audio below
+    # the engine's floor) should name the engine. A refusal inside validate_manifest
+    # leaves it null — the engine was never resolved, and null never guesses.
+    record["tts_engine"] = engine
     # A `lines` scene carries no author-written text, and a segment measuring zero
     # chars is invisible to speech_rate_rows — which would silently disarm the
     # TTS-degeneration gate and the bloopers bin for the whole show (#172). Derive it
@@ -5195,6 +5206,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
             run_date=manifest.get("date"),
             title=manifest.get("title"),
             workdir=str(workdir),
+            tts_engine=engine,
         )
     )
     artifact_errors = verify_artifact(
@@ -5245,6 +5257,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
                     "timeline": str(timeline_path),
                     "voice": voice,
                     "voice_mode": voice_mode,
+                    "tts_engine": engine,
                     "chapter_count": chapter_count,
                     "duration_s": duration_s,
                     "loudnorm": loudnorm,
@@ -5271,6 +5284,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
             title=title,
             voice=voice,
             voice_mode=voice_mode,
+            tts_engine=engine,
             loudnorm=loudnorm,
             episode_duration_ms=episode_duration_ms,
             record=record,
@@ -5301,6 +5315,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
                 "title": title,
                 "voice": voice,
                 "voice_mode": voice_mode,
+                "tts_engine": engine,
             },
             indent=2,
         ),
@@ -5365,6 +5380,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
                 "title": title,
                 "voice": voice,
                 "voice_mode": voice_mode,
+                "tts_engine": engine,
                 "chapter_count": chapter_count,
                 "duration_s": duration_s,
                 "loudnorm": loudnorm,
