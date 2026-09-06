@@ -166,10 +166,30 @@ per-failure write-ups in [incidents/](incidents/) are the source of truth for
   contract as `write_run_log`). Every slug in `_INCIDENT_SIGNATURES` must have a
   matching `incidents/<slug>.md` — a test enforces it, because the generated
   report tells the reader to go read that file.
+- **The incident queue drains by MOVING, never deleting (#207).** `new/` is the
+  intake half and `incidents/handled/` is the other one; `skills/daily-podcast/triage.py`
+  (`list` / `resolve`) is the only thing that crosses between them, and nothing in
+  a run calls it. The repo holds both answers to "should this state be pruned?" and
+  they disagree on purpose — `covered.json` and `--prune-workdirs` delete because
+  they hold stale *state*, the bloopers bin is never pruned because it is
+  *evidence*. A report is evidence (every playbook in `incidents/` traces back to
+  one, which is the entire claim that directory makes) but a handled one is queue
+  noise, exactly like a finished workdir; a move settles both, which is why
+  `handled/` has no retention window and no prune flag. Three things are
+  load-bearing: `handled_incident_dir()` derives from `incident_dir()` — never from
+  `CONFIG_DIR` — so `DAILY_PODCAST_INCIDENT_DIR` moves both halves together and a
+  redirected queue can't drain into real user state; a resolve never rewrites the
+  report's recorded `kind` (that is what the run *observed*; `list` re-classifies
+  against today's `_INCIDENT_SIGNATURES` for display only, which is the only thing
+  that distinguishes a report written `unclassified` before its playbook existed
+  from a genuinely new one); and every destination is checked before any file moves,
+  so a collision can't archive the markdown and strand its sidecar.
 - **Tests must never touch real user state.** `tests/conftest.py` redirects every
   writable path (`CONFIG_DIR`, `COVERED_PATH`, `INFLIGHT_PATH`, `RUN_LOG_PATH`,
   `REJECTIONS_PATH`, `INCIDENT_DIR`, `TMP_BASE`) per-test and asserts none of them
-  point at `~/.config/daily-podcast` afterwards. This exists because a failure-path
+  point at `~/.config/daily-podcast` afterwards — plus the *derived*
+  `handled_incident_dir()`, so a drain re-rooted at `CONFIG_DIR` fails the suite
+  instead of sweeping the developer's real queue. This exists because a failure-path
   test scribbled incident files into the real config dir once. Don't remove it.
 
 ### Invariants the renderer enforces

@@ -445,7 +445,10 @@ Two more append-only logs live beside `covered.json` and `runs.jsonl`:
   sha256. The artifact gate refuses to re-upload identical bytes; see
   [rejected-artifact.md](../../incidents/rejected-artifact.md).
 - **`incidents/new/`** — structured reports written on any non-clean exit
-  (`DAILY_PODCAST_INCIDENT_DIR` overrides the location).
+  (`DAILY_PODCAST_INCIDENT_DIR` overrides the location, and moves both halves of
+  the queue with it). **`incidents/handled/`** is the other half: `triage.py
+  resolve` moves a report there once it has been dealt with, so `new/` stays a
+  work queue. A move, never a delete — see [Incident reports](#incident-reports).
 
 ### Bloopers bin (`bloopers/`)
 
@@ -779,7 +782,7 @@ You are an unattended invocation. Ship today's episode and exit. Be decisive, do
 | `covered.json` malformed | treat as `{}` rather than failing the run |
 | A leftover `inflight.json` | **leave it alone.** Recovery reconciles it automatically and abandons a rejected episode on its own; deleting it by hand is no longer the remedy |
 
-After the run, any non-clean exit leaves a structured report in `~/.config/daily-podcast/incidents/new/`. Mention its path in the `FAILED` line's context if one was written — a report tagged `unclassified` is a failure mode nobody has documented yet.
+After the run, any non-clean exit leaves a structured report in `~/.config/daily-podcast/incidents/new/`. Mention its path in the `FAILED` line's context if one was written — a report tagged `unclassified` is a failure mode nobody has documented yet. The report stays in the queue until someone drains it with `triage.py resolve`, which archives it to `incidents/handled/`; do **not** `rm` it.
 
 **Today's date:** resolve via the system, never hardcode. Long form ("May 22, 2026") in the intro, short form ("2026-05-22") in workdir paths.
 
@@ -913,6 +916,26 @@ points at the matching playbook in the repo's [`incidents/`](../../incidents/)
 directory. A report tagged `unclassified` means a failure mode nobody has written
 up yet. Writing a report is best-effort and never changes a run's exit code.
 
+`new/` is the intake half; `incidents/handled/` is the drain, and
+[`triage.py`](triage.py) is how a report crosses between them. Nothing in a run
+calls it (same posture as `bloopers.py` / `retitle.py`):
+
+```bash
+python3 <skill-dir>/triage.py list           # what is actually open
+python3 <skill-dir>/triage.py resolve <report> --note "why it is handled"
+```
+
+`list` re-classifies each report's stored message against **today's**
+`_INCIDENT_SIGNATURES` and prints that beside the kind the run recorded — a report
+written `unclassified` before anyone wrote up its failure mode is exactly the one
+that is already handled, and nothing else on disk says so. It is a display, not a
+rewrite: the recorded kind is what the run observed and never changes.
+
+`resolve` **moves** the report (markdown + sidecar) into `incidents/handled/` and
+appends a row to `handled/index.jsonl`. Never `rm` a report — it is the evidence
+behind whichever playbook covers it. `handled/` is an archive: no retention
+window, never pruned.
+
 **`--selftest`** runs an ordered set of checks (ffmpeg + ffprobe on PATH → `save-to-spotify --json shows` returns valid JSON → `config.json` parses with `show_id` → house-voice ref clip + transcript present), prints a pass/fail line each, then a JSON summary `{"status": "ok"/"failed", "checks": [...]}`. It exits `0` only if every check passes, non-zero otherwise — so a scheduler can gate on it:
 
 ```bash
@@ -936,8 +959,9 @@ cd "$HOME/clodcast"
 python3 skills/daily-podcast/render.py --selftest || { echo "selftest failed"; exit 1; }
 # Real run: per-item isolated orchestrator (drop-on-block, deterministic curation).
 python3 skills/daily-podcast/orchestrate.py
-# Triage anything the run left behind.
-ls ~/.config/daily-podcast/incidents/new/ 2>/dev/null
+# Triage anything the run left behind. `triage.py resolve <report>` archives one
+# to incidents/handled/ once it has been dealt with, so this stays a real queue.
+python3 skills/daily-podcast/triage.py list
 ```
 
 For disk hygiene, `render.py --prune-workdirs N` is still the mechanism — pass it when calling `render.py` directly with `--manifest`. `orchestrate.py` does not accept `--prune-workdirs`; sweep the temp dir separately if needed.

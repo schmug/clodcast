@@ -198,7 +198,10 @@ failure modes this pipeline has actually hit in production:
   every future run; a transient upload flake retries once; the readiness poll
   waits 30 minutes and distinguishes `PROCESSING` from `FAILED`.
 - **Incident reports** — any non-clean exit writes a structured report to
-  `~/.config/daily-podcast/incidents/new/`.
+  `~/.config/daily-podcast/incidents/new/`. `skills/daily-podcast/triage.py list`
+  shows what is still open (re-classified against today's signatures);
+  `triage.py resolve <report>` archives a handled one to `incidents/handled/`, so
+  the queue drains without `rm` and without losing the evidence.
 
 Each failure mode has a write-up in [`incidents/`](incidents/) with its symptom,
 root cause, automated remedy, and the test that guards it.
