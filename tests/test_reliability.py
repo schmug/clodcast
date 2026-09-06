@@ -829,6 +829,40 @@ def test_classify_incident_maps_known_signatures():
     assert render.classify_incident("something nobody has seen") == "unclassified"
 
 
+def test_date_format_crash_classifies_from_the_message_the_run_hook_builds():
+    """The 2026-09-03 Frontier Commits failure, verbatim from its incident sidecar.
+
+    The run hook has no stack — it records `f"{type(e).__name__}: {e}"` — so the
+    classifier only ever sees the parser's own rejection string. Landing this in
+    `unclassified` produces a report telling the reader to go write the playbook
+    that already exists."""
+    assert (
+        render.classify_incident(
+            "ValueError: time data 'August 31, 2026' does not match format '%Y-%m-%d'"
+        )
+        == "date-format-crash"
+    )
+    # strptime's other rejection: a format that consumes only a prefix. Same bug
+    # shape (a date handed to a parser told to expect the other form), same
+    # playbook, different CPython string.
+    assert (
+        render.classify_incident("ValueError: unconverted data remains: , 2026")
+        == "date-format-crash"
+    )
+
+
+def test_date_format_signature_does_not_swallow_unrelated_value_errors():
+    """The signature has to be the parser's message, not the exception type — a
+    playbook about date forms is the wrong place to send someone whose float
+    conversion or JSON decode blew up."""
+    for message in (
+        "ValueError: invalid literal for int() with base 10: 'seg_'",
+        "ValueError: Expecting value: line 1 column 1 (char 0)",
+        "ValueError: could not convert string to float: ''",
+    ):
+        assert render.classify_incident(message) == "unclassified", message
+
+
 def test_main_writes_an_incident_on_non_clean_exit(monkeypatch, tmp_path):
     cfg = _isolate_config(monkeypatch, tmp_path)
     manifest = tmp_path / "m.json"
