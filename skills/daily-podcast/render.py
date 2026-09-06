@@ -5320,6 +5320,35 @@ def incident_dir() -> Path:
     return Path(env) if env else INCIDENT_DIR
 
 
+# The archive half of the queue (#207). A report an operator has dealt with MOVES
+# here; it is never deleted and never rewritten, and there is deliberately no
+# retention window and no --prune flag for it.
+#
+# The repo holds both answers to "should this state be pruned?" and they disagree on
+# purpose. covered.json is cut to COVERED_RETENTION_DAYS on every write and
+# --prune-workdirs deletes aggressively, because both hold stale *state* — nothing
+# is lost when it goes. The bloopers bin is never pruned because it is *evidence*
+# ("an archive that deletes its oldest material defeats its own purpose"). An
+# incident report is evidence: every playbook in the repo's incidents/ directory
+# traces back to one, which is the entire claim that directory makes. But a handled
+# report is queue noise, exactly like a finished workdir — and while it sits in new/
+# it is indistinguishable from a failure nobody has looked at, which is what made
+# `ls new/` stop meaning anything. A move settles both: new/ shrinks to genuinely
+# open failures and nothing is ever destroyed. handled/ grows at most one pair of
+# small files per failed run, so unbounded growth is not a real cost.
+#
+# skills/daily-podcast/triage.py is the drain; nothing in a run writes here.
+HANDLED_INCIDENT_DIRNAME = "handled"
+
+
+def handled_incident_dir() -> Path:
+    """Where a triaged report lands. Derived from incident_dir() rather than
+    CONFIG_DIR so DAILY_PODCAST_INCIDENT_DIR moves BOTH halves of the queue
+    together — an archive that ignored the override would drain a redirected queue
+    (a test's, or an operator's) into the real config dir."""
+    return incident_dir().parent / HANDLED_INCIDENT_DIRNAME
+
+
 # Signature -> incident slug. Each maps to a file in the repo's incidents/ directory,
 # so a report names the playbook that already covers it.
 _INCIDENT_SIGNATURES: tuple[tuple[str, str], ...] = (

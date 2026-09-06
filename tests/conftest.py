@@ -117,6 +117,21 @@ def _assert_no_real_state_writes(request, _isolate_user_state):
             f"test left render.{attr} pointing at the real state dir ({value}); "
             "patch it to a tmp path"
         )
+    # The archive half of the incident queue is DERIVED (incident_dir().parent /
+    # "handled"), so no module attribute above covers it. Check the resolved path
+    # instead: a drain re-rooted at CONFIG_DIR would sweep the developer's real
+    # queue and nothing else here would notice.
+    # A test that patched the incident_dir seam to raise (there is one, for the
+    # best-effort contract) resolved no path at all, so there is nothing to check.
+    try:
+        archive = render.handled_incident_dir()
+    except Exception:  # noqa: BLE001 - fault injection in a test, not a real path
+        archive = None
+    if archive is not None:
+        assert real not in archive.parents and archive != real, (
+            f"test left handled_incident_dir() pointing at the real state dir ({archive}); "
+            "it must derive from incident_dir(), not CONFIG_DIR"
+        )
     assert Path(render.TMP_BASE).resolve() != system_tmp, (
         "test left render.TMP_BASE at the system temp dir; a deterministic auto "
         "workdir would then collide with a real same-day run"
