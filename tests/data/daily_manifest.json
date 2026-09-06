@@ -1,0 +1,53 @@
+{
+  "title": "Daily Digest fixture - September 4, 2026",
+  "summary": "A fixture episode in the daily show's shape: an intro, six body segments spanning the lead, body and short bands, and a sign-off. Every story is fictional.",
+  "date": "2026-09-04",
+  "segments": [
+    {
+      "title": "Intro",
+      "text": "Today's digest for Thursday, September 4, 2026. Six stories today, covering model releases, a chip shortage, open-source licensing, and a data-centre water fight. Here's the rundown.",
+      "source_url": null
+    },
+    {
+      "title": "Larkspur ships revision three",
+      "text": "Larkspur Systems shipped the third revision of its open-weights speech model this morning, and the release notes are unusually candid about what it still gets wrong. The headline number is a word error rate under two percent on the company's own read-speech benchmark, which is a real improvement over the spring build. The more interesting number is buried further down: on takes longer than about forty seconds, the model wanders off script roughly one time in five, producing fluent audio that says something the script never did. Larkspur's engineers call this derailment, and they are open that they do not fully understand it. Their recommendation is blunt. Keep every take short, verify what came out against what went in, and re-render anything that drifts. The weights remain under a non-commercial licence, which the company says it will revisit once a paid tier exists. For hobbyists that changes nothing. For anyone hoping to put the voice in a product, it means the clock is still running on a decision Larkspur has not made.",
+      "source_url": "https://example.com/larkspur-r3",
+      "source_title": "Larkspur release notes"
+    },
+    {
+      "title": "Meridian audits the supply chain",
+      "text": "The Meridian Foundation published its long-promised audit of the accelerator supply chain, and the picture is tighter than the vendors have been admitting. Lead times for the mid-range parts most small labs actually buy have stretched to nine months, up from four a year ago. The foundation's explanation is not demand alone. Two packaging plants went offline for retooling in the same quarter, and the capacity that came back is being allocated first to the largest customers. Smaller buyers are told to wait or to pay a premium through resellers. The report stops short of naming anyone, but it does recommend that public grant programmes start budgeting for hardware at next year's prices rather than this year's.",
+      "source_url": "https://example.com/meridian-audit",
+      "source_title": "Meridian Foundation"
+    },
+    {
+      "title": "Chapter minimum retired",
+      "text": "A quieter story out of the standards world. The working group behind the open podcast-chapter format voted to retire the minimum chapter length that has been in the spec since its first draft. The rule required every chapter to run at least thirty seconds, and it was written for a player that no longer exists. In practice it forced producers to pad short segments with dead air or to merge unrelated items into one chapter. The replacement is a spacing rule: consecutive chapter starts must be at least five seconds apart, and nothing else. Client authors have six months to update, though the two largest apps already accept the new shape.",
+      "source_url": "https://example.com/chapter-spec",
+      "source_title": "Chapter format working group"
+    },
+    {
+      "title": "Fennel opens its harness",
+      "text": "Fennel Labs open-sourced its evaluation harness for text-to-speech models, and the licence is the story. The code is permissive, but the reference recordings that make the benchmark comparable are not, and the two are shipped together. Anyone can run the harness on their own clips. Anyone who wants a number that means something against the published leaderboard has to sign the recording licence first. Fennel says this is about consent from the voice actors, and that reads as sincere. The first outside results are due in a month, and the leaderboard will show who signed.",
+      "source_url": "https://example.com/fennel-harness",
+      "source_title": "Fennel Labs"
+    },
+    {
+      "title": "Ashford denies the water permit",
+      "text": "The city council in Ashford voted late last night to deny water permits for the second phase of a data-centre campus on the town's eastern edge. The developer had asked for an allocation roughly equal to the consumption of the town itself, arguing that evaporative cooling was the only design that fit the site's power budget. The council's own consultant disagreed, and said a closed-loop system would cost more up front and draw a fraction of the water. What tipped the vote was a clause in the original agreement that nobody had read closely: the first phase's permit was conditional on a drought plan the developer never filed. The company says it will resubmit with the closed-loop design. The council says it will read the whole application this time.",
+      "source_url": "https://example.com/ashford-water",
+      "source_title": "Ashford Council minutes"
+    },
+    {
+      "title": "Correction: the batching bug",
+      "text": "Finally, a small correction to a story from earlier this week. The transcription model that appeared to skip clauses on long inputs was not skipping them at all. The audio being fed to it had been trimmed by a batching step that cut on a fixed duration rather than on silence. Fix the batching and the clauses come back. The team that found it posted a two-line patch and a longer note about why every measurement in the pipeline should be checked against the raw file at least once. That note is worth the read.",
+      "source_url": "https://example.com/batching-fix",
+      "source_title": "Patch notes"
+    },
+    {
+      "title": "Sign-off",
+      "text": "That's the digest for today. Six stories, one correction, and a reminder that the boring part of the pipeline is usually where the interesting bug lives. Back tomorrow.",
+      "source_url": null
+    }
+  ]
+}

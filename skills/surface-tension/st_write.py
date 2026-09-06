@@ -40,17 +40,62 @@ from orchestrate import (  # noqa: E402  (must follow the sys.path insert)
     POLICY_RE,
     extract_last_json,
 )
+
+# render.py owns what an engine can perform (#201): the closed marker list every
+# measurement strips and the capability table the gate below consults. Imported
+# rather than copied for the reason above — a second list is a second drift.
+from render import (  # noqa: E402  (same)
+    ENGINES,
+    EVENT_MARKERS,
+    TTS_ENGINE_QWEN3,
+    strip_event_markers,
+)
 from st_script_plan import VOICES_ST  # noqa: E402  (same)
 
 
 def scene_text(lines: list[dict]) -> str:
-    """The scene's spoken text: its line texts joined, mirroring render.lines_text.
+    """The scene's spoken text: its line texts joined, mirroring render.lines_text
+    — markers gone, because a performed laugh is not script.
 
     This is what MIN_SEGMENT_CHARS measures. A scene is eight or so turns of a
     hundred-odd characters each, so applying the floor per LINE would refuse
     every well-formed scene the show produces.
     """
-    return " ".join(str(ln.get("text", "")).strip() for ln in lines if isinstance(ln, dict)).strip()
+    spoken = (
+        strip_event_markers(str(ln.get("text", ""))).strip() for ln in lines if isinstance(ln, dict)
+    )
+    return " ".join(text for text in spoken if text)
+
+
+# --- what the writer may ask of the engine (#201) ----------------------------
+#
+# Direction is a per-line `instruct` over a clone (render.py's `direction`
+# capability). Free text bends identity — a full "exasperated" voice description
+# moved Ethan from 93 Hz to 183 Hz and his speaker similarity from 0.96 to 0.88 in
+# the 2026-09-04 eval — so the writer chooses a WORD from this closed list and the
+# engine hears the instruct the word maps to, which can be retuned after a listen
+# without touching the writer contract. One directed line per scene until that
+# drift has been measured against a listen: the budget is the show's, not the
+# writer's. Both are checked at classify time, so an over-reaching writer costs
+# one scene, not the run.
+DIRECTIONS: dict[str, str] = {
+    # pace
+    "slower": "Slower than usual, unhurried, giving each clause room.",
+    "faster": "Faster than usual, pressing on, not waiting for a reply.",
+    # affect
+    "amused": "Amused, on the edge of a laugh.",
+    "exasperated": "Plainly exasperated, but keeping composure.",
+    "weary": "Weary and flat, as if this has come up before.",
+    "urgent": "Urgent, leaning in, as if time were short.",
+    "warm": "Warm and unguarded, meaning it.",
+}
+MAX_DIRECTED_LINES_PER_SCENE = 1
+
+# Any single lowercase word in parentheses is marker-SHAPED. render.py strips only
+# the closed EVENT_MARKERS list and treats an unlisted one as text (a silent edit
+# is not its call); here an unlisted one is refused, because on this show the only
+# thing it could be is a stage direction, and every engine would read it aloud.
+_MARKER_SHAPE_RE = re.compile(r"\(([a-z]+)\)")
 
 
 def _shape_problem(lines) -> str:
@@ -62,6 +107,7 @@ def _shape_problem(lines) -> str:
     """
     if not isinstance(lines, list) or not lines:
         return "lines must be a non-empty list"
+    directed = 0
     for j, line in enumerate(lines):
         if not isinstance(line, dict):
             return f"line {j} is not an object"
@@ -74,6 +120,27 @@ def _shape_problem(lines) -> str:
         text = line.get("text")
         if not isinstance(text, str) or not text.strip():
             return f"line {j} is missing 'text'"
+        if not strip_event_markers(text).strip():
+            return f"line {j} has no spoken text, only markers"
+        stray = [m for m in _MARKER_SHAPE_RE.findall(text) if m not in EVENT_MARKERS]
+        if stray:
+            allowed = ", ".join(f"({m})" for m in EVENT_MARKERS)
+            return (
+                f"line {j} carries a marker no engine performs (({stray[0]})); events are {allowed}"
+            )
+        instruct = line.get("instruct")
+        if instruct is not None:
+            if not isinstance(instruct, str) or instruct not in DIRECTIONS:
+                words = ", ".join(DIRECTIONS)
+                return (
+                    f"line {j} instruct {instruct!r} is not in the direction vocabulary ({words})"
+                )
+            directed += 1
+    if directed > MAX_DIRECTED_LINES_PER_SCENE:
+        return (
+            f"{directed} directed lines; a scene may direct at most "
+            f"{MAX_DIRECTED_LINES_PER_SCENE} (the identity drift is unmeasured)"
+        )
     return ""
 
 
@@ -155,6 +222,7 @@ PLACEHOLDERS = (
     "<<BOARD>>",
     "<<MIN_CHARS>>",
     "<<MAX_CHARS>>",
+    "<<PERFORMANCE>>",
 )
 
 # Said in full rather than left as an absence. A writer handed an empty board and
@@ -260,14 +328,57 @@ def _rundown(scene: dict, has_calls: bool) -> list[dict]:
     return [entry for entry in scene["turn_order"] if entry["role"] in keep]
 
 
+def performance_rules(engine: str) -> str:
+    """The <<PERFORMANCE>> block: what this engine lets a line carry, and the
+    complete list of it. Conditional on the engine's CAPABILITIES, never on prose
+    about a model: an engine without `events` reads (laugh) aloud as a word, and
+    one without `direction` has an instruct refused rather than quietly ignored,
+    so the writer is told exactly what will survive the gate."""
+    spec = ENGINES[engine]
+    out = []
+    if spec.has("events"):
+        markers = ", ".join(f"({m})" for m in EVENT_MARKERS)
+        out.append(
+            f"- Vocal events: a line's text may carry {markers}, written exactly so, "
+            "where a real panelist would laugh or sigh - sparingly, and never instead "
+            "of a reaction in words. Nothing else in parentheses: any other marker is "
+            "refused."
+        )
+    else:
+        out.append(
+            "- No markers: this voice engine reads a parenthesised word aloud as a "
+            "word. Nothing in parentheses, ever."
+        )
+    if spec.has("direction"):
+        words = ", ".join(DIRECTIONS)
+        out.append(
+            f"- Direction: at most {MAX_DIRECTED_LINES_PER_SCENE} line in this scene may "
+            f'carry a third field, "instruct", whose value is exactly one of: {words}. '
+            "It tells the voice how to deliver that one turn. Spend it where the "
+            "argument turns, or not at all; a second directed line, or any other word, "
+            "is refused."
+        )
+    else:
+        out.append(
+            '- No direction: a line is {"speaker", "text"} and nothing else. An '
+            '"instruct" field is refused on this engine.'
+        )
+    return "\n".join(out)
+
+
 def fill_scene_prompt(
     template: str,
     post: dict,
     scene: dict,
     band: tuple[int, int] = SCENE_BAND,
     comment_entries: tuple | list = (),
+    engine: str | None = None,
 ) -> str:
-    """Substitute one post and its assigned scene into the writer's template."""
+    """Substitute one post and its assigned scene into the writer's template.
+
+    `engine` is the one the episode will render on (None: the renderer's default),
+    and it decides the <<PERFORMANCE>> block — the same engine assemble_manifest
+    must later be handed, or the writer is promised what the gate then refuses."""
     lo, hi = band
     facts = board_facts(post, comment_entries)
     rundown = _rundown(scene, bool(facts["count"]))
@@ -289,6 +400,7 @@ def fill_scene_prompt(
         .replace("<<BOARD>>", board_brief(facts))
         .replace("<<MIN_CHARS>>", str(lo))
         .replace("<<MAX_CHARS>>", str(hi))
+        .replace("<<PERFORMANCE>>", performance_rules(engine or TTS_ENGINE_QWEN3))
     )
 
 
@@ -415,6 +527,46 @@ def scene_violations(
     return problems
 
 
+# --- the engine gate (#201) --------------------------------------------------
+
+
+def engine_violations(lines: list[dict], engine: str) -> list[str]:
+    """What this scene asks of the engine that the engine cannot render, as a
+    list of problems. Empty means clean.
+
+    Only direction lives here. An event on an engine without `events` is not a
+    violation but a strip (lines_for_engine): a stripped marker is the same line,
+    where a dropped direction is a different performance that nobody would be
+    told about — so it is refused, naming the engine, and never stripped.
+    """
+    if ENGINES[engine].has("direction"):
+        return []
+    return [
+        f"line {j} is directed ({line.get('instruct')!r}), but engine {engine} cannot "
+        "direct a voice"
+        for j, line in enumerate(lines)
+        if isinstance(line, dict) and line.get("instruct") is not None
+    ]
+
+
+def lines_for_engine(lines: list[dict], engine: str) -> list[dict]:
+    """The lines as the engine will render them: event markers stripped on an
+    engine without `events`, and each direction WORD expanded to the instruct the
+    engine hears (DIRECTIONS). New objects; the writer's lines are never mutated.
+    Refuses nothing — engine_violations is the refusal, and runs first."""
+    spec = ENGINES[engine]
+    out = []
+    for line in lines:
+        new = dict(line)
+        if not spec.has("events"):
+            new["text"] = strip_event_markers(str(new.get("text", "")))
+        word = new.get("instruct")
+        if word is not None:
+            new["instruct"] = DIRECTIONS[word]
+        out.append(new)
+    return out
+
+
 # --- the manifest ------------------------------------------------------------
 
 
@@ -455,26 +607,31 @@ def build_scene_segment(
     scene: dict,
     lines: list[dict],
     comment_entries: tuple | list = (),
+    engine: str = TTS_ENGINE_QWEN3,
 ) -> dict:
-    """One post scene as a render.py segment: one chapter, one source_url."""
+    """One post scene as a render.py segment: one chapter, one source_url, gated
+    through the engine it will render on (#201)."""
     problem = _shape_problem(lines)
     if problem:
         die(f"scene for {post.get('url')!r}: {problem}")
     violations = scene_violations(lines, scene, post, comment_entries)
+    violations += engine_violations(lines, engine)
     if violations:
         die(f"scene for {post.get('url')!r}: " + "; ".join(violations))
     return {
         "title": (str(post.get("title") or "The post"))[:120],
         "source_url": post.get("url"),
-        "lines": lines,
+        "lines": lines_for_engine(lines, engine),
     }
 
 
-def build_frame_segment(item: dict) -> dict:
+def build_frame_segment(item: dict, engine: str = TTS_ENGINE_QWEN3) -> dict:
     """A non-story frame (ident, vote desk, rapid fire, sign-off).
 
     Carries `source_url: null` and an explicit title: without one render.py falls
     back to positional chapter names like "Segment 1" in the published timeline.
+    Gated through the engine like a post scene: a frame is written in the main
+    context, but it renders on the same engine.
     """
     lines = item.get("lines")
     problem = _shape_problem(lines)
@@ -483,37 +640,61 @@ def build_frame_segment(item: dict) -> dict:
     for j, line in enumerate(lines):
         if _HANDLE_RE.search(str(line.get("text") or "")):
             die(f"frame {item.get('title')!r} line {j} speaks a Fediverse handle")
+    violations = engine_violations(lines, engine)
+    if violations:
+        die(f"frame {item.get('title')!r}: " + "; ".join(violations))
     title = str(item.get("title") or "").strip()
     if not title:
         die("a frame segment needs a title, or its chapter publishes as 'Segment N'")
-    return {"title": title[:120], "source_url": None, "lines": lines}
+    return {"title": title[:120], "source_url": None, "lines": lines_for_engine(lines, engine)}
 
 
-def assemble_manifest(date_iso: str, title: str, summary: str, items: list[dict]) -> dict:
+def assemble_manifest(
+    date_iso: str,
+    title: str,
+    summary: str,
+    items: list[dict],
+    engine: str | None = None,
+) -> dict:
     """Build the render.py manifest for one Surface Tension episode.
 
     `items` is the episode's running order (spec section 5), each entry either a
     frame or a post scene. The order lives with the caller because the episode
     SHAPE is editorial; what lives here is every invariant a wrong one would
     breach.
+
+    `engine` is the `tts_engine` the manifest will carry — None keeps the key
+    absent, so the show renders on the renderer's default exactly as before (#201).
+    Every scene and frame is gated through the resolved engine BEFORE it becomes a
+    segment: events it cannot perform are stripped, direction it cannot render is
+    refused. Moving the show to another engine is this one argument; the episode
+    voice follows it, because an engine without presets refuses one.
     """
+    resolved = engine or TTS_ENGINE_QWEN3
+    if resolved not in ENGINES:
+        die(f"tts_engine must be one of {list(ENGINES)} (got {engine!r})")
+    spec = ENGINES[resolved]
     segments = [
-        build_scene_segment(it["post"], it["plan"], it["lines"], it.get("comment_entries", ()))
+        build_scene_segment(
+            it["post"], it["plan"], it["lines"], it.get("comment_entries", ()), engine=resolved
+        )
         if it.get("kind") == "scene"
-        else build_frame_segment(it)
+        else build_frame_segment(it, engine=resolved)
         for it in items
     ]
-    return {
+    manifest = {
         # Display-only free text: `date` is what keys the slug and the guid (#128).
         "title": title,
         "summary": summary,
         "date": date_iso,
-        # A preset, never "house": the daily show's narrator is not a panelist.
-        # Every segment here is a `lines` scene, so this is only the fallback
-        # render.py resolves for a segment carrying plain text — and since #177 it
-        # is no longer any panelist's voice, since the cast are clones. Nothing
-        # should ever hear it; a segment that does is a bug upstream of here.
-        "voice": VOICES_ST[0],
+        # A preset where the engine has one: the daily show's narrator is not a
+        # panelist. Every segment here is a `lines` scene, so this is only the
+        # fallback render.py resolves for a segment carrying plain text — and since
+        # #177 it is no longer any panelist's voice, since the cast are clones.
+        # Nothing should ever hear it; a segment that does is a bug upstream of
+        # here. An engine without presets (Breeze) refuses a preset name before the
+        # model load, so there the fallback is the "house" clone — still nobody's.
+        "voice": VOICES_ST[0] if spec.has("preset") else "house",
         "cast": cast_map(),
         # This show's own art, used verbatim instead of build_cover's generated
         # gradient (#164). show_name alone only renames the DAILY show's template,
@@ -527,3 +708,6 @@ def assemble_manifest(date_iso: str, title: str, summary: str, items: list[dict]
         "description_footer_text": DESCRIPTION_FOOTER,
         "segments": segments,
     }
+    if engine is not None:
+        manifest["tts_engine"] = engine
+    return manifest

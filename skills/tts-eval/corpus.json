@@ -1,0 +1,119 @@
+{
+  "_comment": "The fixed bench corpus (#200). Never edit a line in place: every ledger entry ever written measured THIS text, and a changed line makes old entries incomparable. Add a new probe as a new key. ASCII only, no digits (WER is measured on spoken words). Every line stays under the smallest finite take ceiling in render.ENGINES; a test pins it.",
+  "lines": [
+    {
+      "id": "ryan-short",
+      "speaker": "Ryan",
+      "band": "short",
+      "text": "All right. Say it plainly, and then we'll see if it holds up."
+    },
+    {
+      "id": "ryan-medium",
+      "speaker": "Ryan",
+      "band": "medium",
+      "text": "Here's my problem with it. He spends three paragraphs telling me what he's about to argue, and one sentence arguing it. I don't need the warm-up. I've read the warm-up a thousand times. Give me the sentence and let me decide whether I believe you."
+    },
+    {
+      "id": "ryan-long",
+      "speaker": "Ryan",
+      "band": "long",
+      "text": "Let me back up, because I think we skipped something. The post isn't really about the tool. It's about the year he spent pretending the tool was fine, and what that cost him. That's the part I'd want more of. Not the benchmark table, not the migration notes. The part where he admits he knew and kept going anyway. Every one of us has done that with something. He wrote it down. That takes more nerve than the rest of the piece put together, and nobody in the comments noticed."
+    },
+    {
+      "id": "aiden-short",
+      "speaker": "Aiden",
+      "band": "short",
+      "text": "Oh, I loved this one. Read it twice on the train and missed my stop."
+    },
+    {
+      "id": "aiden-medium",
+      "speaker": "Aiden",
+      "band": "medium",
+      "text": "So here's the thing nobody's saying. It's funny. Like, actually funny, on purpose, in a way most of these posts are terrified to be. There's a line about the build server that I read out loud to a friend. If that's the only thing it does, that's still more than most of what I read this week."
+    },
+    {
+      "id": "aiden-long",
+      "speaker": "Aiden",
+      "band": "long",
+      "text": "Okay, can I push back a little? Because I think we're being kind of unfair. He never claims it's a general solution. He says it worked for him, on one project, for about a month, and that he'd probably do it differently now. That's the most honest framing I've seen in ages. We keep asking people to show their work, and then when someone does, we grade it like a paper. I'd rather have ten posts like this than one polished thing that hides every wrong turn. The wrong turns are the useful part."
+    },
+    {
+      "id": "ethan-short",
+      "speaker": "Ethan",
+      "band": "short",
+      "text": "Two claims there, and only one of them is supported."
+    },
+    {
+      "id": "ethan-medium",
+      "speaker": "Ethan",
+      "band": "medium",
+      "text": "I want to be precise about what he measured. The number is startup time on a cold cache, on one machine, run five times. That's a fine measurement. It is not the same as the claim in the title, which is about throughput under load. Both might be true. Only the first is demonstrated here."
+    },
+    {
+      "id": "ethan-long",
+      "speaker": "Ethan",
+      "band": "long",
+      "text": "Let me separate the argument from the evidence, because they're being graded together. The argument is that the migration was worth it. The evidence is a chart of build times before and after, and a paragraph of impressions. The chart is real. The paragraph is a mood. I don't doubt the mood, but a mood isn't a result, and the post presents it as one. If he'd written the same piece with the chart alone, I'd have no objection. As written, the conclusion is carrying weight the data can't hold."
+    },
+    {
+      "id": "chelsie-short",
+      "speaker": "Chelsie",
+      "band": "short",
+      "text": "Quick note before we move on. The comments are the actual post."
+    },
+    {
+      "id": "chelsie-medium",
+      "speaker": "Chelsie",
+      "band": "medium",
+      "text": "Here's what I noticed. Forty comments, and thirty of them are about the title. Not the argument, the title. He picked a fight in the headline and then wrote something careful underneath it, and nobody made it past the fight. That's a choice, and I think he'd make it again."
+    },
+    {
+      "id": "chelsie-long",
+      "speaker": "Chelsie",
+      "band": "long",
+      "text": "Can I bring in what people actually said? Because the room is not with you on this one. The most upvoted reply is a woman who did the same migration two years ago and says the payoff didn't show up until month six. Second most upvoted is someone who tried it, hated it, and rolled back in a week. Both of them are more specific than the post. Neither of them is angry. That's the interesting part to me. The post reads like it expects a fight, and instead it got two people quietly comparing notes."
+    }
+  ],
+  "scene": [
+    {
+      "speaker": "Ryan",
+      "text": "All right, first post of the night. Aiden, you flagged this one. Make the case."
+    },
+    {
+      "speaker": "Aiden",
+      "text": "It's short, it's funny, and it admits the thing everyone else dances around. That's the case."
+    },
+    {
+      "speaker": "Ethan",
+      "text": "It admits one thing. It asserts three others without evidence. I'd like to keep those separate."
+    },
+    {
+      "speaker": "Chelsie",
+      "text": "Before you two dig in, the comments already had this argument, and they landed somewhere neither of you is."
+    },
+    {
+      "speaker": "Ryan",
+      "text": "Go on, then. Where did they land?"
+    },
+    {
+      "speaker": "Chelsie",
+      "text": "That the tool doesn't matter and the team does. Twelve replies, most of them from people who've run it."
+    },
+    {
+      "speaker": "Aiden",
+      "text": "Which is kind of what he said, just not in the title."
+    },
+    {
+      "speaker": "Ethan",
+      "text": "Then the title is the problem. I'll grant the rest. Next post."
+    }
+  ],
+  "events": {
+    "speaker": "Aiden",
+    "text": "Okay, I have to admit it. (laugh) I read that whole thing standing in my kitchen, holding a cup of coffee I forgot to drink. (sigh) And then I read it again."
+  },
+  "direction": {
+    "instruct": "A man in his early forties. A thin, even, precise voice, plainly exasperated but keeping his composure.",
+    "text": "I have explained this twice. I will explain it a third time, slowly, and then I would like us to move on."
+  }
+}

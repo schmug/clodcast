@@ -78,7 +78,7 @@ the next version and changelog; **merging that PR** cuts the tag and GitHub Rele
   - `curl -fsSL https://saveto.spotify.com/install.sh | bash`
   - `save-to-spotify auth login`
 - **Apple Silicon Mac** (Qwen3-TTS via MLX uses Metal). Swap the renderer if you want a different TTS provider.
-- **Python 3.10+** — runtime deps are declared in [`pyproject.toml`](pyproject.toml) (`mlx-audio`, `soundfile`, `mutagen`, `Pillow`, `numpy`, `feedparser`)
+- **Python 3.10+** — runtime deps are declared in [`pyproject.toml`](pyproject.toml) (`mlx-audio>=0.5.1`, `soundfile`, `mutagen`, `Pillow`, `numpy`, `feedparser`)
   - `pip install -r requirements.txt` (or `pip install -e .` for an editable checkout)
 - **`ffmpeg`** and **`ffprobe`**
 - **`gh` CLI** on `PATH`, authenticated (`gh auth login`) — required by the `frontier-commits` skill (daily snapshot collector and per-story research)
@@ -260,7 +260,8 @@ catches the gross cases and the documented recovery deletes the offending audio 
 `~/.config/daily-podcast/bloopers/` archives it first. Clips land content-addressed
 under `clips/<sha16>.mp3` with one append-only row each in `index.jsonl`, tagged by
 what tripped the capture: `gate` (about to be rejected), `near-miss` (slow but
-shipped), `run-failed` (swept from a dead run's workdir), or `manual`.
+shipped), `run-failed` (swept from a dead run's workdir), `derailed` (a take the
+transcript check re-rolled, on engines that declare it), or `manual`.
 
 Nothing in a run reads the bin back. Sift it with `jq`, and bank a clip you heard
 yourself with:

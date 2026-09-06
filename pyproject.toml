@@ -1,6 +1,6 @@
 [project]
 name = "clodcast"
-version = "0.1.11"
+version = "0.1.13"
 description = "Claude Code plugin that turns saved URLs into a produced Spotify episode (the daily-podcast skill)."
 readme = "README.md"
 license = { text = "MIT" }
@@ -10,7 +10,7 @@ requires-python = ">=3.10"
 # dev tools below, never the full project. Bounds are left open; pin only at a
 # known compat boundary (none today).
 dependencies = [
-    "mlx-audio",
+    "mlx-audio>=0.5.1",
     "soundfile",
     "mutagen",
     "Pillow",
@@ -27,6 +27,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Analysis deps for the TTS eval bench (skills/tts-eval/bench.py, #200). Not
+# runtime deps: no show ships on an engine that needs them, and bench.py and
+# render.py both import them function-locally. mlx-whisper is also what render.py's
+# derailment detector (#202) transcribes with on an engine that declares it
+# (Breeze); pre-flight fails such a run before rendering when it is absent.
+bench = [
+    "mlx-whisper",
+    "librosa",
+    "resemblyzer",
+]
 dev = [
     "pytest>=8.0",
     # ruff is pinned exactly (not a floor) so lint results are reproducible across
@@ -75,4 +85,5 @@ known-first-party = [
     "st_gather",
     "st_script_plan",
     "st_write",
+    "bench",
 ]

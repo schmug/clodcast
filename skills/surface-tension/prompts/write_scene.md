@@ -30,6 +30,10 @@ THE BOARD — what the discussion desk may say about this post's calls, and the
 complete list of it:
 <<BOARD>>
 
+PERFORMANCE — what this voice engine lets a line carry, and the complete list of
+it. These are enforced in code: an engine is never handed what it cannot do.
+<<PERFORMANCE>>
+
 RULES
 - <<MIN_CHARS>> to <<MAX_CHARS>> characters across ALL line texts combined — the
   scene's slot in the episode's pacing. Individual turns are short; that is what

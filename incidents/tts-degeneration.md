@@ -94,6 +94,39 @@ that must stay local and fast. The bin's `near-miss` band (0.75-0.90x, #169)
 later listening, never rejected. That is an archive, not a second gate: it makes
 the blind spot audible after the fact, and does not narrow it.
 
+## The transcript check (Breeze, #202)
+
+Breeze-TTS-2 has the same failure class with a different signature: past ~35 s of
+audio it derails about one take in five (measured 2026-09-04, registry spec) into
+multilingual babble, a hallucinated clause, or a skipped clause — and the rate
+gate above sees none of it, because chars/s stays normal and whisper transcribes
+babble as words. So an engine that declares `detect_derailment` gets a second,
+transcript-based guard inside `render_segments`:
+
+- every rendered take is transcribed (`transcribe_take`, whisper-large-v3-turbo,
+  loaded once per run) and judged by the eval bench's rule, which `render.py` now
+  owns: WER > 0.15, non-ASCII in the transcript, or a heard/script word ratio
+  outside 0.9–1.1;
+- a derailed take is **banked first** (`reason: derailed`, the reasons and the
+  transcript in `note`) and re-rolled at most `MAX_TAKE_REROLLS` = 1 times;
+- a take still derailed keeps **no cache sidecar** and is recorded in
+  `<workdir>/derailed.json`, which `verify_artifact` turns into a rejection:
+
+```
+error: artifact gate failed: segment 3 chunk 2 derailed on 2 attempt(s)
+(non-ascii, word-ratio) — heard '這是 一段 胡言亂語'; the take is banked in the
+bloopers bin and kept without a cache sidecar, so re-running with the same
+--workdir re-rolls only that take
+```
+
+The recovery is the same command again: every clean take is a cache hit and
+the bad one gets two more draws. Long segments on such an engine render as
+balanced sentence chunks (`chunk_text`), which is also what keeps the rule
+honest — it is coarse on a short take (a 13-word line was flagged at 0.154 for
+"Alright" vs "All right" on the first bench run), and a false positive costs
+one re-roll, not the run. `--dry-run` runs the check and the re-roll but banks
+nothing.
+
 ## Test that guards it
 
 - `test_verify_artifact_rejects_a_tts_degenerated_segment` — the real 0.59x
@@ -105,3 +138,9 @@ the blind spot audible after the fact, and does not narrow it.
 - `test_speech_rate_check_is_skipped_when_segments_are_not_supplied`
 - `test_speech_rate_failure_classifies_as_a_tts_degeneration_incident`
 - `test_dry_run_exercises_the_artifact_gate` — the gate runs in rehearsal too.
+- `tests/test_chunking.py` (#202): `test_a_derailed_take_is_banked_then_rerolled_once`
+  (banked bytes are the first attempt's), `test_a_take_that_derails_twice_is_left_for_the_gate`
+  (bounded, no sidecar, classified `tts-degeneration`),
+  `test_a_final_derailment_fails_the_dry_run_through_the_artifact_gate`,
+  `test_qwen3_never_transcribes`, and
+  `test_the_derailment_rule_has_one_definition_which_the_bench_reuses`.
