@@ -662,6 +662,8 @@ RUN_LOG_FIELDS: tuple[str, ...] = (
     "bloopers_captured",  # clips banked into the bloopers bin this run (#169)
     "tts_engine",  # engine name from the manifest (spec 2026-09-04); null before it is resolved
     "rerolled_takes",  # takes the derailment detector re-rolled (#202); null when it did not run
+    "untitled_segments",  # 1-based indices that fell back to a "Segment N" chapter (#96);
+    # [] means checked-and-clean, null means the run never reached the check
 )
 
 
@@ -3103,6 +3105,21 @@ def apply_cover_image(src: Path, out_path: Path) -> None:
 
 
 # --- timeline + description ------------------------------------------------
+
+
+def untitled_segments(segments: list[dict]) -> list[int]:
+    """1-based indices of segments carrying no author-supplied chapter title, i.e.
+    exactly those build_timeline_and_description will name `Segment N` below.
+
+    The placeholder is deliberately never fatal — a cosmetic field must not sink a
+    rendered episode — but it publishes as a real chapter name in the RSS show
+    notes, and 15 of 89 published entries carried one before anyone read the feed
+    (#96). This is what makes the condition loud at render time and in runs.jsonl.
+    Pure: no I/O, no mutation, so `validate_manifest`'s caller can log the result.
+    """
+    return [
+        i + 1 for i, seg in enumerate(segments) if not (seg.get("title") or seg.get("source_title"))
+    ]
 
 
 def build_timeline_and_description(
@@ -5654,6 +5671,20 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
     web_only = is_web_only(manifest)
     record["title"] = title
     record["segment_count"] = len(segments)
+
+    # A title-less segment publishes as `Segment N` in the show notes (#96). Warned
+    # here rather than inside validate_manifest (pure by contract, signals only via
+    # die()) and rather than at the fallback itself — this is before the model load,
+    # so the operator sees it while the run is still cheap to abort, and it is above
+    # the --dry-run return so the rehearsal surfaces exactly what a real run does.
+    untitled = untitled_segments(segments)
+    record["untitled_segments"] = untitled
+    if untitled:
+        shown = ", ".join(str(n) for n in untitled)
+        log(
+            f'warn: segment(s) {shown} have no title and will publish as "Segment N" '
+            'placeholder chapters — set `title` on each (SKILL.md, "Form 2")'
+        )
 
     auto_workdir = args.workdir is None
     # The auto workdir is deterministic per-date rather than a random mkdtemp(): a

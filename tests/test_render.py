@@ -2847,3 +2847,162 @@ def test_validate_manifest_rejects_markup_in_footer_text(bad, capsys):
     with pytest.raises(SystemExit):
         render.validate_manifest(m)
     assert "plain text" in capsys.readouterr().err
+
+
+# --- untitled segments (#96) ----------------------------------------------
+#
+# A segment with no `title` and no `source_title` falls back to a `Segment N`
+# placeholder in build_timeline_and_description, and that placeholder ships to
+# the public show notes as a real chapter name. The fallback stays (a cosmetic
+# field must not crash a render); these tests pin the VISIBILITY that was
+# missing — 15 of 89 published entries carried one before anyone noticed.
+
+
+def test_untitled_segments_reports_one_based_indices():
+    # 1-based to match the render log and the `Segment N` placeholder itself.
+    segments = [
+        {"text": "Intro", "source_url": None},
+        {"text": "Story", "source_url": "https://example.com/a", "source_title": "A story"},
+        {"text": "Outro", "source_url": None},
+    ]
+
+    assert render.untitled_segments(segments) == [1, 3]
+
+
+def test_untitled_segments_is_empty_when_every_segment_is_titled():
+    # The negative case: `title` and `source_title` both count as titled, since
+    # build_timeline_and_description falls back through both before the placeholder.
+    segments = [
+        {"title": "Intro"},
+        {"source_title": "A story"},
+        {"title": "Sign-off"},
+    ]
+
+    assert render.untitled_segments(segments) == []
+
+
+def test_untitled_segments_names_exactly_the_placeholder_chapters(tmp_path, monkeypatch):
+    """The helper and the fallback must agree. They are two expressions of one
+    rule, so this asserts behaviorally that the indices warned about are exactly
+    the chapters that came out named `Segment N`."""
+    segments = [
+        {"text": "Intro"},
+        {"source_title": "A story", "source_url": "https://example.com/a"},
+        {"text": "Outro"},
+    ]
+    paths = _paths(tmp_path, 3)
+    episode = tmp_path / "episode.mp3"
+    durations = {p: 30_000 for p in paths}
+    durations[episode] = 95_000
+    _patch_durations(monkeypatch, durations)
+
+    timeline, _ = render.build_timeline_and_description(
+        segments,
+        paths,
+        silences_ms=[800, 800, 0],
+        summary="s",
+        episode_mp3=episode,
+    )
+
+    chapters = [it["chapter"]["title"] for it in timeline["items"] if "chapter" in it]
+    placeholders = [i + 1 for i, t in enumerate(chapters) if t == f"Segment {i + 1}"]
+    assert placeholders == render.untitled_segments(segments)
+
+
+def test_untitled_segments_is_appended_to_the_run_log_schema():
+    # Appended, never inserted: every existing record keeps its key order, and the
+    # field is null-by-default so a run that never reached the check doesn't guess.
+    assert render.RUN_LOG_FIELDS[-1] == "untitled_segments"
+    assert render._new_run_record()["untitled_segments"] is None
+
+
+def test_dry_run_warns_and_records_untitled_segments(tmp_path, monkeypatch, capsys):
+    """--dry-run must surface the same warning a real run does — the rehearsal
+    exercises the gates. The run still exits 0: a missing title is cosmetic."""
+    log_path = tmp_path / "runs.jsonl"
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(render, "RUN_LOG_PATH", log_path)
+    monkeypatch.setattr(render, "COVERED_PATH", tmp_path / "covered.json")
+    monkeypatch.setattr(render, "INFLIGHT_PATH", tmp_path / "inflight.json")
+    _stub_full_render(monkeypatch, tmp_path)
+    manifest = tmp_path / "m.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "title": "Untitled Segments Episode",
+                "summary": "s",
+                "show_id": "spotify:show:1",
+                # The SKILL.md Form-2 shape that shipped the placeholders: the
+                # intro and outro carry no title, the story carries source_title.
+                "segments": [
+                    {"text": "Intro", "source_url": None},
+                    {"text": "Story", "source_url": "https://example.com/a", "source_title": "A"},
+                    {"text": "Outro", "source_url": None},
+                ],
+            }
+        )
+    )
+    monkeypatch.setattr(render, "render_segments", lambda *a, **k: _paths(tmp_path, 3))
+    monkeypatch.setattr(render, "plan_silences", lambda paths: [800, 800, 0])
+    wd = tmp_path / "wd"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["render.py", "--manifest", str(manifest), "--workdir", str(wd), "--dry-run"],
+    )
+
+    assert render.main() == 0  # cosmetic, never fatal
+
+    err = capsys.readouterr().err
+    assert "warn:" in err and "1, 3" in err  # names the offending segment indices
+    rec = json.loads(log_path.read_text().splitlines()[-1])
+    assert rec["status"] == "dry-run"
+    assert rec["untitled_segments"] == [1, 3]  # visible in runs.jsonl after the run
+    assert set(rec) == set(render.RUN_LOG_FIELDS)
+
+
+def test_fully_titled_run_records_no_untitled_segments(tmp_path, monkeypatch, capsys):
+    # Negative test: a well-formed manifest must stay quiet, and record [] —
+    # "checked, none found", which null (never checked) would not distinguish.
+    log_path = tmp_path / "runs.jsonl"
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(render, "RUN_LOG_PATH", log_path)
+    monkeypatch.setattr(render, "COVERED_PATH", tmp_path / "covered.json")
+    monkeypatch.setattr(render, "INFLIGHT_PATH", tmp_path / "inflight.json")
+    _stub_full_render(monkeypatch, tmp_path)
+    manifest = tmp_path / "m.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "title": "Titled Episode",
+                "summary": "s",
+                "show_id": "spotify:show:1",
+                "segments": [{"title": "Intro", "text": "hi", "source_url": None}],
+            }
+        )
+    )
+    wd = tmp_path / "wd"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["render.py", "--manifest", str(manifest), "--workdir", str(wd), "--dry-run"],
+    )
+
+    assert render.main() == 0
+
+    assert "no title" not in capsys.readouterr().err
+    rec = json.loads(log_path.read_text().splitlines()[-1])
+    assert rec["untitled_segments"] == []
+
+
+def test_skill_md_manifest_example_titles_every_segment():
+    """SKILL.md is the production path (CLAUDE.md), so the assembler copies this
+    example verbatim. Omitting `title` on the intro and outro is what put a
+    `Segment N` placeholder in the public show notes of every episode from
+    2026-08-24 on. Run the production check against the doc's own example."""
+    skill = (render.SCRIPT_DIR / "SKILL.md").read_text()
+    start = skill.index('"segments": [')
+    end = skill.index("]", start) + 1
+    example = json.loads("{" + skill[start:end] + "}")
+
+    assert render.untitled_segments(example["segments"]) == []

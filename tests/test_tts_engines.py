@@ -388,8 +388,11 @@ def test_preflight_runs_the_engine_check_under_dry_run(monkeypatch):
 
 
 def test_tts_engine_is_appended_to_both_field_sets_and_nothing_is_reordered():
-    # rerolled_takes (#202) was appended after it, the same append-only rule.
-    assert render.RUN_LOG_FIELDS[-3:] == ("bloopers_captured", "tts_engine", "rerolled_takes")
+    # rerolled_takes (#202), then untitled_segments (#96), were appended after it
+    # under the same append-only rule — so this anchors on the trio's position
+    # rather than on the end of the tuple, which every later append moves.
+    i = render.RUN_LOG_FIELDS.index("bloopers_captured")
+    assert render.RUN_LOG_FIELDS[i : i + 3] == ("bloopers_captured", "tts_engine", "rerolled_takes")
     assert render.BLOOPER_FIELDS[-1] == "tts_engine"
     assert render.BLOOPER_FIELDS[-2] == "workdir"
     assert render._new_run_record()["tts_engine"] is None

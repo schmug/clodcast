@@ -62,12 +62,21 @@ Already-written segments. Skip straight to rendering.
   "description_footer_text": "Sources: …", // optional; replaces the standard credit footer on the episode description (see "Episode description footer"). PLAIN TEXT: render.py escapes it into one <p> and rejects markup. Set it when rendering a SECOND show — the default footer credits the daily show's feeds
   "cast": {"anchor": "Ryan", "skeptic": "Ethan"}, // optional; speaker -> preset name OR {"ref_audio","ref_text"} clip, for multi-voice `lines` segments (see "Multi-voice scenes"). The daily show does not use this
   "segments": [
-    {"text": "Intro segment...",            "source_url": null},
+    {"title": "Intro",    "text": "Intro segment...",            "source_url": null},
     {"text": "Item 1 segment, 600+ chars.", "source_url": "https://...", "source_title": "..."},
-    {"text": "Outro segment...",            "source_url": null}
+    {"title": "Sign-off", "text": "Outro segment...",            "source_url": null}
   ]
 }
 ```
+
+**Every segment needs a chapter name.** `title` is the chapter shown in the public
+show notes; a segment with neither `title` nor `source_title` falls back to a
+`Segment N` placeholder that ships to the RSS feed as a real chapter name. A story
+segment is covered by its `source_title`; the intro and outro are not, which is why
+they carry an explicit `title` here — `"Intro"` and `"Sign-off"`, the names this show
+has published since it launched. Omitting them put a placeholder in the show notes of
+every episode from 2026-08-24 to 2026-09-08 (#96); `render.py` now warns on one, but
+the warning is a backstop, not a licence to skip the field.
 
 ## Workflow
 
@@ -549,7 +558,9 @@ Every `render.py` run appends one JSON record to `~/.config/daily-podcast/runs.j
   "r2_status": "published",                   // "published" | "skipped" | "failed" or null pre-publish (#48)
   "resumed": false,
   "mp3_url": null,                            // public R2 URL on a web-only ship, else null (#155)
-  "bloopers_captured": 0                      // clips banked into the bloopers bin this run (#169)
+  "bloopers_captured": 0,                     // clips banked into the bloopers bin this run (#169)
+  "untitled_segments": []                     // 1-based segments that fell back to a "Segment N"
+                                              // chapter (#96); [] = checked and clean, null = not reached
 }
 ```
 
@@ -562,6 +573,9 @@ jq -r 'select(.status == "failed") | "\(.timestamp)  \(.error_message)"' ~/.conf
 jq -r 'select(.loudnorm) | "\(.timestamp)  \(.loudnorm.output_i)"' ~/.config/daily-podcast/runs.jsonl
 # Which voice ran each day
 jq -r '"\(.timestamp)  \(.voice) (\(.voice_mode))"' ~/.config/daily-podcast/runs.jsonl
+# Episodes that published a "Segment N" placeholder chapter (#96)
+jq -r 'select(.untitled_segments != null and (.untitled_segments | length) > 0)
+       | "\(.timestamp)  \(.title)  segments \(.untitled_segments)"' ~/.config/daily-podcast/runs.jsonl
 ```
 
 First run with no `config.json`: ask the user whether to use an existing show (list via `save-to-spotify --json shows`) or create a new one, then persist the choice.
