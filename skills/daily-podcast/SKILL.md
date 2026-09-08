@@ -1,15 +1,15 @@
 ---
 id: daily-podcast
 name: daily-podcast
-description: Use when the user asks to ship a daily digest podcast — turns a list of saved items (URLs / articles) into a fully-produced Spotify episode using Qwen3-TTS, a deterministic script template, and the save-to-spotify CLI. Skips the standard production interview because defaults are pre-set.
+description: Use when the user asks to ship a daily digest podcast — turns a list of saved items (URLs / articles) into a fully-produced episode using Qwen3-TTS, a deterministic script template, and publishes it to the show's public RSS feed. Skips the standard production interview because defaults are pre-set.
 enabled: true
 ---
 
 # Daily Podcast
 
-Turn a list of saved items into a finished Spotify episode in one pass. This skill is the automated counterpart to the [save-to-spotify](https://github.com/spotify/save-to-spotify) skill — same production rules, no interview, deterministic script template, dated cover.
+Turn a list of saved items into a finished, published episode in one pass — no interview, deterministic script template, dated cover.
 
-Depends on the `save-to-spotify` CLI being installed and authenticated. Install it from <https://saveto.spotify.com/install.sh> and run `save-to-spotify auth login` once.
+The show is **RSS-first**: it ships `"ship_mode": "web"` (#218), so the R2 publish *is* the ship and `save-to-spotify` is never invoked. The public channel is [cortech.online/podcast/rss.xml](https://cortech.online/podcast/rss.xml), which Spotify and every other directory subscribe to. The CLI-uploaded private show it used to also upload to is retired: it was a second copy nobody could listen to, and at the 60/60 episode cap each run permanently deleted the then-oldest published episode to make room. Nothing here needs `save-to-spotify` installed or authenticated any more — see [Web-only shipping](#web-only-shipping-ship_mode-web).
 
 **Trigger phrases:** "ship today's podcast", "make the daily digest", "run the daily routine", "podcast from this list of URLs".
 
@@ -17,7 +17,7 @@ Depends on the `save-to-spotify` CLI being installed and authenticated. Install 
 
 This skill ships an executable `render.py` and a headless prompt. References in this document are relative to the skill directory:
 
-- `./render.py` — the manifest → episode driver (audio render, cover, upload, timeline, polling)
+- `./render.py` — the manifest → episode driver (audio render, cover, timeline, artifact gate, R2 publish; upload + polling only on a legacy Spotify-mode manifest)
 - `./orchestrate.py` — the unattended entry point for scheduled runs (deterministic metadata-only curation + one isolated `claude -p` per item)
 - `./prompts/daily.md` — a stub pointing back here; the unattended procedure lives in [Unattended daily run](#unattended-daily-run)
 - `./blocked_sources.json` — outlets that can't be fetched for article bodies, with recovery strategies
@@ -52,12 +52,12 @@ Already-written segments. Skip straight to rendering.
   // NOT key the slug/guid (see "Publishing to the web"), so it is safe to enrich.
   "title": "Mojo goes open source, OpenAI's pause, Cursor vs GitHub - May 22, 2026",
   "summary": "Today's one-sentence hook.",
-  "show_id": "spotify:show:...",
+  "show_id": "spotify:show:...",          // legacy; ignored under ship_mode "web" (this show). Only a Spotify-mode manifest reads it
   "show_name": "Daily Digest",             // optional; overrides config.json's show_name on the COVER only (big title + top label). Set it when rendering a SECOND show — render.py reads one config for every show it renders, so without this its covers carry the daily show's branding
   "cover_image": "/path/to/cover.jpg",     // optional; use this image as the episode cover instead of generating one. Absolute, or relative to the MANIFEST's directory (never the CWD). Must be square, 1400-3000px — pre-flight fails the run otherwise. Set it when a show has DESIGNED art: show_name only changes the name on the generated gradient, which is this show's look
   "date": "2026-05-22",                    // optional ISO date; stamps the cover AND keys the web slug/guid. Omit to use today (re-renders of a dated manifest reproduce its date)
   "voice": "house",                        // default; or "random" / preset name; set voice_instruct for custom VoiceDesign
-  "ship_mode": "spotify",                  // optional; "spotify" (default) or "web". "web" skips save-to-spotify entirely and makes the R2 publish the ship — see "Web-only shipping"
+  "ship_mode": "web",                      // THIS SHOW SETS "web" (#218). Optional key, but the default when absent is "spotify", which uploads through save-to-spotify — see "Web-only shipping"
   "tts_engine": "qwen3",                   // optional; "qwen3" (default) or "breeze". Closed whitelist that lives on the manifest like ship_mode — see "TTS engines"
   "description_footer_text": "Sources: …", // optional; replaces the standard credit footer on the episode description (see "Episode description footer"). PLAIN TEXT: render.py escapes it into one <p> and rejects markup. Set it when rendering a SECOND show — the default footer credits the daily show's feeds
   "cast": {"anchor": "Ryan", "skeptic": "Ethan"}, // optional; speaker -> preset name OR {"ref_audio","ref_text"} clip, for multi-voice `lines` segments (see "Multi-voice scenes"). The daily show does not use this
@@ -81,16 +81,16 @@ the warning is a backstop, not a licence to skip the field.
 ## Workflow
 
 ```
-1. Load config           -> ~/.config/daily-podcast/config.json (show_id)
+1. Load config           -> ~/.config/daily-podcast/config.json (r2_bucket, r2_public_base_url)
 2. Load dedup log        -> ~/.config/daily-podcast/covered.json
 3. Filter input items    -> drop URLs already in the log
 4. Fetch missing content -> WebFetch for any item without `content`
 5. Write script          -> intro + one segment per item + outro; per template below
 6. Self-critique pass    -> tighten verbose segments; never reorder
 7. Render manifest       -> title per "Episode title"; hand to render.py
-8. render.py             -> TTS + concat + loudnorm + cover + upload + timeline + poll
-9. Update dedup log      -> render.py appends covered URLs with today's date + episode URI
-10. Report               -> single line: episode URI + voice used + chapter count
+8. render.py             -> TTS + concat + loudnorm + cover + artifact gate + R2 publish + Pages deploy hook
+9. Update dedup log      -> render.py appends covered URLs with today's date + published mp3 URL
+10. Report               -> single line: mp3 URL + voice used + chapter count
 ```
 
 ## Script template
@@ -298,10 +298,10 @@ two Spotify surfaces differ, and only one is mutable:
 | Surface | Title comes from | Mutable after publish? |
 | --- | --- | --- |
 | Public show (RSS-ingested from cortech.online) | `title` in the R2 `manifest.json` entry | **Yes** — ordinary data, and guid-neutral since #128 |
-| Private Save-to-Spotify show | `upload --title` | **No.** Episode metadata is immutable after creation, and the show sits at its 60-episode cap, so delete-and-recreate would permanently destroy a published episode |
+| Private Save-to-Spotify show (retired, #218) | `upload --title` | **No.** Episode metadata is immutable after creation; its back catalogue is frozen under whatever format shipped it |
 
-On the private show a format change therefore reaches **new episodes only**. Pick one and
-hold it: every episode there is frozen under whatever format shipped it, and a churn of
+Since #218 nothing new lands on the private show, so the only live surface is the
+mutable one and a format change is reversible. Still pick one and hold it: a churn of
 formats reads worse to a browsing listener than one merely-adequate format held
 consistently. That is also why the title format is deliberately **not** part of the
 date-seeded rotation that varies the cold open, the segues and the segment shapes —
@@ -410,10 +410,30 @@ Chapters under 30 seconds used to be capped at 3 per episode, and `render.py` pa
 
 ## Show + dedup config
 
+Since #218 this show ships web-only, which moves two keys across the required line
+and makes five others inert:
+
+- **`r2_bucket` + `r2_public_base_url` are now load-bearing**, not optional. R2 is the
+  only channel, so an absent pair fails pre-flight (and `--selftest`) instead of
+  quietly disabling a bonus feed.
+- **`show_id`, `auto_prune_episodes`, `max_prune_per_run`, `episode_cap` and
+  `poll_timeout_s` are ignored** on every run. They are Spotify-upload settings and
+  nothing invokes the CLI any more.
+
+**No config change is required to land the flip**, and none was made — this is a code
+change only. The deployed `~/.config/daily-podcast/config.json` already carries
+`r2_bucket: "clodcast"` and `r2_public_base_url: "https://clodcast.cortech.online"`
+(verified 2026-09-08), which is everything web mode needs. It also still carries
+`show_id`, `auto_prune_episodes: true` and `max_prune_per_run: 1`; all three are now
+dead weight and can be deleted whenever convenient. Deleting them is optional cleanup,
+not a step — `auto_prune_episodes` in particular is no longer dangerous because nothing
+reaches the code that reads it, and keeping `show_id` is what a legacy
+`"ship_mode": "spotify"` manifest would still read.
+
 ```jsonc
 // ~/.config/daily-podcast/config.json
 {
-  "show_id": "spotify:show:...",       // required; one-time setup
+  "show_id": "spotify:show:...",       // legacy; ignored under ship_mode "web" (#218)
   "show_name": "Daily Digest",         // rendered onto every generated cover unless
                                        //   a manifest overrides it (a second show
                                        //   sets its own; see the manifest schema), so a
@@ -428,23 +448,23 @@ Chapters under 30 seconds used to be capped at 3 per episode, and `render.py` pa
   "opml_files": ["/path/to/feeds.opml"], // optional; used by the unattended run
   "lookback_hours": 24,                  // optional; default 24
   "target_item_count": 10,               // optional; default 10
-  "auto_prune_episodes": false,          // optional; default false. When true, an upload
-                                         //   that hits the show's episode cap (429
-                                         //   RATE_LIMIT_EXCEEDED / capacity) prunes the
-                                         //   oldest episode(s) and retries the upload once.
-  "max_prune_per_run": 1,                // optional; default 1. Hard ceiling on how many
-                                         //   episodes an auto-prune may delete per run.
-                                         //   <= 0 is refused (no prune). Deleting a
+  "auto_prune_episodes": false,          // INERT under ship_mode "web" (#218). Spotify-only:
+                                         //   when true, an upload that hits the show's
+                                         //   episode cap (429 RATE_LIMIT_EXCEEDED /
+                                         //   capacity) prunes the oldest episode(s) and
+                                         //   retries the upload once.
+  "max_prune_per_run": 1,                // INERT under ship_mode "web". Spotify-only ceiling
+                                         //   on how many episodes an auto-prune may delete
+                                         //   per run. <= 0 is refused (no prune). Deleting a
                                          //   published episode is irreversible.
-  "episode_cap": 60,                     // optional; default 60. Pre-flight compares the
-                                         //   show's episode count against this and
-                                         //   pre-prunes a slot BEFORE the render, so a
-                                         //   cap 429 never costs a wasted TTS pass.
-  "poll_timeout_s": 1800,                // optional; default 1800. How long to wait for
-                                         //   Spotify processing. The old 600 expired while
-                                         //   an episode was legitimately still PROCESSING.
-  "r2_bucket": "clodcast",               // optional; enables the web feed (see below)
-  "r2_public_base_url": "https://audio.cortech.online"  // optional; public URL for <slug>.mp3
+  "episode_cap": 60,                     // INERT under ship_mode "web". Spotify-only; the
+                                         //   count pre-flight compares against before the
+                                         //   render so a cap 429 never costs a TTS pass.
+  "poll_timeout_s": 1800,                // INERT under ship_mode "web" (nothing polls). How
+                                         //   long to wait for Spotify processing. The old 600
+                                         //   expired while an episode was still PROCESSING.
+  "r2_bucket": "clodcast",               // REQUIRED under ship_mode "web" — this is the ship
+  "r2_public_base_url": "https://audio.cortech.online"  // REQUIRED; public URL for <slug>.mp3
 }
 ```
 
@@ -513,18 +533,30 @@ python3 bloopers.py mark --from episode.mp3 --start 4:12 --end 4:58 --note "bird
 ```
 
 ```jsonc
-// ~/.config/daily-podcast/covered.json — written by render.py on successful upload.
-// Pruned to a 180-day retention window on each write (the `date` field drives this);
-// entries with a missing/malformed `date` are kept.
+// ~/.config/daily-podcast/covered.json — written by render.py only after the ship
+// succeeds: the R2 publish under ship_mode "web" (#218), poll_ready READY on a
+// Spotify-mode manifest. Pruned to a 180-day retention window on each write (the
+// `date` field drives this); entries with a missing/malformed `date` are kept.
+// `episode_uri` holds the published mp3 URL on a web-only ship and a
+// spotify:episode: URI on a Spotify one — entries written before the flip keep the
+// URI they were written with and are never rewritten.
 {
-  "https://example.com/post-1": {"date": "2026-05-22", "episode_uri": "spotify:episode:..."},
+  "https://example.com/post-1": {"date": "2026-09-08", "episode_uri": "https://clodcast.cortech.online/daily-digest-september-8-2026.mp3"},
   "https://example.com/post-2": {"date": "2026-05-21", "episode_uri": "spotify:episode:..."}
 }
 ```
 
-`~/.config/daily-podcast/inflight.json` is a transient crash-recovery record (an episode that uploaded but hasn't reached `READY`+dedup yet) — written after `upload()` succeeds and cleared after dedup. It is **not** a second dedup source; `covered.json` stays authoritative. See [Automatic cron recovery](#automatic-cron-recovery-cross-day-workdir-independent) below.
+`~/.config/daily-podcast/inflight.json` is a transient crash-recovery record (an episode that uploaded but hasn't reached `READY`+dedup yet) — written after `upload()` succeeds and cleared after dedup. **A web-only run never writes it** (#218): nothing uploads, so nothing is ever left in flight. It is **not** a second dedup source; `covered.json` stays authoritative. See [Automatic cron recovery](#automatic-cron-recovery-cross-day-workdir-independent) below.
 
-### Episode-cap auto-prune (`auto_prune_episodes`)
+### Episode-cap auto-prune (`auto_prune_episodes`) — Spotify mode only
+
+> **Inert for this show since #218.** Nothing below runs under `"ship_mode": "web"`:
+> there is no upload, so there is no cap and no prune. It is documented because the
+> Spotify path stays implemented for a manifest that selects it — and because this
+> mechanism is *why* the flip happened. The show sat at 60/60 with
+> `auto_prune_episodes: true`, so every run permanently deleted the then-oldest
+> published episode (~29 gone by 2026-08-22, #104). Retiring the upload is what
+> stopped that clock.
 
 A Spotify show has a hard episode cap. When `upload()` hits it, save-to-spotify returns a `429` with `error_code: RATE_LIMIT_EXCEEDED` / `reason: capacity`. By default `render.py` fails with that structured reason (so it's distinguishable from a transient upload flake, which surfaces the same non-zero exit). Set `auto_prune_episodes: true` to have the renderer instead delete the oldest episode(s) and retry the upload **once**. Deleting a published episode is **irreversible**, so the prune is deliberately conservative:
 
@@ -578,12 +610,14 @@ jq -r 'select(.untitled_segments != null and (.untitled_segments | length) > 0)
        | "\(.timestamp)  \(.title)  segments \(.untitled_segments)"' ~/.config/daily-podcast/runs.jsonl
 ```
 
-First run with no `config.json`: ask the user whether to use an existing show (list via `save-to-spotify --json shows`) or create a new one, then persist the choice.
+First run with no `config.json`: ask the user for the R2 bucket and public base URL to publish to, then persist the choice. A `show_id` is no longer part of setup — nothing uploads (#218).
 
 ## Publishing to the web (Cloudflare R2)
 
-Optional, additive. When R2 is configured, `render.py` also publishes each finished
-episode to a Cloudflare R2 bucket *after* the Spotify upload reaches `READY`:
+**The ship for this show** (#218) and every other one; on a legacy
+`"ship_mode": "spotify"` manifest it is instead optional and additive, running *after*
+the upload reaches `READY`. Either way `render.py` publishes each finished episode to a
+Cloudflare R2 bucket:
 
 - `<bucket>/<slug>.mp3` — the episode audio (publicly fetchable at `r2_public_base_url`)
 - `<bucket>/<slug>.jpg` — the cover (best-effort)
@@ -622,8 +656,10 @@ or `"web"`; anything else fails validation, because falling back to the default 
 typo would upload an episode that was never meant to reach Spotify.
 
 `"web"` inverts the relationship above — the R2 publish stops being additive and
-becomes the ship itself (#155). It is how the RSS-first
-[Frontier Commits](../frontier-commits/SKILL.md) show publishes:
+becomes the ship itself (#155). **Every show now ships this way, this one included**
+(#218); the RSS-first [Frontier Commits](../frontier-commits/SKILL.md) and
+[Surface Tension](../surface-tension/SKILL.md) shows were built on it and the daily
+show was flipped onto it:
 
 - **`save-to-spotify` is never invoked.** No upload, no `timeline set`, no readiness
   poll, no episode-cap capacity check or prune, and no in-flight reconciliation
@@ -673,12 +709,20 @@ description. `summary` is **HTML-by-contract** (the user authored it), so a cons
 should still escape it as untrusted text rather than trusting it as guaranteed-plain.
 `description` and `chapters[]` are unchanged — the `summary` field is purely additive.
 
-This is strictly additive: **Spotify is the canonical artifact.** A publish never fails
-the run, changes the exit code, or rolls back `covered.json`. The final JSON line reports
-a 3-state `"r2_status"` (#48): `"published"` (uploaded), `"skipped"` (R2 not configured —
-a benign no-op), or `"failed"` (configured but the upload errored — the alarming case an
-operator should notice; the episode is still live on Spotify). `--dry-run` skips the
-publish and prints where it *would* have gone (`r2_would_publish`).
+> **Read this section in Spotify mode only.** It describes the *additive* publish that
+> a `"ship_mode": "spotify"` manifest performs. Under `"web"` — what this show ships
+> (#218) — the publish is the ship and its failure fails the run;
+> [Web-only shipping](#web-only-shipping-ship_mode-web) is the authority there. The
+> object layout, slug rules, manifest entry shape, and credentials below are shared by
+> both modes.
+
+On the Spotify path this is strictly additive: **Spotify is the canonical artifact.** A
+publish never fails the run, changes the exit code, or rolls back `covered.json`. The
+final JSON line reports a 3-state `"r2_status"` (#48): `"published"` (uploaded),
+`"skipped"` (R2 not configured — a benign no-op), or `"failed"` (configured but the
+upload errored — the alarming case an operator should notice; the episode is still live
+on Spotify). `--dry-run` skips the publish and prints where it *would* have gone
+(`r2_would_publish`).
 
 **Credentials never go in `config.json`.** Read from env (preferred for cron) or an
 optional `~/.config/daily-podcast/secrets.json` (mode 0600):
@@ -717,7 +761,7 @@ first-non-empty-wins across three homes: env → `secrets.json`
 You are an unattended invocation. Ship today's episode and exit. Be decisive, don't ask clarifying questions, and if you genuinely cannot proceed, exit with a single-line error on stdout.
 
 1. **Read config**
-   - `~/.config/daily-podcast/config.json` — `show_id`, `opml_files`, `lookback_hours`, `target_item_count`
+   - `~/.config/daily-podcast/config.json` — `opml_files`, `lookback_hours`, `target_item_count`, `r2_bucket`, `r2_public_base_url` (the last two are the ship; `show_id` and the prune keys are inert since #218)
    - `~/.config/daily-podcast/covered.json` — URLs already covered; treat as "do not repeat". Absent or malformed → `{}`, never a failed run.
 
 2. **Gather candidates from OPML.** For each path in `opml_files`:
@@ -757,7 +801,7 @@ You are an unattended invocation. Ship today's episode and exit. Be decisive, do
 
 6. **Self-critique pass** (silent): tighten segments over 900 chars or repetitive. Never reorder, never drop a segment.
 
-7. **Build the manifest** at `/tmp/daily-podcast-<date>/manifest.json` per the [manifest schema](#form-2--pre-built-manifest-manifestjson). Title it per [Episode title](#episode-title) — the day's three lead stories, then the date, never the bare date. Do **not** set `voice_instruct` (`"voice": "house"` resolves to the locked house voice) and do **not** set `show_id` (let `render.py` read it from config).
+7. **Build the manifest** at `/tmp/daily-podcast-<date>/manifest.json` per the [manifest schema](#form-2--pre-built-manifest-manifestjson). Title it per [Episode title](#episode-title) — the day's three lead stories, then the date, never the bare date. **Set `"ship_mode": "web"`** — without it the run defaults to `spotify` and uploads to the retired private show, which deletes a published episode to make room (#218). Do **not** set `voice_instruct` (`"voice": "house"` resolves to the locked house voice) and do **not** set `show_id` (nothing reads it in this mode).
 
 8. **Run the renderer** at the pinned plugin path. `${CLAUDE_PLUGIN_ROOT}` is set when this runs under a Claude Code plugin; if it is somehow unset, exit immediately with `FAILED CLAUDE_PLUGIN_ROOT unset` — do **not** search the filesystem for `render.py`.
 
@@ -769,15 +813,15 @@ You are an unattended invocation. Ship today's episode and exit. Be decisive, do
 
    Always pass a stable per-date `--workdir` — it is what makes a failed run resumable. Never pass `--dry-run` (this is a real episode) and never pass `--skip-preflight`: a pre-flight failure is a real problem reported cheaply, and skipping the gate turns a five-second diagnostic into a wasted render or a destructive prune.
 
-   `render.py` prints a final JSON line on stdout with `status`, `episode_uri`, `voice`, `voice_mode`, `chapter_count`, `duration_s`, `r2_status`, and `resumed`. It updates `covered.json` only on success.
+   `render.py` prints a final JSON line on stdout with `status` (`"web-ready"` here), `mp3_url`, `voice`, `voice_mode`, `chapter_count`, `duration_s`, `r2_status`, and `tts_engine`. There is no `episode_uri` in this mode. It updates `covered.json` only after the publish succeeds.
 
-9. **Report once and exit.** Single-line stdout, with the R2 outcome as a trailing `r2=` field (`published`→`ok`, `skipped`→`skipped`, `failed`→`FAILED`):
+9. **Report once and exit.** Single-line stdout. All values come from the renderer's final JSON (`mp3_url`, `title`, `chapter_count`, `duration_s`, `tts_engine`):
 
    ```
-   SHIPPED <episode_uri> - <title> - <chapter_count> chapters - <duration_s>s - r2=ok - engine=<tts_engine>
+   SHIPPED <mp3_url> - <title> - <chapter_count> chapters - <duration_s>s - r2=ok - engine=<tts_engine>
    ```
 
-   `r2=skipped` means R2 isn't configured (benign). `r2=FAILED` means the episode is **live on Spotify** but the web-feed publish errored — still a successful run (exit 0, `covered.json` written). **Never** turn `r2=FAILED` into a `FAILED` line; the run did not fail. On genuine failure:
+   `r2=ok` is the only success value here (#218). The publish **is** the ship, so anything else means nothing was published: `render.py` exits non-zero and leaves `covered.json` untouched, and the correct report is a `FAILED` line. (On the retired Spotify path `r2=FAILED` was a successful run because the episode was already live; that no longer applies to any show.) On genuine failure:
 
    ```
    FAILED <reason>
@@ -790,11 +834,10 @@ You are an unattended invocation. Ship today's episode and exit. Be decisive, do
 | Feed unreachable | skip, note, continue |
 | Fewer than 5 viable items | ship shorter; do not pad |
 | `render.py` non-zero exit | print `FAILED <stderr last line>` — the last stderr line is always the diagnostic |
-| Pre-flight failure | report it; **do not** retry with `--skip-preflight`. The named check is the real problem |
-| Spotify readiness `FAILED` | print `FAILED processing failed for <episode_uri>` — the upload happened, processing didn't |
-| Failure *after* upload (e.g. poll timeout) | re-run the same `--manifest` + `--workdir`. It resumes: skips re-upload, re-runs `timeline set` + poll + dedup, reports `"resumed": true`. Prefer this over re-shipping, which duplicates the episode |
+| Pre-flight failure | report it; **do not** retry with `--skip-preflight`. The named check is the real problem. A failing `r2-credentials` check is fatal here: R2 is the ship |
+| R2 publish failed (`r2` anything but `ok`) | print `FAILED <reason>`. Nothing was published and `covered.json` is untouched, so the sources return to the pool — re-run the same `--manifest` + `--workdir` and it renders off the TTS cache |
 | `covered.json` malformed | treat as `{}` rather than failing the run |
-| A leftover `inflight.json` | **leave it alone.** Recovery reconciles it automatically and abandons a rejected episode on its own; deleting it by hand is no longer the remedy |
+| A leftover `uploaded.json` / `inflight.json` in the workdir | **leave it alone.** Both are Spotify-upload recovery state from before #218; a web-only run ignores them and never writes either |
 
 After the run, any non-clean exit leaves a structured report in `~/.config/daily-podcast/incidents/new/`. Mention its path in the `FAILED` line's context if one was written — a report tagged `unclassified` is a failure mode nobody has documented yet. The report stays in the queue until someone drains it with `triage.py resolve`, which archives it to `incidents/handled/`; do **not** `rm` it.
 
@@ -846,7 +889,7 @@ Note: `orchestrate.py` does **not** accept `--selftest` or `--prune-workdirs` �
 
 `render.py` exits non-zero with a diagnostic on any failure. Always check the exit code; do not assume success.
 
-For testing without uploading, use `--dry-run` — produces the MP3, cover, and timeline.json locally and reports paths, but skips the `save-to-spotify upload` and `timeline set` calls.
+For testing without publishing, use `--dry-run` — produces the MP3, cover, and timeline.json locally and reports paths (including the R2 URL it *would* have written), but publishes nothing and leaves `covered.json` untouched.
 
 ### Unattended-run flags
 
@@ -854,6 +897,7 @@ For testing without uploading, use `--dry-run` — produces the MP3, cover, and 
 | --- | --- |
 | `--selftest` | Standalone health check (no real run). Mutually exclusive with `--manifest`. |
 | `--load-model` | With `--selftest`: also load the TTS model (slow; the most thorough check). |
+| `--ship-mode {web,spotify}` | With `--selftest`: which gate to probe (default `web`). Refused with `--manifest` — a run's mode lives on its manifest. |
 | `--skip-preflight` | Skip the built-in pre-flight gate. Escape hatch; you own the outcome. |
 | `--keep-workdir` | Keep the auto-created workdir after a successful run (default: delete it). |
 | `--prune-workdirs N` | Before rendering, delete auto-created workdirs older than `N` days. |
@@ -872,9 +916,8 @@ preflight: verifying dependencies, credentials, and capacity...
   [PASS] encoder-profile: 1ch @ 44100Hz 192k libmp3lame
   [PASS] house-voice: ref wav + transcript present
   [PASS] tts-module: mlx_audio importable
-  [PASS] show-id: spotify:show:…
   [FAIL] r2-credentials: R2 partially configured; missing R2_ACCESS_KEY_ID, …
-preflight: FAIL (6/7)
+preflight: FAIL (5/6)
 error: preflight failed (r2-credentials); nothing was rendered or uploaded
 ```
 
@@ -884,16 +927,18 @@ error: preflight failed (r2-credentials); nothing was rendered or uploaded
 | `encoder-profile` | encoder settings drifting off mono / 44.1 kHz / 192 kbps |
 | `house-voice` | missing ref clip or transcript |
 | `tts-module` | `mlx_audio` not importable (a `find_spec` probe, not a model load) |
-| `show-id` | no show configured |
-| `r2-credentials` | **partially** configured R2 → the silent web-feed miss |
-| `save-to-spotify-auth` | dead or missing credentials *(skipped on `--dry-run`)* |
-| `episode-capacity` | the 60-episode cap — **pre-prunes a slot** *(skipped on `--dry-run`)* |
+| `r2-credentials` | an R2 config that can't publish — **the ship** under `ship_mode: "web"` |
+| `show-id` | no show configured *(Spotify mode only)* |
+| `save-to-spotify-auth` | dead or missing credentials *(Spotify mode only; skipped on `--dry-run`)* |
+| `episode-capacity` | the 60-episode cap — **pre-prunes a slot** *(Spotify mode only; skipped on `--dry-run`)* |
 
-R2 is three-state: fully configured passes, **fully absent also passes** (the web
-feed is optional), and *partially* configured fails. `--dry-run` runs the local
-subset only — it never calls Spotify and never prunes.
+R2 is three-state and the mode decides what `absent` means: under `"ship_mode": "web"`
+(this show, #218) it is a **failure**, because the run would render a full episode and
+ship it nowhere; on the Spotify path it passes, since the web feed is additive there.
+*Partially* configured fails in both. `--dry-run` runs the local subset only — it never
+calls Spotify and never prunes.
 
-### Artifact gate (automatic, after render, before upload)
+### Artifact gate (automatic, after render, before the ship)
 
 Once the mp3 exists, `verify_artifact` runs a local conformance check —
 encoder profile, monotonic chapter starts, the 5 s minimum gap between
@@ -919,7 +964,8 @@ The auto workdir is `<tmpdir>/daily-podcast-<date>` — **deterministic**, so an
 interrupted run resumes by re-invoking the same command. `<workdir>/state.json`
 records each completed stage (`preflight`, `segments`, `concat`, `cover`,
 `timeline`, `artifact_gate`, `upload`, `set_timeline`, `poll_ready`, `r2`,
-`dedup`) with its metadata.
+`dedup`) with its metadata. A web-only run marks the subset it actually reaches —
+no `upload`, `set_timeline`, or `poll_ready`.
 
 ### Incident reports
 
@@ -950,7 +996,11 @@ appends a row to `handled/index.jsonl`. Never `rm` a report — it is the eviden
 behind whichever playbook covers it. `handled/` is an archive: no retention
 window, never pruned.
 
-**`--selftest`** runs an ordered set of checks (ffmpeg + ffprobe on PATH → `save-to-spotify --json shows` returns valid JSON → `config.json` parses with `show_id` → house-voice ref clip + transcript present), prints a pass/fail line each, then a JSON summary `{"status": "ok"/"failed", "checks": [...]}`. It exits `0` only if every check passes, non-zero otherwise — so a scheduler can gate on it:
+**`--selftest`** runs an ordered set of checks, prints a pass/fail line each, then a JSON summary `{"status": "ok"/"failed", "checks": [...]}`. It exits `0` only if every check passes, non-zero otherwise — so a scheduler can gate on it.
+
+Since #218 the probe **defaults to the web-only gate**, matching what every show now ships: ffmpeg + ffprobe on PATH → `config.json` parses → R2 credentials resolve (`required`, the same three-state check pre-flight runs) → house-voice ref clip + transcript present. `save-to-spotify` is never invoked and `show_id` is not required, so a host whose CLI auth has lapsed still passes — which is the point: a scheduler gating on this was about to start failing over a credential no run consumes.
+
+`--selftest --ship-mode spotify` restores the old gate for a legacy Spotify-mode manifest (`save-to-spotify --json shows` returns valid JSON, `config.json` carries `show_id`, no R2 check). `--ship-mode` applies to `--selftest` only — passing it with `--manifest` is refused, because a *run's* mode lives on its manifest and nowhere else.
 
 ```bash
 python3 <skill-dir>/render.py --selftest || { echo "pre-flight failed" | mail -s "podcast down" you@example.com; exit 1; }
@@ -1007,6 +1057,14 @@ If that 401s, fix the credential before scheduling the orchestrator; if no durab
 
 ### Recovering from a partial failure
 
+> **Most of this section is Spotify-mode machinery and does not run for this show
+> since #218.** A web-only run has no upload to fail after, so it writes no
+> `uploaded.json` and no `inflight.json`, never resumes, and never reconciles an
+> in-flight episode. Its whole recovery story is one line: **nothing was published,
+> `covered.json` is untouched, so re-run the same `--manifest` + `--workdir` and it
+> re-renders off the TTS cache.** What follows still applies to a manifest that
+> selects `"ship_mode": "spotify"`, and is kept because the mode is still supported.
+>
 > **Runbook.** Most of what used to be manual here is now automatic. The table
 > below is the current division of labour; each row links to a write-up in the
 > repo's [`incidents/`](../../incidents/) directory with the symptom, root cause,
@@ -1069,7 +1127,8 @@ A crash *during* recovery leaves `inflight.json` intact for the next attempt, an
 
 ## Dependencies
 
-- `save-to-spotify` CLI on `PATH`, authenticated (`save-to-spotify auth login`)
+- Cloudflare R2 credentials + `r2_bucket` / `r2_public_base_url` — **the ship** (#218); see [Web-only shipping](#web-only-shipping-ship_mode-web)
+- `save-to-spotify` CLI on `PATH`, authenticated (`save-to-spotify auth login`) — **no longer required**. Nothing this show runs invokes it; it is needed only to render a legacy `"ship_mode": "spotify"` manifest
 - Python 3.10+ with the deps declared in [`pyproject.toml`](../../pyproject.toml) — `pip install -r requirements.txt` (canonical list; covers `mlx-audio`, `soundfile`, `mutagen`, `Pillow`, `numpy`, `feedparser`)
 - `ffmpeg` + `ffprobe`
 - Apple Silicon Mac (Qwen3-TTS via MLX needs Metal)
@@ -1077,8 +1136,8 @@ A crash *during* recovery leaves `inflight.json` intact for the next attempt, an
 
 ## Final report
 
-After upload completes and `episodes status` returns `READY`:
+After the R2 publish succeeds:
 
-> Shipped [episode title]. [N] chapters, voice [voice]. Spotify: spotify:episode:...
+> Shipped [episode title]. [N] chapters, voice [voice]. <https://clodcast.cortech.online/[slug].mp3>
 
 Nothing else. The user can listen and judge.

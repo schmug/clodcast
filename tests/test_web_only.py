@@ -1,14 +1,16 @@
-"""Tests for the web-only ship mode (issue #155).
+"""Tests for the web-only ship mode (issues #155, #218).
 
-Frontier Commits is RSS-first: its canonical channel is the public feed on
-cortech.online, and its save-to-spotify show is deprecated. `"ship_mode": "web"`
-makes the R2 publish *the ship* — render -> artifact gate -> R2 -> covered.json
--> exit — with save-to-spotify never invoked at all.
+Every show is RSS-first: the canonical channel is the public feed on
+cortech.online, and `"ship_mode": "web"` makes the R2 publish *the ship* — render
+-> artifact gate -> R2 -> covered.json -> exit — with save-to-spotify never
+invoked at all. Frontier Commits was built this way (#155); the daily show was
+flipped onto it (#218), which is what stopped every run from permanently deleting
+a published episode at the 60/60 cap.
 
 Two properties carry the weight here:
 
-  * the daily show's default path is untouched (the `_default_*` tests are the
-    lock, not the decoration), and
+  * the Spotify path itself still works (the `_default_*` tests are the lock, not
+    the decoration — the mode is legacy, not deleted), and
   * covered.json keeps its only-after-success posture — a failed R2 publish must
     leave those URLs in the pool for the next run, exactly as a failed Spotify
     upload does.
@@ -27,6 +29,7 @@ import sys
 import pytest
 from botocore.exceptions import ClientError
 
+import orchestrate
 import render
 
 # --- fakes -----------------------------------------------------------------
@@ -491,6 +494,72 @@ def test_web_only_run_fires_the_pages_deploy_hook(monkeypatch, tmp_path):
     assert render.main() == 0
 
     assert fired == ["https://hook.test/deploy"]
+
+
+# --- the daily show, flipped (#218) -----------------------------------------
+#
+# The daily show ran on the Spotify path until #218. At 60/60 with
+# auto_prune_episodes on, every run permanently deleted the then-oldest published
+# episode to make room for the new one — so "does the assembled manifest actually
+# ship web-only" is a destructive-behaviour test, not a cosmetic one. The manifest
+# comes from orchestrate.assemble_manifest rather than a literal, so a regression
+# in the assembler fails here instead of shipping.
+
+
+def _daily_manifest() -> dict:
+    survivors = [
+        {"title": "A story", "segment": "Story body.", "source_url": "https://example.com/a"},
+        {"title": "B story", "segment": "Story body.", "source_url": "https://example.com/b"},
+    ]
+    intro_outro = {"intro": "Cold open.", "outro": "Sign-off.", "summary": "Today's hook."}
+    return orchestrate.assemble_manifest("August 24, 2026", "2026-08-24", survivors, intro_outro)
+
+
+def test_the_daily_show_ships_web_only_without_invoking_save_to_spotify(
+    monkeypatch, tmp_path, capsys
+):
+    # _drive wires render.run to raise on ANY invocation and fails the test on
+    # upload/set_timeline/poll_ready/_recover_inflight, so "save-to-spotify is never
+    # invoked" is proven by execution, not by an unasserted mock.
+    s3, _ = _drive(monkeypatch, tmp_path, _daily_manifest())
+
+    assert render.main() == 0
+
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "web-ready"
+    assert out["r2_status"] == render.R2_PUBLISHED
+    # The daily show keeps the default manifest name and no key prefix (#118/#142
+    # are the second shows' knobs), and its slug is still keyed on the date (#128).
+    assert s3.put_order == [
+        "daily-digest-august-24-2026.mp3",
+        "daily-digest-august-24-2026.jpg",
+        "manifest.json",
+    ]
+    assert out["mp3_url"] == "https://audio.example/daily-digest-august-24-2026.mp3"
+
+
+def test_the_daily_shows_published_slug_is_unchanged_by_the_flip(monkeypatch, tmp_path):
+    # cortech.online republishes /podcast/<slug>/ as an isPermaLink <guid>; a moved
+    # slug duplicates a live episode on the public show. The ship changed, not the id.
+    s3, _ = _drive(monkeypatch, tmp_path, _daily_manifest())
+
+    assert render.main() == 0
+
+    entries = json.loads(s3.objects["manifest.json"])
+    assert entries[0]["slug"] == render.slug_for_date("2026-08-24")
+    assert entries[0]["slug"] == "daily-digest-august-24-2026"
+    assert "spotify_uri" not in entries[0]
+
+
+def test_the_daily_shows_dedup_entries_record_the_published_mp3_url(monkeypatch, tmp_path):
+    _drive(monkeypatch, tmp_path, _daily_manifest())
+
+    assert render.main() == 0
+
+    covered = json.loads(render.COVERED_PATH.read_text())
+    assert sorted(covered) == ["https://example.com/a", "https://example.com/b"]
+    for entry in covered.values():
+        assert entry["episode_uri"] == "https://audio.example/daily-digest-august-24-2026.mp3"
 
 
 def test_a_default_manifest_still_ships_through_spotify(monkeypatch, tmp_path, capsys):

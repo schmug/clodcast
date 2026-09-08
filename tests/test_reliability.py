@@ -1041,6 +1041,24 @@ def test_unattended_procedure_lives_in_skill_md():
     assert "resumed" in skill, "resume-after-upload-failure guidance"
 
 
+def test_skill_md_tells_the_unattended_run_to_ship_web_only():
+    """SKILL.md is the production path — the scheduled run is a `claude -p` following
+    its "Unattended daily run" section, so a decision that lives only in
+    orchestrate.py never reaches a real episode.
+
+    Losing the `"ship_mode": "web"` instruction does not fail loudly: the manifest
+    validates, the run succeeds, and the episode uploads to the retired private show
+    — permanently deleting the then-oldest published one to fit under the cap (#218).
+    """
+    skill = (_repo_root() / "skills" / "daily-podcast" / "SKILL.md").read_text()
+
+    assert '**Set `"ship_mode": "web"`**' in skill, "step 7 must set the ship mode"
+    assert "SHIPPED <mp3_url>" in skill, "step 9 must report the web-mode shape"
+    # The Spotify-path reassurance, which is the opposite of true in web mode: there
+    # a failed publish means nothing shipped at all.
+    assert "still a successful run" not in skill
+
+
 def test_daily_prompt_stays_a_stub():
     """prompts/daily.md must point at SKILL.md, never re-inline the procedure.
 

@@ -1899,6 +1899,7 @@ def _selftest_env(
     shows_out='{"shows":[]}',
     shows_err="",
     config=True,
+    r2=True,
 ):
     """Wire selftest's external seams to a healthy default; callers flip one to fail."""
     monkeypatch.setattr(render.shutil, "which", lambda tool: f"/usr/bin/{tool}")
@@ -1909,6 +1910,24 @@ def _selftest_env(
         return _sp.CompletedProcess(cmd, shows_rc, stdout=shows_out, stderr=shows_err)
 
     monkeypatch.setattr(render.subprocess, "run", fake_subprocess_run)
+
+    # R2 is the web-mode gate's credential check, and it reads the developer's own
+    # environment unless every key is pinned here.
+    monkeypatch.setattr(render, "CONFIG_DIR", tmp_path)
+    for k in (
+        "R2_ACCOUNT_ID",
+        "R2_ACCESS_KEY_ID",
+        "R2_SECRET_ACCESS_KEY",
+        "R2_BUCKET",
+        "R2_PUBLIC_BASE_URL",
+    ):
+        monkeypatch.delenv(k, raising=False)
+    if r2:
+        monkeypatch.setenv("R2_ACCOUNT_ID", "acct")
+        monkeypatch.setenv("R2_ACCESS_KEY_ID", "key")
+        monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "secret")
+        monkeypatch.setenv("R2_BUCKET", "clodcast")
+        monkeypatch.setenv("R2_PUBLIC_BASE_URL", "https://audio.example")
 
     cfg = tmp_path / "config.json"
     if config:
@@ -1927,7 +1946,7 @@ def _selftest_env(
 
 def test_selftest_all_pass_exits_zero(tmp_path, monkeypatch, capsys):
     _selftest_env(monkeypatch, tmp_path)
-    rc = render.run_selftest()
+    rc = render.run_selftest(ship_mode=render.SHIP_MODE_SPOTIFY)
     assert rc == 0
     summary = json.loads(capsys.readouterr().out)
     assert summary["status"] == "ok"
@@ -1937,10 +1956,73 @@ def test_selftest_all_pass_exits_zero(tmp_path, monkeypatch, capsys):
     assert names == ["ffmpeg", "ffprobe", "save-to-spotify-auth", "config", "house-voice"]
 
 
+# --- the web-only gate (#218) ---------------------------------------------
+#
+# Every show now ships web-only, so the probe's default had to follow: a scheduler
+# gating on --selftest was about to start failing on a host whose save-to-spotify
+# is no longer authenticated, for a CLI no run invokes any more.
+
+
+def test_selftest_defaults_to_the_web_only_gate(tmp_path, monkeypatch, capsys):
+    def _no_subprocess(cmd, **kwargs):
+        pytest.fail(f"web-mode selftest shelled out: {cmd}")
+
+    _selftest_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(render.subprocess, "run", _no_subprocess)
+
+    assert render.run_selftest() == 0
+
+    summary = json.loads(capsys.readouterr().out)
+    assert [c["name"] for c in summary["checks"]] == [
+        "ffmpeg",
+        "ffprobe",
+        "config",
+        "r2-credentials",
+        "house-voice",
+    ]
+
+
+def test_selftest_web_mode_does_not_require_a_show_id(tmp_path, monkeypatch, capsys):
+    # show_id is meaningless once nothing uploads; requiring it would fail a host
+    # whose config has legitimately dropped the key.
+    _selftest_env(monkeypatch, tmp_path)
+    (tmp_path / "config.json").write_text(json.dumps({"r2_bucket": "clodcast"}))
+
+    assert render.run_selftest() == 0
+
+    cfg = next(c for c in json.loads(capsys.readouterr().out)["checks"] if c["name"] == "config")
+    assert cfg["ok"] is True
+
+
+def test_selftest_web_mode_fails_when_r2_is_absent(tmp_path, monkeypatch, capsys):
+    # R2 is the only channel now, so an unconfigured host cannot ship at all — the
+    # exact thing a liveness probe exists to catch before a render is spent.
+    _selftest_env(monkeypatch, tmp_path, r2=False)
+
+    assert render.run_selftest() == 1
+
+    r2 = next(
+        c for c in json.loads(capsys.readouterr().out)["checks"] if c["name"] == "r2-credentials"
+    )
+    assert r2["ok"] is False
+
+
+def test_selftest_spotify_mode_still_probes_the_cli(tmp_path, monkeypatch, capsys):
+    # The Spotify path stays implemented, so its probe stays reachable — just not
+    # the default any show selects.
+    _selftest_env(monkeypatch, tmp_path, shows_rc=1, shows_out="")
+
+    assert render.run_selftest(ship_mode=render.SHIP_MODE_SPOTIFY) == 1
+
+    names = [c["name"] for c in json.loads(capsys.readouterr().out)["checks"]]
+    assert "save-to-spotify-auth" in names
+    assert "r2-credentials" not in names
+
+
 def test_selftest_fails_when_auth_expired(tmp_path, monkeypatch, capsys):
     # save-to-spotify shows exits non-zero (auth expired) → overall failure, exit 1.
     _selftest_env(monkeypatch, tmp_path, shows_rc=1, shows_out="")
-    rc = render.run_selftest()
+    rc = render.run_selftest(ship_mode=render.SHIP_MODE_SPOTIFY)
     assert rc == 1
     summary = json.loads(capsys.readouterr().out)
     assert summary["status"] == "failed"
@@ -1963,7 +2045,7 @@ def test_selftest_auth_failure_reports_the_api_error_not_the_stderr_hint(
         shows_out='{"error":"API error (401): "}',
         shows_err='<claude-code-hint v="1" type="plugin" value="save-to-spotify@x" />',
     )
-    assert render.run_selftest() == 1
+    assert render.run_selftest(ship_mode=render.SHIP_MODE_SPOTIFY) == 1
     checks = json.loads(capsys.readouterr().out)["checks"]
     detail = next(c for c in checks if c["name"] == "save-to-spotify-auth")["detail"]
     assert "API error (401)" in detail
@@ -1976,7 +2058,7 @@ def test_selftest_auth_failure_falls_back_to_stderr_when_stdout_has_no_json(
     """A crash before the CLI emits its JSON payload has nothing on stdout to prefer,
     so stderr is still the best available detail."""
     _selftest_env(monkeypatch, tmp_path, shows_rc=2, shows_out="", shows_err="segfault")
-    assert render.run_selftest() == 1
+    assert render.run_selftest(ship_mode=render.SHIP_MODE_SPOTIFY) == 1
     checks = json.loads(capsys.readouterr().out)["checks"]
     detail = next(c for c in checks if c["name"] == "save-to-spotify-auth")["detail"]
     assert "exited 2" in detail
@@ -1986,7 +2068,7 @@ def test_selftest_auth_failure_falls_back_to_stderr_when_stdout_has_no_json(
 def test_selftest_fails_when_config_missing_show_id(tmp_path, monkeypatch, capsys):
     _selftest_env(monkeypatch, tmp_path)
     (tmp_path / "config.json").write_text(json.dumps({}))  # no show_id
-    rc = render.run_selftest()
+    rc = render.run_selftest(ship_mode=render.SHIP_MODE_SPOTIFY)
     assert rc == 1
     summary = json.loads(capsys.readouterr().out)
     cfg = next(c for c in summary["checks"] if c["name"] == "config")
@@ -2018,6 +2100,28 @@ def test_main_selftest_branch_does_not_require_manifest(tmp_path, monkeypatch):
     monkeypatch.setattr(render, "load_config", lambda: pytest.fail("selftest must not load config"))
     monkeypatch.setattr(sys, "argv", ["render.py", "--selftest"])
     assert render.main() == 0
+
+
+def test_main_selftest_passes_the_ship_mode_through(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(render, "run_selftest", lambda **kw: seen.update(kw) or 0)
+
+    monkeypatch.setattr(sys, "argv", ["render.py", "--selftest"])
+    assert render.main() == 0
+    assert seen["ship_mode"] == render.SHIP_MODE_WEB  # every show ships web-only (#218)
+
+    monkeypatch.setattr(sys, "argv", ["render.py", "--selftest", "--ship-mode", "spotify"])
+    assert render.main() == 0
+    assert seen["ship_mode"] == render.SHIP_MODE_SPOTIFY
+
+
+def test_main_refuses_ship_mode_alongside_a_manifest(tmp_path, monkeypatch):
+    """The mode of a RUN lives on the manifest, never on the command line — a flag
+    that could override it is the missing-flag failure the key exists to prevent.
+    --ship-mode only ever selects which gate the standalone probe runs."""
+    monkeypatch.setattr(sys, "argv", ["render.py", "--manifest", "m.json", "--ship-mode", "web"])
+    with pytest.raises(SystemExit):
+        render.main()
 
 
 def test_main_rejects_manifest_and_selftest_together(monkeypatch):

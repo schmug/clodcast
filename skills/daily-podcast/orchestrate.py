@@ -45,6 +45,11 @@ SKILL_DIR = Path(__file__).resolve().parent
 RENDER_PY = SKILL_DIR / "render.py"
 SUMMARIZE_PROMPT_PATH = SKILL_DIR / "prompts" / "summarize_item.md"
 
+# render.py's terminal success statuses. "web-ready" is what this show ships (#218);
+# "ready" belongs to a legacy ship_mode "spotify" manifest and is kept so an
+# operator re-rendering one still gets the post-ship bookkeeping.
+RENDER_SUCCESS_STATUSES = ("web-ready", "ready")
+
 # Ranking knobs — tunable defaults, not load-bearing for correctness.
 TARGET_DEFAULT = 10
 BUFFER = 6  # fan out target+BUFFER so per-item drops still leave `target` survivors
@@ -686,9 +691,9 @@ def episode_title(topics: list[str] | None, date_long: str) -> str:
     breach, Siemens PLC warnings - August 20, 2026".
 
     Pure and format-only; the caller supplies the topic phrases. Over the cap, whole
-    trailing topics are dropped - never a mid-word cut, because the title Spotify freezes
-    at creation must not end in half a word. With nothing left to name, degrades to the
-    legacy date-only title."""
+    trailing topics are dropped - never a mid-word cut: the title is what a browsing
+    listener sees in a directory listing, and half a word reads as a bug. With nothing
+    left to name, degrades to the legacy date-only title."""
     kept: list[str] = []
     for topic in topics or []:
         if not isinstance(topic, str):
@@ -863,6 +868,11 @@ def assemble_manifest(
         "summary": intro_outro["summary"],
         "voice": "house",
         "date": date_iso,
+        # The show is RSS-first (#218): cortech.online/podcast/rss.xml is the channel
+        # listeners actually use, and the save-to-spotify copy was a private second
+        # artifact that cost a published episode every run (60/60 cap + auto-prune).
+        # Omitting this key defaults to "spotify" and resumes that deletion.
+        "ship_mode": "web",
         "segments": segments,
     }
 
@@ -954,7 +964,10 @@ def run_render(
 
 
 def build_report(result: dict) -> str:
-    """The single-line stdout contract (mirrors prompts/daily.md step 9)."""
+    """The single-line stdout contract (mirrors SKILL.md's "Unattended daily run"
+    step 9). The episode's identifier is the published mp3 URL under ship_mode
+    "web" (#218) — there is no episode_uri in that mode, and reading the absent key
+    would print a SHIPPED line naming nothing at all."""
     r2 = {"published": "ok", "skipped": "skipped", "failed": "FAILED"}.get(
         result.get("r2_status"), "skipped"
     )
@@ -963,7 +976,8 @@ def build_report(result: dict) -> str:
     title = result.get("title", "")
     if result.get("status") == "dry-run":
         return f"DRY-RUN ok - {title} - {cc} chapters - {dur}s"
-    return f"SHIPPED {result.get('episode_uri', '')} - {title} - {cc} chapters - {dur}s - r2={r2}"
+    uri = result.get("mp3_url") or result.get("episode_uri") or ""
+    return f"SHIPPED {uri} - {title} - {cc} chapters - {dur}s - r2={r2}"
 
 
 def _fail(msg: str) -> int:
@@ -976,7 +990,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument(
         "--dry-run",
         action="store_true",
-        help="forward to render.py; skip upload + feed_usage write",
+        help="forward to render.py; skip the publish + feed_usage write",
     )
     ap.add_argument("--workdir", type=Path, default=None)
     ap.add_argument("--limit", type=int, default=0, help="cap items fanned out (testing)")
@@ -1055,7 +1069,10 @@ def main(argv: list[str] | None = None) -> int:
     except RenderError as e:
         return _fail(str(e))
 
-    if not args.dry_run and result.get("status") == "ready":
+    # Both terminal success statuses: "web-ready" is what this show ships (#218),
+    # "ready" only a legacy Spotify-mode manifest. Matching one silently stops the
+    # variety penalty from ever updating, which lets a single feed dominate.
+    if not args.dry_run and result.get("status") in RENDER_SUCCESS_STATUSES:
         update_feed_usage(sorted({s["feed_name"] for s in survivors}), date_iso)
 
     print(build_report(result))
