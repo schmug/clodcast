@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-A Claude Code **plugin** (manifest at [.claude-plugin/plugin.json](.claude-plugin/plugin.json)) that ships three shows and one bench. `daily-podcast`, at [skills/daily-podcast/](skills/daily-podcast/), turns a list of saved URLs into a fully-produced Spotify episode in one pass, on top of the external `save-to-spotify` CLI. `frontier-commits`, at [skills/frontier-commits/](skills/frontier-commits/), turns the frontier AI labs' public GitHub org activity (a daily snapshot store diffed into typed, mention-once stories) into a speculation-forward weekly episode shipped through the same `render.py` in its **web-only mode** (RSS-first: R2/RSS is the canonical channel and `save-to-spotify` is never invoked); its contracts live in [skills/frontier-commits/SKILL.md](skills/frontier-commits/SKILL.md), and drift tests in [tests/test_fc_skill_md.py](tests/test_fc_skill_md.py) tie that document's tables to `fc_script_plan`/`fc_stories`. `surface-tension`, at [skills/surface-tension/](skills/surface-tension/), turns personal independent blog posts surfaced by community vote on [bubbles.town](https://bubbles.town) into a weekly four-voice call-in show, shipped through that same `render.py` web-only mode (RSS-first on its own feed; `save-to-spotify` is never invoked) with each scene rendered as a `lines` multi-voice segment; its contracts live in [skills/surface-tension/SKILL.md](skills/surface-tension/SKILL.md), and drift tests in [tests/test_st_skill_md.py](tests/test_st_skill_md.py) tie that document's tables to `st_script_plan`/`st_write`. `tts-eval`, at [skills/tts-eval/](skills/tts-eval/), is not a show: it benches a TTS engine from `render.ENGINES` against the production engine on a fixed corpus and writes a ledger entry plus an HTML report (#200); its contracts live in [skills/tts-eval/SKILL.md](skills/tts-eval/SKILL.md), pinned by [tests/test_tts_eval.py](tests/test_tts_eval.py). Skill discovery is directory convention (`skills/<name>/SKILL.md` + frontmatter) — plugin.json has no skills key.
+A Claude Code **plugin** (manifest at [.claude-plugin/plugin.json](.claude-plugin/plugin.json)) that ships three shows and one bench. `daily-podcast`, at [skills/daily-podcast/](skills/daily-podcast/), turns a list of saved URLs into a fully-produced episode in one pass, shipped through `render.py`'s **web-only mode** since #218 (RSS-first: R2/RSS is the canonical channel and `save-to-spotify` is never invoked). `frontier-commits`, at [skills/frontier-commits/](skills/frontier-commits/), turns the frontier AI labs' public GitHub org activity (a daily snapshot store diffed into typed, mention-once stories) into a speculation-forward weekly episode shipped through the same `render.py` in its **web-only mode** (RSS-first: R2/RSS is the canonical channel and `save-to-spotify` is never invoked); its contracts live in [skills/frontier-commits/SKILL.md](skills/frontier-commits/SKILL.md), and drift tests in [tests/test_fc_skill_md.py](tests/test_fc_skill_md.py) tie that document's tables to `fc_script_plan`/`fc_stories`. `surface-tension`, at [skills/surface-tension/](skills/surface-tension/), turns personal independent blog posts surfaced by community vote on [bubbles.town](https://bubbles.town) into a weekly four-voice call-in show, shipped through that same `render.py` web-only mode (RSS-first on its own feed; `save-to-spotify` is never invoked) with each scene rendered as a `lines` multi-voice segment; its contracts live in [skills/surface-tension/SKILL.md](skills/surface-tension/SKILL.md), and drift tests in [tests/test_st_skill_md.py](tests/test_st_skill_md.py) tie that document's tables to `st_script_plan`/`st_write`. `tts-eval`, at [skills/tts-eval/](skills/tts-eval/), is not a show: it benches a TTS engine from `render.ENGINES` against the production engine on a fixed corpus and writes a ledger entry plus an HTML report (#200); its contracts live in [skills/tts-eval/SKILL.md](skills/tts-eval/SKILL.md), pinned by [tests/test_tts_eval.py](tests/test_tts_eval.py). Skill discovery is directory convention (`skills/<name>/SKILL.md` + frontmatter) — plugin.json has no skills key.
 
 There is no build step — the "build" is `python3 render.py`. Linting is `ruff` (lint + format-check) and there's a `pytest` invariant suite under [tests/](tests/), both enforced in [CI](.github/workflows/ci.yml) across Python 3.10–3.12; see the README's *Development* section. The contract between the skill prose ([SKILL.md](skills/daily-podcast/SKILL.md)) and the executable ([render.py](skills/daily-podcast/render.py)) is the manifest schema described in both — keep them in sync when changing either.
 
@@ -62,6 +62,19 @@ key: `"spotify"` (the default when absent) or `"web"` (#155). Everything above t
 ship — render, cover, timeline, pre-flight's local subset, the artifact gate — is
 shared verbatim; only the tail differs. `--dry-run` is unchanged in both.
 
+**No show is on the Spotify default any more.** The daily show was flipped to `"web"`
+in #218, joining the two that were built that way, so `save-to-spotify` is invoked by
+no production path in this repo. The mode stays implemented and tested — the tail, the
+resume branch, the cap prune, the `_default_*` tests — because a manifest may still
+select it; it is legacy, not dead. Two consequences worth stating plainly: the "R2 is
+additive and a failed publish only warns" sentence below describes a path nothing takes
+(a failed publish now fails every real run), and #104's question — *what is the daily
+show's episode retention policy?* — is **answered**: there is no cap and nothing is
+deleted, because the show no longer uploads. It sat at 60/60 with `auto_prune_episodes`
+on, destroying the then-oldest published episode every run (~29 gone by 2026-08-22);
+the flip is what stopped that. The private show and its 60 episodes are deliberately
+left alone — disposing of them is the operator's call, not this repo's.
+
 - **Mode lives on the MANIFEST, not the command line.** The distribution channel is
   a property of the show, and re-running a manifest must ship the same way it shipped
   before. A flag can go missing on one invocation, and the failure mode of a missing
@@ -87,7 +100,16 @@ shared verbatim; only the tail differs. `--dry-run` is unchanged in both.
   `save-to-spotify`. A web-only re-run is idempotent on its own (R2 PUTs replace, the
   manifest entry upserts by slug), so it simply renders again off the TTS cache.
   `tests/test_web_only.py` asserts this mechanically by wiring the `run()` seam to
-  raise, rather than inferring it from an absent mock.
+  raise, rather than inferring it from an absent mock — for the daily show's assembled
+  manifest as well as a literal one, so a regression in `assemble_manifest` fails there
+  instead of shipping.
+- **`--selftest` probes the WEB gate by default (#218), inverting the manifest
+  default.** The standalone probe has no manifest to read, and a scheduler gates on it
+  (SKILL.md's *Scheduled runs*), so a probe that still demanded a live
+  `save-to-spotify` credential would fail healthy hosts over a CLI no run invokes.
+  `--ship-mode {web,spotify}` selects the gate and is **refused alongside
+  `--manifest`** — that refusal is what keeps the first bullet true: a run's mode is
+  never expressible on the command line.
 - **The dedup entry records the published mp3 URL** where the Spotify path records an
   episode URI — there is no episode URI in this mode, and a null would lose the trail
   from a covered URL back to the episode that covered it.
@@ -282,7 +304,8 @@ All are documented in [SKILL.md](skills/daily-podcast/SKILL.md#show--dedup-confi
 
 Hard requirements that must be present on the host (not pip-installable workarounds):
 
-- `save-to-spotify` CLI on `PATH`, authenticated. Every `run([...])` for `save-to-spotify` assumes this.
+- Cloudflare R2 credentials plus `r2_bucket` / `r2_public_base_url`. Since #218 every show ships web-only, so this is the ship: pre-flight fails an absent config rather than disabling a bonus feed.
+- `save-to-spotify` CLI on `PATH`, authenticated — **only** for a legacy `"ship_mode": "spotify"` manifest, which no show emits any more. Every `run([...])` for `save-to-spotify` assumes it, and no production path reaches one.
 - `ffmpeg` + `ffprobe` on `PATH`. Concat + loudnorm + silence generation all shell out.
 - Apple Silicon Mac (the cover uses `/System/Library/Fonts/Supplemental/Futura.ttc` directly; Qwen3-TTS via MLX needs Metal). The Futura path is a portability hazard — if you ever move this off macOS, change `build_cover`'s font resolution before anything else.
 - Python 3.10+ with `mlx-audio`, `soundfile`, `mutagen`, `Pillow`. The headless prompt additionally needs `feedparser` (it self-installs if missing).

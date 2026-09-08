@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import orchestrate
+import render
 
 NOW = dt.datetime(2026, 6, 4, 12, 0, tzinfo=dt.timezone.utc)
 
@@ -415,6 +416,19 @@ def test_assemble_manifest_shape():
     assert m["segments"][-1]["title"] == "Sign-off"
 
 
+def test_assemble_manifest_ships_web_only(monkeypatch):
+    """#218: the daily show is RSS-first. Without this key the run defaults to
+    `spotify` and uploads through save-to-spotify — which, at the 60/60 cap with
+    auto_prune_episodes on, permanently deletes the then-oldest published episode."""
+    survivors = [{"title": "A", "segment": "seg a", "source_url": "u/a", "feed_name": "F1"}]
+    io = {"intro": "I", "outro": "O", "summary": "S"}
+
+    m = orchestrate.assemble_manifest("June 4, 2026", "2026-06-04", survivors, io)
+
+    assert m["ship_mode"] == "web"
+    assert render.is_web_only(m) is True
+
+
 def test_load_covered_malformed_is_empty(tmp_path, monkeypatch):
     p = tmp_path / "covered.json"
     p.write_text("{ not json")
@@ -524,6 +538,26 @@ def test_build_report_shipped_and_dryrun():
     assert orchestrate.build_report(dry).startswith("DRY-RUN ok - T - 5 chapters")
 
 
+def test_build_report_names_the_mp3_url_on_a_web_only_ship():
+    """#218: there is no episode_uri in web mode, so a report keyed on it would print
+    `SHIPPED  - ...` — a shipped line with no identifier in it at all."""
+    line = orchestrate.build_report(
+        {
+            "status": "web-ready",
+            "episode_uri": None,
+            "mp3_url": "https://audio.example/daily-digest-september-8-2026.mp3",
+            "title": "T",
+            "chapter_count": 5,
+            "duration_s": 412.3,
+            "r2_status": "published",
+        }
+    )
+    assert line == (
+        "SHIPPED https://audio.example/daily-digest-september-8-2026.mp3 - T - "
+        "5 chapters - 412.3s - r2=ok"
+    )
+
+
 def test_main_happy_path(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrate, "CONFIG_PATH", tmp_path / "config.json")
     (tmp_path / "config.json").write_text(
@@ -567,12 +601,12 @@ def test_main_happy_path(tmp_path, monkeypatch):
     def fake_render(manifest_path, workdir, dry_run, runner=None):
         captured["manifest"] = orchestrate.json.loads(Path(manifest_path).read_text())
         return {
-            "status": "ready",
-            "episode_uri": "spotify:episode:9",
+            "status": "web-ready",
+            "mp3_url": "https://audio.example/daily-digest-june-4-2026.mp3",
             "title": "T",
             "chapter_count": 3,
             "duration_s": 100.0,
-            "r2_status": "skipped",
+            "r2_status": "published",
         }
 
     monkeypatch.setattr(orchestrate, "run_render", fake_render)
@@ -580,7 +614,10 @@ def test_main_happy_path(tmp_path, monkeypatch):
     assert rc == 0
     # 1:1 mapping survived into the manifest (intro + 1 story + outro)
     assert len(captured["manifest"]["segments"]) == 3
-    assert (tmp_path / "feed_usage.json").exists()  # updated on ready
+    assert captured["manifest"]["ship_mode"] == "web"  # #218
+    # The variety penalty is keyed on this file. A run that ships but never records
+    # its feeds lets one feed dominate consecutive episodes, silently.
+    assert (tmp_path / "feed_usage.json").exists()
 
 
 def test_main_dry_run_skips_feed_usage_update(tmp_path, monkeypatch):

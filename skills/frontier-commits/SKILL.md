@@ -245,7 +245,7 @@ State lives under `~/.config/frontier-commits/`:
 - `labs_json.sha256` — the destination-keyed publish-gate record (`{bucket, key, sha256}`).
 - `secrets.json` — optional (0600). R2 keys, `PAGES_DEPLOY_HOOK_URL`, and `GH_TOKEN` resolve env-first, then this file, then `~/.config/daily-podcast/secrets.json` — the daily skill's secrets file is the durable fallback tier so credentials have one home per host.
 
-Shared with the daily show: `~/.config/daily-podcast/covered.json` — `render.py`'s URL dedup, written **after the R2 publish** on this show's web-only runs (post-READY on the daily show's); GitHub repo URLs and news-article URLs don't collide — and `runs.jsonl`, where this show's runs appear with their own manifest path, `"status": "web-ready"`, and the published `mp3_url`. The episode bucket and credentials are the daily skill's too — see the warning in [Manifest](#manifest).
+Shared with the daily show: `~/.config/daily-podcast/covered.json` — `render.py`'s URL dedup, written **after the R2 publish** (the daily show ships web-only too since #218, so both shows write it at the same point); GitHub repo URLs and news-article URLs don't collide — and `runs.jsonl`, where this show's runs appear with their own manifest path, `"status": "web-ready"`, and the published `mp3_url`. The episode bucket and credentials are the daily skill's too — see the warning in [Manifest](#manifest).
 
 ## Unattended weekly run
 

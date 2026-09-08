@@ -13,24 +13,27 @@ Consumes a manifest.json that already contains the written segments, then:
   5. Installs the manifest's cover_image, or builds a date-stamped Pillow cover
   6. Builds timeline.json (chapter per segment + link companion when present)
   7. Builds HTML description (summary + timestamped chapters + source links)
-  7b. ARTIFACT GATE: local conformance + refusal to re-upload bytes Spotify already
+  7b. ARTIFACT GATE: local conformance + refusal to re-ship bytes Spotify already
      rejected (runs under --dry-run too, so a rehearsal is a real rehearsal)
-  8. Uploads via save-to-spotify CLI, sets timeline, polls until READY
-  9. Optionally publishes the mp3 + a manifest entry to Cloudflare R2 (for the
-     cortech.online web feed) — additive, never blocks the run
- 10. Updates ~/.config/daily-podcast/covered.json dedup log
- 11. Appends one record to ~/.config/daily-podcast/runs.jsonl (across-runs observability)
+  8. SHIPS, per the manifest's ship_mode. "web" (every show since #218): publishes
+     the mp3 + cover + a manifest entry to Cloudflare R2 for the cortech.online feed
+     and fires the Pages deploy hook — the publish IS the ship, so its failure is
+     fatal. "spotify" (legacy, no show emits it): uploads via the save-to-spotify
+     CLI, sets the timeline, polls until READY, and publishes to R2 additively.
+  9. Updates ~/.config/daily-podcast/covered.json dedup log
+ 10. Appends one record to ~/.config/daily-podcast/runs.jsonl (across-runs observability)
 
 Progress is checkpointed to <workdir>/state.json and the auto workdir is
 deterministic (daily-podcast-<date>), so an interrupted run resumes by re-running the
 same command. Any non-clean exit writes a structured incident report to
 ~/.config/daily-podcast/incidents/new/ (see the repo's incidents/ directory).
 
-Use --dry-run to skip upload/timeline/R2 calls (still writes mp3, cover, timeline.json,
-and a "dry-run" run-log record).
+Use --dry-run to skip the ship (still writes mp3, cover, timeline.json, and a
+"dry-run" run-log record).
 Use --selftest (mutually exclusive with --manifest) for a pre-flight health check of
 deps + credentials without a real run — recommended in an unattended scheduler's
-pre-flight (`render.py --selftest || alert`).
+pre-flight (`render.py --selftest || alert`). It probes the web-only gate by default;
+--ship-mode spotify probes the legacy CLI gate.
 """
 
 from __future__ import annotations
@@ -4386,59 +4389,83 @@ def _check(name: str, ok: bool, detail: str) -> dict[str, Any]:
     return {"name": name, "ok": ok, "detail": detail}
 
 
-def run_selftest(load_model: bool = False) -> int:
+def run_selftest(load_model: bool = False, ship_mode: str = SHIP_MODE_WEB) -> int:
     """Pre-flight health check for unattended runs (#21). Runs ordered dependency +
     credential checks WITHOUT a real render — each prints a pass/fail line. Prints a
     JSON summary to stdout and returns 0 iff every check passed, non-zero otherwise.
 
     Deliberately does NOT use run() (which die()s on any non-zero subprocess) — a
     failing check must be recorded and the remaining checks still run. Designed to
-    finish in <5s unless --load-model forces the slow MLX model load."""
+    finish in <5s unless --load-model forces the slow MLX model load.
+
+    `ship_mode` selects which gate to probe, mirroring `preflight`'s `web_only`
+    split. It defaults to WEB — the inverse of the manifest default — because every
+    show now ships web-only (#218), and a probe that fails on a missing
+    save-to-spotify credential no run will ever use is a false alarm on the one
+    signal a scheduler is gating on. The Spotify gate stays reachable via
+    `--ship-mode spotify` for as long as the mode itself does."""
     checks: list[dict[str, Any]] = []
-    log("selftest: checking dependencies and credentials...")
+    web_only = ship_mode == SHIP_MODE_WEB
+    log(f"selftest: checking dependencies and credentials (ship_mode={ship_mode})...")
 
     # 1. ffmpeg + ffprobe on PATH.
     for tool in ("ffmpeg", "ffprobe"):
         path = shutil.which(tool)
         checks.append(_check(tool, path is not None, path or "not found on PATH"))
 
-    # 2. save-to-spotify auth is live (lists shows as valid JSON).
-    try:
-        proc = subprocess.run(
-            ["save-to-spotify", "--json", "shows"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if proc.returncode != 0:
-            checks.append(_check("save-to-spotify-auth", False, _shows_failure_detail(proc)))
-        else:
-            try:
-                json.loads(proc.stdout)
-                checks.append(_check("save-to-spotify-auth", True, "shows returned valid JSON"))
-            except json.JSONDecodeError:
-                checks.append(
-                    _check("save-to-spotify-auth", False, "shows did not return valid JSON")
-                )
-    except FileNotFoundError:
-        checks.append(_check("save-to-spotify-auth", False, "save-to-spotify not on PATH"))
-    except subprocess.TimeoutExpired:
-        checks.append(_check("save-to-spotify-auth", False, "shows timed out (auth/network?)"))
+    # 2. save-to-spotify auth is live (lists shows as valid JSON). Skipped entirely
+    #    in web mode: that path never invokes the CLI, so probing it would fail a
+    #    perfectly healthy host over a credential nothing consumes.
+    if not web_only:
+        try:
+            proc = subprocess.run(
+                ["save-to-spotify", "--json", "shows"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if proc.returncode != 0:
+                checks.append(_check("save-to-spotify-auth", False, _shows_failure_detail(proc)))
+            else:
+                try:
+                    json.loads(proc.stdout)
+                    checks.append(_check("save-to-spotify-auth", True, "shows returned valid JSON"))
+                except json.JSONDecodeError:
+                    checks.append(
+                        _check("save-to-spotify-auth", False, "shows did not return valid JSON")
+                    )
+        except FileNotFoundError:
+            checks.append(_check("save-to-spotify-auth", False, "save-to-spotify not on PATH"))
+        except subprocess.TimeoutExpired:
+            checks.append(_check("save-to-spotify-auth", False, "shows timed out (auth/network?)"))
 
-    # 3. config.json exists, parses, and has show_id.
+    # 3. config.json exists, parses, and — on the Spotify gate only — has show_id.
+    #    A web-only run ignores show_id entirely, so requiring it here would fail a
+    #    host whose config has legitimately dropped the key.
+    cfg: dict[str, Any] = {}
     if not CONFIG_PATH.exists():
         checks.append(_check("config", False, f"{CONFIG_PATH} missing"))
     else:
         try:
-            cfg = json.loads(CONFIG_PATH.read_text())
+            parsed = json.loads(CONFIG_PATH.read_text())
         except (json.JSONDecodeError, OSError) as e:
             checks.append(_check("config", False, f"{CONFIG_PATH} unparseable: {e}"))
         else:
-            has_show = isinstance(cfg, dict) and bool(cfg.get("show_id"))
-            checks.append(
-                _check("config", has_show, "show_id set" if has_show else "show_id missing")
-            )
+            cfg = parsed if isinstance(parsed, dict) else {}
+            if web_only:
+                checks.append(_check("config", isinstance(parsed, dict), "parsed"))
+            else:
+                has_show = bool(cfg.get("show_id"))
+                checks.append(
+                    _check("config", has_show, "show_id set" if has_show else "show_id missing")
+                )
+
+    # 3b. R2 is the ship in web mode, so its config is load-bearing rather than
+    #     optional — same required=True the run's own pre-flight applies.
+    if web_only:
+        r2 = check_r2_credentials(cfg, required=True)
+        checks.append(_check("r2-credentials", r2["ok"], r2["detail"]))
 
     # 4. House voice ref clip + transcript exist (bundled or user copy).
     audio_ok = USER_HOUSE_AUDIO.exists() or BUNDLED_HOUSE_AUDIO.exists()
@@ -5530,8 +5557,22 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="with --selftest: also load the TTS model (slow; the most thorough check)",
     )
+    # --selftest ONLY. A run's ship mode lives on its manifest and nowhere else
+    # (#155): a command-line override could go missing on one invocation and upload
+    # an episode to a show that was deliberately retired. The standalone probe has
+    # no manifest to read, so it needs to be told which gate to run — and passing
+    # this alongside --manifest is refused below rather than quietly ignored.
     ap.add_argument(
-        "--dry-run", action="store_true", help="render audio/cover/timeline locally; skip upload"
+        "--ship-mode",
+        choices=SHIP_MODES,
+        default=None,
+        help=f"with --selftest: which gate to probe (default: {SHIP_MODE_WEB}). "
+        "Not accepted with --manifest — a run's mode lives on the manifest.",
+    )
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="render audio/cover/timeline locally; skip the ship (publish/upload)",
     )
     ap.add_argument(
         "--workdir",
@@ -5559,7 +5600,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="before rendering, delete auto-created workdirs older than N days "
         "(disk hygiene for unattended runs; 0 = off). Never deletes the active workdir.",
     )
-    return ap.parse_args(argv)
+    args = ap.parse_args(argv)
+    if args.manifest is not None and args.ship_mode is not None:
+        ap.error("--ship-mode applies to --selftest only; a run's mode lives on the manifest")
+    return args
 
 
 def main() -> int:
@@ -5568,7 +5612,7 @@ def main() -> int:
     # --selftest short-circuits everything: no manifest, no config load, no run-log
     # record (it is not a "run"). Its own JSON summary + exit code are the contract.
     if args.selftest:
-        return run_selftest(load_model=args.load_model)
+        return run_selftest(load_model=args.load_model, ship_mode=args.ship_mode or SHIP_MODE_WEB)
 
     global _RUN_CTX
     record = _new_run_record()
