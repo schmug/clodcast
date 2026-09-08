@@ -411,7 +411,7 @@ Chapters under 30 seconds used to be capped at 3 per episode, and `render.py` pa
 ## Show + dedup config
 
 Since #218 this show ships web-only, which moves two keys across the required line
-and makes three others inert:
+and makes five others inert:
 
 - **`r2_bucket` + `r2_public_base_url` are now load-bearing**, not optional. R2 is the
   only channel, so an absent pair fails pre-flight (and `--selftest`) instead of
@@ -546,7 +546,7 @@ python3 bloopers.py mark --from episode.mp3 --start 4:12 --end 4:58 --note "bird
 }
 ```
 
-`~/.config/daily-podcast/inflight.json` is a transient crash-recovery record (an episode that uploaded but hasn't reached `READY`+dedup yet) — written after `upload()` succeeds and cleared after dedup. It is **not** a second dedup source; `covered.json` stays authoritative. See [Automatic cron recovery](#automatic-cron-recovery-cross-day-workdir-independent) below.
+`~/.config/daily-podcast/inflight.json` is a transient crash-recovery record (an episode that uploaded but hasn't reached `READY`+dedup yet) — written after `upload()` succeeds and cleared after dedup. **A web-only run never writes it** (#218): nothing uploads, so nothing is ever left in flight. It is **not** a second dedup source; `covered.json` stays authoritative. See [Automatic cron recovery](#automatic-cron-recovery-cross-day-workdir-independent) below.
 
 ### Episode-cap auto-prune (`auto_prune_episodes`) — Spotify mode only
 
