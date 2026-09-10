@@ -66,6 +66,11 @@ PER_FEED_CAP = 3  # at most this many items from one feed in the ranked set
 VARIETY_DAYS = 3  # penalize feeds used within this many days (daily.md priority 3)
 CONCURRENCY_DEFAULT = 3  # parallel claude -p calls (wide fan-out trips a rate-limit nag)
 SUMMARIZE_TIMEOUT_S = 150  # per-item claude -p wall clock
+# Defense-in-depth for the unattended path: render.py has its own internal poll/
+# network timeouts, so this is not a live hang today — it's a ceiling against an
+# OS-level stall in the render subprocess itself, which would otherwise block the
+# cron indefinitely.
+RENDER_TIMEOUT_S = 1800  # render.py wall clock (~30 min)
 # Editorial floor, not a platform one: Spotify's sub-30s chapter cap was removed
 # upstream (save-to-spotify PR #44, verified 2026-08-22), so a short segment no
 # longer endangers the episode. A sub-500-char item still reads as filler next to
@@ -1038,10 +1043,16 @@ def write_dropped_log(dropped: list[dict], run_date: str, path: Path | None = No
 
 
 def run_render(
-    manifest_path: Path, workdir: Path, dry_run: bool, runner: Callable = subprocess.run
+    manifest_path: Path,
+    workdir: Path,
+    dry_run: bool,
+    runner: Callable = subprocess.run,
+    timeout: int = RENDER_TIMEOUT_S,
 ) -> dict:
     """Invoke render.py by path and parse its final result JSON (printed indent=2).
-    Raise RenderError on non-zero exit or unparseable output."""
+    Raise RenderError on a subprocess timeout, a non-zero exit, or an unparseable
+    result — with a message that names WHICH of the three happened, since main()
+    surfaces it verbatim as the FAILED line an operator/scheduler reads."""
     cmd = [
         sys.executable,
         str(RENDER_PY),
@@ -1052,11 +1063,22 @@ def run_render(
     ]
     if dry_run:
         cmd.append("--dry-run")
-    proc = runner(cmd, capture_output=True, text=True)
-    result = extract_last_json(proc.stdout or "")
-    if proc.returncode != 0 or not isinstance(result, dict):
+    try:
+        proc = runner(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RenderError(f"render.py timed out after {timeout}s") from None
+    if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "render failed").strip().splitlines()
-        raise RenderError(tail[-1] if tail else "render failed")
+        raise RenderError(
+            f"render.py exited {proc.returncode}: {tail[-1] if tail else 'render failed'}"
+        )
+    result = extract_last_json(proc.stdout or "")
+    if not isinstance(result, dict):
+        snippet = (proc.stdout or "").strip()[-300:] or "(empty stdout)"
+        raise RenderError(
+            "render.py exited 0 but stdout was unparseable as a result JSON object "
+            f"(not the last line printed) - stdout tail: {snippet!r}"
+        )
     return result
 
 
