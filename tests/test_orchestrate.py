@@ -566,6 +566,44 @@ def test_run_render_raises_on_failure(tmp_path):
         orchestrate.run_render(tmp_path / "m.json", tmp_path, dry_run=False, runner=runner)
 
 
+def test_run_render_passes_timeout_to_runner(tmp_path):
+    captured = {}
+
+    def runner(cmd, **kw):
+        captured["timeout"] = kw.get("timeout")
+        return SimpleNamespace(stdout='{"status": "dry-run"}', stderr="", returncode=0)
+
+    orchestrate.run_render(tmp_path / "m.json", tmp_path, dry_run=True, runner=runner)
+    assert captured["timeout"] == orchestrate.RENDER_TIMEOUT_S
+
+
+def test_run_render_raises_render_error_on_timeout(tmp_path):
+    def runner(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+
+    with pytest.raises(orchestrate.RenderError, match="timed out"):
+        orchestrate.run_render(
+            tmp_path / "m.json", tmp_path, dry_run=False, runner=runner, timeout=5
+        )
+
+
+def test_run_render_raises_diagnostic_message_on_unparseable_stdout(tmp_path):
+    # Regression for #71: a returncode-0 render whose stdout can't be parsed as a
+    # result JSON object must NOT raise the bare last printed line (which can be a
+    # late-success log line, e.g. a pages-deploy-hook message) — the message must
+    # say the stdout was unparseable, not echo it as if it were the cause.
+    def runner(cmd, **kw):
+        return SimpleNamespace(
+            stdout="[r2] pages deploy hook fired: 200",
+            stderr="",
+            returncode=0,
+        )
+
+    with pytest.raises(orchestrate.RenderError, match="unparseable") as exc_info:
+        orchestrate.run_render(tmp_path / "m.json", tmp_path, dry_run=False, runner=runner)
+    assert str(exc_info.value) != "[r2] pages deploy hook fired: 200"
+
+
 def test_build_report_shipped_and_dryrun():
     ready = {
         "status": "ready",
