@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 This file is generated from conventional commits by [git-cliff](https://git-cliff.org).
 
+## [0.1.14](https://github.com/schmug/clodcast/compare/v0.1.13...v0.1.14) (2026-09-10)
+
+
+### Features
+
+* close the sign-off on a machine joke instead of the host's name ([#223](https://github.com/schmug/clodcast/issues/223)) ([4555b6e](https://github.com/schmug/clodcast/commit/4555b6ef701829f2a8a91780e9e638a8a7d61c13))
+* **daily:** ship the daily show web-only and retire save-to-spotify ([#218](https://github.com/schmug/clodcast/issues/218)) ([#220](https://github.com/schmug/clodcast/issues/220)) ([6704e05](https://github.com/schmug/clodcast/commit/6704e05e51b45fca6a739172d1a7f0c20e58f49b))
+* **incidents:** drain the new/ queue by archiving handled reports ([#207](https://github.com/schmug/clodcast/issues/207)) ([#214](https://github.com/schmug/clodcast/issues/214)) ([37bb14a](https://github.com/schmug/clodcast/commit/37bb14a61976dae6dac498e991fb143376363197))
+* **render:** optional intro/outro music for both shows ([#227](https://github.com/schmug/clodcast/issues/227)) ([dad8b05](https://github.com/schmug/clodcast/commit/dad8b052583c130ff646b2e528830441061f1c5a))
+
+
+### Bug Fixes
+
+* **render:** warn on a title-less segment instead of publishing "Segment N" ([#96](https://github.com/schmug/clodcast/issues/96)) ([#219](https://github.com/schmug/clodcast/issues/219)) ([39da0ad](https://github.com/schmug/clodcast/commit/39da0ad35eff80be9acf931e3ecb89d65365b836))
+
 ## [0.1.13](https://github.com/schmug/clodcast/compare/v0.1.12...v0.1.13) (2026-09-04)
 
 
