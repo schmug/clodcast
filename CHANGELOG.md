@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 This file is generated from conventional commits by [git-cliff](https://git-cliff.org).
 
+## [0.1.15](https://github.com/schmug/clodcast/compare/v0.1.14...v0.1.15) (2026-09-10)
+
+
+### Bug Fixes
+
+* **orchestrate:** bound run_render's subprocess wait and disambiguate its failure ([#229](https://github.com/schmug/clodcast/issues/229)) ([bdea2e7](https://github.com/schmug/clodcast/commit/bdea2e7795558c45ec397e441c0964d082e63fc6)), closes [#64](https://github.com/schmug/clodcast/issues/64) [#71](https://github.com/schmug/clodcast/issues/71)
+
 ## [0.1.14](https://github.com/schmug/clodcast/compare/v0.1.13...v0.1.14) (2026-09-10)
 
 
