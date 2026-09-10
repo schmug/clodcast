@@ -88,7 +88,7 @@ Don't compute assignments by hand — ask the code:
 python3 fc_script_plan.py plan --date <YYYY-MM-DD> --stories <n>
 ```
 
-prints one JSON object: `week_row`, `intro_mode`/`intro_text`, `outro_mode`/`outro_text`, and per-segment `{pos, shape, shape_text, move, move_text, band}`.
+prints one JSON object: `week_row`, `intro_mode`/`intro_text`, `outro_mode`/`outro_text`, `button_angle`/`button_text`, and per-segment `{pos, shape, shape_text, move, move_text, band}`.
 
 ### Cold open
 
@@ -164,6 +164,28 @@ Bank of three, indexed `week % 3`:
 | 0 | `plain` | Plain sign-off: a simple thanks. No new content. |
 | 1 | `watchlist` | Name one or two repos to watch next week and the observable that would settle the question. Then sign off. |
 | 2 | `callback` | Close by paying off the cold open in one line, then sign off. No new facts. |
+
+### The button
+
+**Every sign-off ends on a button: one dry joke about the host being a machine.** The show never closes on a host's name — `host_name` in [the config](#setup) is not spoken here, and nobody is there to name anyway.
+
+The angle is assigned, the wording is yours. Take `button_angle`/`button_text` from the plan (bank of five, indexed `week % 5`) and **write the line fresh every week** — this is the one place in the template where the model supplies the novelty rather than the rotation, because a joke the listener has already heard is not a joke.
+
+| # | Angle | Do |
+| --- | --- | --- |
+| 0 | `machine-admission` | Admit the host is not a person, deadpan, as if it were a scheduling detail. |
+| 1 | `alias` | Introduce yourself under an invented model-shaped name - a checkpoint, release or lab codename - in place of a real one. |
+| 2 | `idiom-swap` | Take an everyday sign-off idiom and swap one word of it for machine-learning vocabulary. |
+| 3 | `downstream` | Note in passing that the host is downstream of the same labs the episode just covered - shipped by one of them, or trained on the repos it read out. |
+| 4 | `scheduled-return` | Promise next week as a job that is already scheduled rather than a person choosing to come back. |
+
+The rules on it:
+
+- **One sentence, 60 characters at most** (`SIGNOFF_BUTTON_MAX_CHARS_W`), and it is the last thing in the episode. A button lands; a second sentence explains the joke.
+- **Dry.** No exclamation marks, no winking at the listener, no "haha". The register is a shrug on the way out the door.
+- **No new facts, and no speculation.** The button is a joke about the show, never about a lab — the [speculation rules](#speculation-rules) below govern claims, and a punchline is not the place to make one.
+- **`downstream` stays a joke about the host, not a claim about a lab.** It is the one angle that touches the episode's subject, so keep it on the host's own provenance; never assert who actually trained or shipped anything.
+- **These three are burned — never ship one:** "Still a robot. See you tomorrow." / "I'm preswarm. Check back tomorrow." / "Same weights, different day." They calibrate the register, and they are the daily show's literal `FALLBACK_BUTTONS` (`fc_script_plan.BURNED_BUTTONS_W`, pinned to them by a test). Both shows sit on one site: a listener who hears the same closing joke on each has caught the host being a template.
 
 ### TTS rules
 
@@ -256,7 +278,7 @@ Shared with the daily show: `~/.config/daily-podcast/covered.json` — `render.p
 3. **Detect stories:** `python3 fc_stories.py detect --date <today>` → save the stdout JSON to `<workdir>/stories.json`. Two gates, both before any TTS is spent: if `"already_shipped_this_week"` is non-null, this ISO week's episode is already live at a permalink a second run would overwrite — print `SKIPPED already-shipped-this-week <uri>` (that field's value) and exit 0. **Never republish a week.** Then if `"thin": true` → print `SKIPPED thin-week (<n> stories)` and exit 0. **No filler episodes.**
 4. **Get the script plan:** `python3 fc_script_plan.py plan --date <today> --stories <n>` → `<workdir>/plan.json`.
 5. **Write each story in its own subagent context** — one story's material per context, the weekly analogue of the daily show's one-body-per-request invariant. Per story: read `prompts/write_story.md`, fill `<<TYPE>>/<<TITLE>>/<<URL>>/<<FACTS>>/<<SHAPE>>/<<MIN_CHARS>>/<<MAX_CHARS>>` from `stories.json` + `plan.json`, research the repo first (README via `gh api repos/<org>/<repo>/readme`, recent commits/releases), write the segment, return the JSON contract. A refused/failed story is dropped and logged; if survivors fall below `min_stories_per_episode` → print `SKIPPED thin-week after drops` and exit 0.
-6. **Write the frame:** the intro (assigned mode), the segues (assigned moves — `cold` means no segue text at all), the trend-watch close (from today's `labs.json`), and the outro (assigned mode).
+6. **Write the frame:** the intro (assigned mode), the segues (assigned moves — `cold` means no segue text at all), the trend-watch close (from today's `labs.json`), and the outro (assigned mode, closing on the week's assigned button — see [The button](#the-button)).
 7. **Assemble `<workdir>/manifest.json`** per [Manifest](#manifest) — including `"ship_mode": "web"`, without which this ships to the wrong place — and render in the **background**: `python3 <root>/skills/daily-podcast/render.py --manifest <workdir>/manifest.json --workdir <workdir>` — the 10-minute foreground Bash cap SIGTERMs a long render; monitor the render log instead. Never pass `--dry-run` (this is a real episode) and never pass `--skip-preflight`.
 8. **On a successful publish** — exit 0 and a final JSON object with `"status": "web-ready"` and `"r2_status": "published"` — take its `mp3_url` and run `python3 fc_stories.py mark --stories <workdir>/stories.json --episode-uri <mp3_url>`. (`mark` reads the date from the file's `run_date`; there is no `--date` flag.) A nonzero exit means nothing was published: do **not** mark, and report `FAILED`. The renderer leaves the sources unmarked in `covered.json` too, so the next run re-selects them.
 9. **Report once and exit.** Single-line stdout: `SHIPPED <mp3_url> - <title> - <n> chapters - <dur>s - r2=ok` on success (all four values come from the renderer's final JSON: `mp3_url`, `title`, `chapter_count`, `duration_s`), `SKIPPED <reason>` for a thin week, `FAILED <reason>` on genuine failure. `r2=ok` is the only success value here — a publish that did not succeed is a failed run, not a degraded one.
@@ -271,7 +293,8 @@ One-time, in order.
 // ~/.config/frontier-commits/config.json
 {
   "show_name": "Frontier Commits",
-  "host_name": "Cory",
+  "host_name": "Cory",              // narration only; NOT spoken in the sign-off,
+                                    //   which closes on a button (see "The button")
   "orgs": [                             // each entry {"name", "filter"}; names must match
     {"name": "anthropics", "filter": "none"},        //   [A-Za-z0-9-]+ (they land in gh api
     {"name": "openai", "filter": "none"},            //   paths); filter is "none" or "ai"

@@ -77,6 +77,7 @@ def test_skill_md_bank_tables_match_the_code_cell_for_cell():
     banks = [
         ("### Cold open", list(sp.INTRO_MODES_W)),
         ("### Sign-off", list(sp.OUTRO_MODES_W)),
+        ("### The button", list(sp.SIGNOFF_BUTTONS_W)),
         ("What each shape means:", list(sp.STORY_SHAPES_W)),
         ("### Segues", list(sp.MOVES_W)),
     ]
@@ -88,6 +89,27 @@ def test_skill_md_bank_tables_match_the_code_cell_for_cell():
         assert indices == [str(i) for i in range(len(expected))], (
             f"bank table after {marker!r} is mis-numbered: {indices}"
         )
+
+
+def test_skill_md_burns_the_button_examples_it_shows():
+    """SKILL.md holds the burned lines up as the register. Unless it also forbids
+    shipping them, the frame writer copies one - and these three are the DAILY
+    show's fallback close, so a copy puts the same joke on both of the site's feeds."""
+    burned = _skill_text().split("never ship one", 1)
+    assert len(burned) == 2, "SKILL.md shows no burned-example rule for the button"
+    for line in sp.BURNED_BUTTONS_W:
+        assert line in burned[1].split("\n\n", 1)[0], f"{line!r} is shown but not burned"
+
+
+def test_skill_md_keeps_the_hosts_name_out_of_the_sign_off():
+    """`host_name` is a real config key on this show. The prose has to say it is not
+    spoken in the sign-off, or a writer reads the key and closes on "I'm Cory"."""
+    skill = _skill_text()
+    section = skill.split("### The button", 1)
+    assert len(section) == 2, "SKILL.md lost the button section"
+    assert "`host_name`" in section[1].split("### TTS rules", 1)[0], (
+        "the button section never says where the host name may and may not appear"
+    )
 
 
 def test_skill_md_story_type_table_matches_the_code():

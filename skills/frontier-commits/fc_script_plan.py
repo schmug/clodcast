@@ -3,8 +3,9 @@
 Variety is ASSIGNED, never requested — the weekly analogue of the daily show's
 date-seeded rotation (orchestrate.py). Each story segment is written in its own
 subagent context that cannot see its neighbours to differ from them, so the
-week picks the cold open, the sign-off, every segment's shape, and every segue
-move, deterministically: a re-run of the same week rebuilds the same episode.
+week picks the cold open, the sign-off and its closing joke angle, every
+segment's shape, and every segue move, deterministically: a re-run of the same
+week rebuilds the same episode.
 
 Pure module: no fc_common, no IO beyond the `plan` CLI's single JSON print, and
 no wall-clock reads — the --date argument is the only clock.
@@ -66,6 +67,49 @@ OUTRO_MODES_W = {
     ),
     "callback": "Close by paying off the cold open in one line, then sign off. No new facts.",
 }
+
+# The sign-off closes on a BUTTON: one dry joke about the host being a machine. Every
+# other bank here assigns a phrase-shaped instruction and lets the rotation carry the
+# variety, but five fixed punchlines is a five-week loop of a joke the listener has
+# already heard - so this bank names the ANGLE only (the MOVES_W posture) and the
+# WORDING is written fresh every week. The daily show's SIGNOFF_BUTTONS is the same
+# mechanism; this bank is its own because a show about the labs can joke about being
+# downstream of them, which the daily show cannot. Five angles against OUTRO_MODES_W's
+# three so the mode and the angle do not lock together: the pair cycles every fifteen
+# weeks rather than every three.
+SIGNOFF_BUTTONS_W = {
+    "machine-admission": (
+        "Admit the host is not a person, deadpan, as if it were a scheduling detail."
+    ),
+    "alias": (
+        "Introduce yourself under an invented model-shaped name - a checkpoint, release "
+        "or lab codename - in place of a real one."
+    ),
+    "idiom-swap": (
+        "Take an everyday sign-off idiom and swap one word of it for machine-learning vocabulary."
+    ),
+    "downstream": (
+        "Note in passing that the host is downstream of the same labs the episode just "
+        "covered - shipped by one of them, or trained on the repos it read out."
+    ),
+    "scheduled-return": (
+        "Promise next week as a job that is already scheduled rather than a person "
+        "choosing to come back."
+    ),
+}
+
+# A button, not a bit: one line lands, two explains the joke.
+SIGNOFF_BUTTON_MAX_CHARS_W = 60
+
+# Burned: the register's calibration examples, shown in SKILL.md and never shipped. They
+# are the daily show's FALLBACK_BUTTONS verbatim (pinned by a test), which is the point -
+# the two shows sit on one site, and a listener who hears the same closing joke on both
+# has caught the machine being a template rather than a host.
+BURNED_BUTTONS_W = (
+    "Still a robot. See you tomorrow.",
+    "I'm preswarm. Check back tomorrow.",
+    "Same weights, different day.",
+)
 
 # Named openings for story segments. Order is load-bearing: SHAPE_ORDERS_W
 # indexes into this bank.
@@ -173,12 +217,14 @@ def band_for(pos: int, n_stories: int) -> tuple[int, int]:
 
 
 def build_plan(date_iso: str, n_stories: int) -> dict:
-    """Assemble the week's full script plan: assigned intro, outro, and one
-    entry per story segment (shape + segue move + length band). Deterministic
+    """Assemble the week's full script plan: assigned intro, outro, the outro's
+    closing button angle, and one entry per story segment (shape + segue move +
+    length band). Deterministic
     in (date_iso, n_stories) — the fixed JSON contract the weekly run consumes."""
     week = week_index(date_iso)
     intro = list(INTRO_MODES_W)[week % len(INTRO_MODES_W)]
     outro = list(OUTRO_MODES_W)[week % len(OUTRO_MODES_W)]
+    button = list(SIGNOFF_BUTTONS_W)[week % len(SIGNOFF_BUTTONS_W)]
     segments = []
     for i in range(n_stories):
         shape = segment_shape(week, i)
@@ -199,6 +245,8 @@ def build_plan(date_iso: str, n_stories: int) -> dict:
         "intro_text": INTRO_MODES_W[intro],
         "outro_mode": outro,
         "outro_text": OUTRO_MODES_W[outro],
+        "button_angle": button,
+        "button_text": SIGNOFF_BUTTONS_W[button],
         "segments": segments,
     }
 

@@ -115,6 +115,43 @@ def test_outro_rotation_covers_the_bank_over_consecutive_mondays():
         assert modes == set(sp.OUTRO_MODES_W)
 
 
+def test_button_rotation_covers_the_bank_over_consecutive_mondays():
+    n = len(sp.SIGNOFF_BUTTONS_W)
+    for start in range(len(_MONDAY_SPAN) - n + 1):
+        angles = {sp.build_plan(_MONDAY_SPAN[start + k], 1)["button_angle"] for k in range(n)}
+        assert angles == set(sp.SIGNOFF_BUTTONS_W)
+
+
+def test_button_angle_is_not_locked_to_the_outro_mode():
+    """Two banks that share a period collapse into one axis: `plain` would carry the
+    same joke angle in every episode this show ever ships. Five against three is what
+    keeps the pair on a fifteen-week cycle instead of a three-week one."""
+    n = len(sp.OUTRO_MODES_W) * len(sp.SIGNOFF_BUTTONS_W)
+    pairs = {
+        (p["outro_mode"], p["button_angle"])
+        for p in (sp.build_plan(d, 1) for d in _MONDAY_SPAN[:n])
+    }
+    assert len(pairs) == n
+
+
+def test_burned_buttons_fit_the_button_cap():
+    # The burned lines are what SKILL.md shows as the register, so one that overran
+    # the cap would teach the writer to overrun it too.
+    for line in sp.BURNED_BUTTONS_W:
+        assert len(line) <= sp.SIGNOFF_BUTTON_MAX_CHARS_W
+
+
+def test_burned_buttons_are_the_daily_shows_fallback_close():
+    """The daily show ships those three literals when its writer call fails. Both
+    shows publish to one site, so a frontier episode that reuses one closes on a line
+    the site's other feed already used - which is why this show burns them by
+    identity rather than by a copy that can drift."""
+    # conftest already has skills/daily-podcast on sys.path.
+    import orchestrate
+
+    assert sp.BURNED_BUTTONS_W == orchestrate.FALLBACK_BUTTONS
+
+
 def test_rows_are_pairwise_non_rotational():
     n = len(sp.SHAPE_ORDERS_W)
     sigs = {tuple((x - row[0]) % n for x in row) for row in sp.SHAPE_ORDERS_W}
@@ -142,12 +179,21 @@ def test_build_plan_is_deterministic_and_shaped():
     band0 = a["segments"][0]["band"]
     assert band0 == list(sp.LEAD_BAND) or band0 == sp.LEAD_BAND
     assert a["intro_mode"] in sp.INTRO_MODES_W and a["outro_mode"] in sp.OUTRO_MODES_W
+    assert a["button_angle"] in sp.SIGNOFF_BUTTONS_W
+    assert a["button_text"] == sp.SIGNOFF_BUTTONS_W[a["button_angle"]]
     assert sp.build_plan("2026-09-07", 4) != a  # next week differs
 
 
 def test_cli_prints_json_contract(capsys):
     assert sp.main(["plan", "--date", "2026-08-31", "--stories", "3"]) == 0
     out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    assert {"week_row", "intro_mode", "intro_text", "outro_mode", "outro_text", "segments"} <= set(
-        out
-    )
+    assert {
+        "week_row",
+        "intro_mode",
+        "intro_text",
+        "outro_mode",
+        "outro_text",
+        "button_angle",
+        "button_text",
+        "segments",
+    } <= set(out)
