@@ -57,7 +57,7 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -667,6 +667,8 @@ RUN_LOG_FIELDS: tuple[str, ...] = (
     "rerolled_takes",  # takes the derailment detector re-rolled (#202); null when it did not run
     "untitled_segments",  # 1-based indices that fell back to a "Segment N" chapter (#96);
     # [] means checked-and-clean, null means the run never reached the check
+    "music",  # {asset, asset_sha256, lead_ms, tail_ms, duck_db, output_lufs} when a mix
+    # ran; null on every music-free run, which is every show but an opted-in one
 )
 
 
@@ -1102,6 +1104,96 @@ def _validate_take_lengths(segments: list[dict], spec: EngineSpec, *, raw_text: 
                 )
 
 
+def _validate_music(manifest: dict[str, Any], segments: list[dict]) -> None:
+    """Refuse a music block that cannot be rendered, before the model load.
+
+    Numbers only: existence, readability, decodability and the recorded hash of the
+    asset are pre-flight's job (_music_asset_check), because validate_manifest is
+    pure by contract and does no I/O.
+
+    Two things are gated here that are easy to get wrong. Unknown keys die rather
+    than being ignored — a typo'd `duck_dB` that resolved to the default would ship
+    a mix the operator believes they tuned. And the bookend roles are REQUIRED once
+    music is on: the mix has to know where the intro ends and the sign-off starts,
+    and inferring it from a chapter title would be a guess that fails silently."""
+    music = manifest.get("music")
+    if music is None:
+        return
+    if not isinstance(music, dict):
+        die("manifest 'music' must be an object (or unset)")
+    if music.get("enabled") is not None and not isinstance(music["enabled"], bool):
+        die(f"manifest music.enabled must be a boolean (got {music['enabled']!r})")
+    unknown = sorted(set(music) - set(MUSIC_FIELDS))
+    if unknown:
+        shown = ", ".join(f"'{k}'" for k in unknown)
+        die(
+            f"manifest 'music' has unknown key(s) {shown}; supported keys are "
+            + ", ".join(f"'{k}'" for k in MUSIC_FIELDS)
+        )
+    if not music.get("enabled"):
+        return  # explicitly off: nothing below can matter
+
+    # Closed whitelist, same posture as ship_mode and tts_engine: a typo must die
+    # rather than fall back to the bed treatment and loop a one-bar sting under a
+    # whole introduction.
+    mode = music.get("mode", MUSIC_MODE_BED)
+    if mode not in MUSIC_MODES:
+        shown = "{" + ", ".join(f'"{m}"' for m in MUSIC_MODES) + "}"
+        die(f"manifest music.mode must be one of {shown} or unset (got {mode!r})")
+
+    asset = music.get("asset")
+    if not isinstance(asset, str) or not asset.strip():
+        die("manifest music.asset is required when music is enabled (path to the audio file)")
+    sha = music.get("asset_sha256")
+    if sha is not None and (not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha)):
+        die(f"manifest music.asset_sha256 must be a lowercase sha256 hex digest (got {sha!r})")
+
+    for field, (low, high) in MUSIC_RANGES.items():
+        if field not in music:
+            continue
+        value = music[field]
+        # null means "the asset's own measured length", which only a sting can mean:
+        # a bed's lead is a musical bar, not the whole composition.
+        if value is None and field in ("lead_seconds", "tail_seconds"):
+            if mode != MUSIC_MODE_STING:
+                die(
+                    f"manifest music.{field} may only be null in mode "
+                    f'"{MUSIC_MODE_STING}" (where it means the asset\'s own length); '
+                    f"mode is {mode!r}"
+                )
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            die(f"manifest music.{field} must be a number (got {value!r})")
+        if not math.isfinite(value):
+            die(f"manifest music.{field} must be finite (got {value!r})")
+        if not (low <= value <= high):
+            die(f"manifest music.{field} must be between {low} and {high} (got {value!r})")
+
+    # A bed reads the bookend geometry and needs a story region between them; a
+    # sting only needs the intro and the sign-off to be different segments.
+    minimum = 3 if mode == MUSIC_MODE_BED else 2
+    if len(segments) < minimum:
+        die(
+            f"manifest 'music' is enabled in mode {mode!r} but the episode has "
+            f"{len(segments)} segment(s); it needs at least {minimum}"
+        )
+    roles = [seg.get("role") for seg in segments]
+    if roles[0] != SEGMENT_ROLE_INTRO or roles[-1] != SEGMENT_ROLE_OUTRO:
+        die(
+            "manifest 'music' is enabled, so segment[0] must carry role "
+            f'"{SEGMENT_ROLE_INTRO}" and segment[{len(segments) - 1}] role '
+            f'"{SEGMENT_ROLE_OUTRO}" (got {roles[0]!r} and {roles[-1]!r}); the mix reads '
+            "the bookends from roles, never from chapter titles"
+        )
+    for role in SEGMENT_ROLES:
+        found = [i for i, r in enumerate(roles) if r == role]
+        if len(found) != 1:
+            die(
+                f'manifest has {len(found)} segment(s) with role "{role}" (indices {found}); '
+                "music requires exactly one"
+            )
+
+
 def validate_manifest(manifest: dict[str, Any]) -> None:
     """
     Fail fast (via die) on a malformed manifest BEFORE the ~15s model load, naming
@@ -1161,6 +1253,14 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         for opt in ("title", "source_title"):
             if seg.get(opt) is not None and not isinstance(seg[opt], str):
                 die(f"manifest segment[{i}].{opt} must be a string")
+        # An explicit structural role, closed whitelist. Optional and inert on its
+        # own; music is what requires it (below). Never inferred from a title —
+        # a title is display text a writer may reword, and the audition's own
+        # timeline called the bookends "Segment 1" and "Segment 12".
+        role = seg.get("role")
+        if role is not None and role not in SEGMENT_ROLES:
+            shown = "{" + ", ".join(f'"{r}"' for r in SEGMENT_ROLES) + "}"
+            die(f"manifest segment[{i}].role must be one of {shown} or unset (got {role!r})")
         url = seg.get("source_url")
         if url is not None and not (
             isinstance(url, str) and url.startswith(("http://", "https://"))
@@ -1305,6 +1405,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             die(f"manifest 'date' must be ISO YYYY-MM-DD (got {manifest['date']!r})")
     if manifest.get("raw_text") is not None and not isinstance(manifest["raw_text"], bool):
         die("manifest 'raw_text' must be a boolean")
+    _validate_music(manifest, segments)
 
 
 # Bare URLs, markdown code fences, and leading heading markers — characters that
@@ -2404,14 +2505,592 @@ def parse_loudnorm(stderr: str) -> dict[str, Any] | None:
     return None
 
 
-def concat_and_normalize(
-    seg_paths: list[Path], silences_ms: list[int], workdir: Path
-) -> tuple[Path, dict[str, Any] | None]:
-    """Build concat list, encode raw, loudnorm. Return (final mp3 path, loudnorm dict).
+# --- optional intro/outro music -------------------------------------------
+#
+# Off unless a show asks for it, and off for every show that does not: a manifest
+# with no `music` key renders byte-identically to before. That is the only thing
+# that makes this safe to land on a renderer three shows share.
+#
+# The treatment is fixed in shape and tunable in numbers: one bar of theme alone,
+# the theme ducked under the intro, clean speech under the stories, the theme back
+# under the sign-off, and a two-bar finish. Where the bookends fall is NOT a guess
+# — it is read off the same segment geometry build_timeline_and_description walks,
+# so the audio and the published chapter marks cannot disagree.
+#
+# Reference mix: skills/daily-podcast/assets/music/PROVENANCE.json.
 
-    The loudnorm dict is the parsed LUFS measurement (#21) or None on a parse miss.
-    `print_format=json` only makes the (already single-pass) loudnorm filter REPORT
-    its measurements on stderr — it does not change the produced audio."""
+# Relative `asset` paths resolve against the PLUGIN ROOT, never the process CWD:
+# the scheduled run executes from a version-keyed plugin cache with an arbitrary
+# working directory, and "skills/<show>/assets/music/x.wav" has to mean the same
+# file there as it does in a checkout. Derived from __file__ rather than read from
+# CLAUDE_PLUGIN_ROOT, which is UNSET under the scheduler (incidents/). The root
+# rather than SCRIPT_DIR because this renderer serves several shows and each one
+# owns its music under its own skill directory — Frontier Commits' sting does not
+# belong in the daily show's asset folder.
+MUSIC_ASSET_BASE = SCRIPT_DIR.parent.parent
+
+# Segment roles. The mix has to know which segment is the intro and which is the
+# sign-off, and this show's bookends are titled "Intro"/"Sign-off" only by
+# convention — the audition's own timeline labelled them "Segment 1"/"Segment 12".
+# A user-visible title is display text that a writer may change; a role is a
+# contract. Roles are written on every newly assembled manifest, music or not.
+SEGMENT_ROLE_INTRO = "intro"
+SEGMENT_ROLE_OUTRO = "outro"
+SEGMENT_ROLES = (SEGMENT_ROLE_INTRO, SEGMENT_ROLE_OUTRO)
+
+# Two treatments, closed whitelist. They are not two implementations: both resolve
+# into one MusicPlan and render through one unbranched filter graph, so neither can
+# rot into an untested half. What differs is where the music is allowed to be.
+#
+#   "bed"   — a loopable theme. One bar alone, ducked UNDER the intro segment and
+#             faded out at the first story, back UNDER the sign-off, then a tail.
+#             The daily show's Pixel Window.
+#   "sting" — a short signature that never overlaps speech at all: it plays once
+#             before narration, once after the sign-off, with short de-click edge
+#             fades. Frontier Commits' Midnight Terminal is a ONE-BAR, 2.31s export;
+#             looping one bar under a whole introduction is not a theme, it is a
+#             stutter, so the shape refuses to try.
+MUSIC_MODE_BED = "bed"
+MUSIC_MODE_STING = "sting"
+MUSIC_MODES = (MUSIC_MODE_BED, MUSIC_MODE_STING)
+
+# Every tunable, with the bed reference mix as its default. A manifest may override
+# any of them; anything it omits resolves here, so an operator who writes only
+# {"enabled": true, "asset": ...} still gets the audition.
+MUSIC_DEFAULTS: dict[str, Any] = {
+    "mode": MUSIC_MODE_BED,
+    # 78 BPM, 4/4 -> one bar is 240/78 s. The lead is one bar of theme before the
+    # host speaks; the finish is two bars after the sign-off.
+    "lead_seconds": 240 / 78,
+    "tail_seconds": 480 / 78,
+    # How far the bed drops when speech starts. -18 dB is the audition.
+    "duck_db": -18.0,
+    "intro_fade_seconds": 0.08,
+    "outro_fade_seconds": 1.5,
+    # The bed is normalised to a known level BEFORE the envelopes are applied, so
+    # `duck_db` means the same thing whatever the source file's level is.
+    "music_lufs": -23.0,
+    # The finished episode's loudness target. LOCAL TO ENABLED MUSIC on purpose:
+    # every other show renders at ffmpeg's loudnorm default (-24 LUFS), and this
+    # change must not reach them (see concat_and_normalize).
+    "output_lufs": -19.0,
+    "true_peak_db": -2.0,
+}
+# What a mode changes about the defaults above. Only the keys that genuinely differ
+# appear here; everything else is shared, which is what keeps the two treatments one
+# feature rather than two.
+MUSIC_MODE_DEFAULTS: dict[str, dict[str, Any]] = {
+    MUSIC_MODE_STING: {
+        # null = "the asset's own measured length". A sting IS its bar: rounding it
+        # to a hardcoded two seconds would clip the last beat off this one.
+        "lead_seconds": None,
+        "tail_seconds": None,
+        # There is no region where music and speech overlap, so there is nothing to
+        # duck. 0 dB makes the envelope a constant and the graph a straight line.
+        "duck_db": 0.0,
+        # Short enough to be inaudible, long enough to guarantee no click at the
+        # cut. Midnight Terminal already opens at -29 dB and decays to -42 dB in its
+        # last 50 ms, so these fades take nothing off the music. In this mode the
+        # value applies to BOTH edges of its sting, not just the fade-in.
+        "intro_fade_seconds": 0.03,
+        "outro_fade_seconds": 0.03,
+        # ffmpeg loudnorm's own default, i.e. the target every music-free show
+        # already renders at. A sting sits beside the narration rather than under
+        # it, so there is no reason to re-master the speech to play it — and every
+        # reason not to move a show's loudness without an audition.
+        "output_lufs": -24.0,
+    },
+}
+
+MUSIC_FIELDS = ("enabled", "asset", "asset_sha256", *MUSIC_DEFAULTS)
+
+# Shape constants — the parts of the treatment that are not tunable. They are
+# constants rather than config because they are the shape itself: changing them
+# makes a different treatment, which wants a new audition, not a new number.
+MUSIC_DUCK_RAMP_SECONDS = 0.5  # 1.0 -> duck, ending exactly where speech starts
+MUSIC_RISE_SECONDS = 2.0  # duck -> 1.0, starting where the speech ends
+MUSIC_FADE_OUT_SECONDS = 3.0  # both the intro's exit and the tail's
+MUSIC_BED_TRUE_PEAK_DB = -3.0  # headroom for the bed itself, before the envelopes
+MUSIC_LRA = 7  # loudnorm's own default; pinned so both passes agree
+MUSIC_BED_FILENAME = "music_bed.wav"
+MUSIC_PROVENANCE_FILENAME = "music.json"
+
+# ffmpeg's own documented ranges for loudnorm's I / TP, and sane outer bounds for
+# the rest. Whitelist posture, same as ship_mode and tts_engine: a typo dies here
+# rather than rendering a treatment nobody asked for.
+MUSIC_RANGES: dict[str, tuple[float, float]] = {
+    "lead_seconds": (0.001, 60.0),
+    "tail_seconds": (0.0, 120.0),
+    "duck_db": (-60.0, 0.0),
+    "intro_fade_seconds": (0.0, 30.0),
+    "outro_fade_seconds": (0.0, 30.0),
+    "music_lufs": (-70.0, -5.0),
+    "output_lufs": (-70.0, -5.0),
+    "true_peak_db": (-9.0, -0.1),
+}
+
+# The mp3 concat re-encodes, so the finished file lands within a frame or two of
+# the plan. 250ms is ~9 frames: loose enough for any encoder, tight enough that a
+# mis-planned lead or a swallowed tail is caught rather than absorbed.
+MUSIC_DURATION_TOLERANCE_MS = 250
+
+# Everything a settings or asset change makes stale. Speech (seg_NN.mp3 and its
+# sidecar) is deliberately absent: re-rendering TTS costs minutes and the takes
+# are valid whatever the music does.
+MUSIC_DERIVED_ARTIFACTS = (
+    MUSIC_BED_FILENAME,
+    "episode_raw.mp3",
+    "episode.mp3",
+    "timeline.json",
+    "description.html",
+)
+MUSIC_DERIVED_STAGES = ("concat", "timeline", "artifact_gate")
+
+
+def resolve_music_config(music: Any) -> dict[str, Any] | None:
+    """Resolve a show's `music` block into the fully-defaulted object a manifest
+    carries, or None when there is no music.
+
+    None is the answer for an absent block AND for `enabled: false`, so every
+    caller can branch on one falsy value instead of re-reading `enabled`.
+
+    Unknown keys are deliberately carried through rather than dropped: a typo'd
+    `duck_dB` that vanished here would render at the default while the operator
+    believed they had overridden it. validate_manifest refuses it loudly instead.
+    Pure: no I/O, no mutation of the input."""
+    if not isinstance(music, dict) or not music.get("enabled"):
+        return None
+    # An unknown mode resolves against no overlay rather than raising: this function
+    # is not the gate. validate_manifest refuses the typo by name a moment later.
+    mode = music.get("mode", MUSIC_MODE_BED)
+    return {
+        **MUSIC_DEFAULTS,
+        **MUSIC_MODE_DEFAULTS.get(mode, {}),
+        **music,
+        "enabled": True,
+    }
+
+
+def resolve_music_asset(music: dict[str, Any]) -> Path:
+    """The music file this config names. Absolute paths are used as given; a
+    relative one resolves against MUSIC_ASSET_BASE (the plugin root), never the
+    CWD — see that constant."""
+    asset = Path(str(music.get("asset", "")))
+    return asset if asset.is_absolute() else MUSIC_ASSET_BASE / asset
+
+
+@dataclass(frozen=True)
+class MusicPlan:
+    """One episode's mix, computed once and used for BOTH the audio and the
+    metadata. Every time is in whole milliseconds because the timeline is: a plan
+    that carried float seconds would let the chapter marks and the envelopes
+    round apart.
+
+    Frozen and derived only from its inputs, so the same config and the same
+    measured segments rebuild the same plan — which is what makes a re-run in the
+    same workdir reproduce the episode rather than drift."""
+
+    mode: str
+    lead_ms: int
+    tail_ms: int
+    speech_ms: int
+    total_ms: int
+    intro_end_ms: int
+    outro_start_ms: int
+    duck_gain: float
+    duck_slope: float
+    duck_ramp_s: float
+    duck_ramp_at_s: float
+    rise_slope: float
+    intro_fade_in_s: float
+    intro_fade_out_s: float
+    intro_fade_out_at_s: float
+    outro_duration_s: float
+    outro_rise_at_s: float
+    outro_fade_in_s: float
+    outro_fade_out_s: float
+    outro_fade_out_at_s: float
+    music_lufs: float
+    output_lufs: float
+    true_peak_db: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def plan_music_mix(
+    music: dict[str, Any],
+    *,
+    seg_ms: list[int],
+    silences_ms: list[int],
+    speech_ms: int,
+    asset_seconds: float | None = None,
+) -> MusicPlan:
+    """Compute the mix from validated config and measured speech. Pure.
+
+    `seg_ms`/`silences_ms` are the same numbers build_timeline_and_description
+    walks, so the intro's exit lands exactly on the first story's chapter mark and
+    the sign-off's entrance exactly on the last one.
+
+    `speech_ms` is the MEASURED duration of the concatenated speech, not the sum
+    of the parts. Those differ — mp3 concat re-encodes, and the measured file came
+    out ~280ms short of the sum on a 9-part rehearsal — and planning the total off
+    the sum would leave that much dead air after the tail fade while making the
+    duration gate's tolerance meaningless.
+
+    `asset_seconds` is the MEASURED length of the music file. In sting mode a null
+    `lead_seconds`/`tail_seconds` resolves to it — a sting is exactly its own bar,
+    and rounding that to a hardcoded two seconds clips the last beat off a 2.31s
+    export. In bed mode it is unused.
+
+    Every envelope is clamped to the region it belongs in, because a real episode
+    can have a two-second intro or a one-second sign-off and a fade that ran past
+    its region would pull down the loud opening bar or fall off the end."""
+    mode = music.get("mode", MUSIC_MODE_BED)
+    # A bed reads the bookend geometry (starts[1], starts[-1]); a sting reads none
+    # of it, and only needs the intro and the sign-off to be different segments.
+    minimum = 3 if mode == MUSIC_MODE_BED else 2
+    if len(seg_ms) < minimum:
+        extra = (
+            " — with fewer, the intro IS the sign-off and there is no clean story "
+            "region to leave alone"
+            if mode == MUSIC_MODE_BED
+            else ""
+        )
+        die(f"music mode {mode!r} needs at least {minimum} segments; got {len(seg_ms)}{extra}")
+
+    def _seconds(key: str) -> float:
+        value = music[key]
+        if value is None:
+            if asset_seconds is None:
+                die(
+                    f"music.{key} is null (meaning 'the asset's own length') but the "
+                    "asset's duration was not measured; cannot plan the mix"
+                )
+            return float(asset_seconds)
+        return float(value)
+
+    lead_ms = round(_seconds("lead_seconds") * 1000)
+    tail_ms = round(_seconds("tail_seconds") * 1000)
+    total_ms = lead_ms + int(speech_ms) + tail_ms
+
+    # The pre-music chapter cursor: chapter i starts at sum of everything before it.
+    starts = []
+    cursor = 0
+    for i, dur in enumerate(seg_ms):
+        starts.append(cursor)
+        cursor += dur + silences_ms[i]
+    if mode == MUSIC_MODE_BED:
+        intro_end_ms = lead_ms + starts[1]
+        outro_start_ms = lead_ms + starts[-1]
+    else:
+        # A sting stops where narration starts and resumes where it ends, so it
+        # never touches a chapter boundary — which is exactly why it is safe on a
+        # one-bar asset that cannot hold a whole introduction.
+        intro_end_ms = lead_ms
+        outro_start_ms = lead_ms + int(speech_ms)
+
+    lead_s = lead_ms / 1000
+    intro_end_s = intro_end_ms / 1000
+    total_s = total_ms / 1000
+    outro_start_s = outro_start_ms / 1000
+    outro_duration_s = max(0.0, total_s - outro_start_s)
+
+    duck_gain = 10 ** (float(music["duck_db"]) / 20)
+    # The ramp ends exactly where speech starts and cannot begin before t=0, so a
+    # lead shorter than the ramp shortens the ramp rather than starting negative.
+    duck_ramp_s = min(MUSIC_DUCK_RAMP_SECONDS, lead_s)
+    duck_slope = (1.0 - duck_gain) / duck_ramp_s if duck_ramp_s > 0 else 0.0
+    rise_slope = (1.0 - duck_gain) / MUSIC_RISE_SECONDS
+
+    # The intro bed's exit must live entirely in the DUCKED region: a 3s fade under
+    # a 2s intro segment would start before the lead ended and fade out the one bar
+    # of theme the treatment exists for. A sting has no ducked region at all — its
+    # fade-out is the de-click edge, symmetric with its fade-in.
+    intro_fade_in_s = min(float(music["intro_fade_seconds"]), intro_end_s)
+    if mode == MUSIC_MODE_BED:
+        ducked_s = max(0.0, intro_end_s - lead_s)
+        intro_fade_out_s = min(MUSIC_FADE_OUT_SECONDS, ducked_s)
+    else:
+        intro_fade_out_s = min(float(music["intro_fade_seconds"]), intro_end_s)
+
+    # The bed comes back under the sign-off and rises once the speech has ended.
+    # max(0) because outro_start is summed geometry while speech_ms is measured:
+    # on a pathological drift the speech could end before the last chapter mark.
+    outro_rise_at_s = max(0.0, (lead_s + speech_ms / 1000) - outro_start_s)
+    outro_fade_in_s = min(float(music["outro_fade_seconds"]), outro_duration_s)
+    outro_fade_out_s = min(
+        MUSIC_FADE_OUT_SECONDS if mode == MUSIC_MODE_BED else float(music["outro_fade_seconds"]),
+        outro_duration_s,
+    )
+
+    return MusicPlan(
+        mode=mode,
+        lead_ms=lead_ms,
+        tail_ms=tail_ms,
+        speech_ms=int(speech_ms),
+        total_ms=total_ms,
+        intro_end_ms=intro_end_ms,
+        outro_start_ms=outro_start_ms,
+        duck_gain=duck_gain,
+        duck_slope=duck_slope,
+        duck_ramp_s=duck_ramp_s,
+        duck_ramp_at_s=max(0.0, lead_s - duck_ramp_s),
+        rise_slope=rise_slope,
+        intro_fade_in_s=intro_fade_in_s,
+        intro_fade_out_s=intro_fade_out_s,
+        intro_fade_out_at_s=max(0.0, intro_end_s - intro_fade_out_s),
+        outro_duration_s=outro_duration_s,
+        outro_rise_at_s=outro_rise_at_s,
+        outro_fade_in_s=outro_fade_in_s,
+        outro_fade_out_s=outro_fade_out_s,
+        outro_fade_out_at_s=max(0.0, outro_duration_s - outro_fade_out_s),
+        music_lufs=float(music["music_lufs"]),
+        output_lufs=float(music["output_lufs"]),
+        true_peak_db=float(music["true_peak_db"]),
+    )
+
+
+@dataclass(frozen=True)
+class MusicMix:
+    """A plan plus the normalised bed it renders against."""
+
+    plan: MusicPlan
+    bed: Path
+
+
+def _f(value: float) -> str:
+    """Format a time or gain for an ffmpeg filter argument. Six decimals is well
+    inside a sample at 44.1kHz and keeps the graph free of exponent notation,
+    which ffmpeg's expression parser does not accept."""
+    return f"{value:.6f}"
+
+
+def music_filter_graph(plan: MusicPlan) -> str:
+    """The -filter_complex graph for one mix. Pure, so the envelopes can be
+    asserted without rendering audio.
+
+    Input 0 is the concatenated speech, input 1 the normalised bed (looped by the
+    caller with -stream_loop). The speech is delayed by the lead and padded to the
+    planned total; the bed is split into an intro copy and an outro copy, each
+    with its own gain envelope and fades; the three are summed with normalize=0
+    (loudnorm sets the final level, not amix) and normalised in the same pass, so
+    the mix costs no extra lossy encode over the no-music path."""
+    p = plan
+    # Gain envelopes are volume expressions evaluated per frame. `t` is relative to
+    # each trimmed copy's own start (asetpts=PTS-STARTPTS below), which for the
+    # intro copy is the episode's t=0 and for the outro copy is outro_start_ms.
+    ducks = p.duck_gain < 1.0
+    if p.duck_ramp_s > 0:
+        intro_gain = (
+            f"if(lt(t,{_f(p.duck_ramp_at_s)}),1,"
+            f"if(lt(t,{_f(p.lead_ms / 1000)}),"
+            f"1-(t-{_f(p.duck_ramp_at_s)})*{_f(p.duck_slope)},{_f(p.duck_gain)}))"
+        )
+    else:
+        intro_gain = f"if(lt(t,{_f(p.lead_ms / 1000)}),1,{_f(p.duck_gain)})"
+    outro_gain = (
+        f"if(lt(t,{_f(p.outro_rise_at_s)}),{_f(p.duck_gain)},"
+        f"min(1,{_f(p.duck_gain)}+(t-{_f(p.outro_rise_at_s)})*{_f(p.rise_slope)}))"
+    )
+
+    # A sting never overlaps speech, so duck_db is 0 and both envelopes collapse to
+    # a constant 1.0. Emitting them anyway would put a per-frame expression eval on
+    # a straight line and make the graph unreadable — drop them instead.
+    intro = [
+        f"atrim=duration={_f(p.intro_end_ms / 1000)}",
+        "asetpts=PTS-STARTPTS",
+    ]
+    if ducks:
+        intro.append(f"volume='{intro_gain}':eval=frame")
+    # afade with d=0 is a filter error, not a no-op — drop a degenerate fade.
+    if p.intro_fade_in_s > 0:
+        intro.append(f"afade=t=in:d={_f(p.intro_fade_in_s)}")
+    if p.intro_fade_out_s > 0:
+        intro.append(f"afade=t=out:st={_f(p.intro_fade_out_at_s)}:d={_f(p.intro_fade_out_s)}")
+
+    outro = [
+        f"atrim=duration={_f(p.outro_duration_s)}",
+        "asetpts=PTS-STARTPTS",
+    ]
+    if ducks:
+        outro.append(f"volume='{outro_gain}':eval=frame")
+    if p.outro_fade_in_s > 0:
+        outro.append(f"afade=t=in:d={_f(p.outro_fade_in_s)}")
+    if p.outro_fade_out_s > 0:
+        outro.append(f"afade=t=out:st={_f(p.outro_fade_out_at_s)}:d={_f(p.outro_fade_out_s)}")
+    outro.append(f"adelay={p.outro_start_ms}:all=1")
+
+    return (
+        f"[0:a]adelay={p.lead_ms}:all=1,apad,atrim=duration={_f(p.total_ms / 1000)}[voice];"
+        "[1:a]asplit=2[mi][mo];"
+        f"[mi]{','.join(intro)}[intro];"
+        f"[mo]{','.join(outro)}[outro];"
+        "[voice][intro][outro]amix=inputs=3:duration=first:normalize=0,"
+        f"loudnorm=I={_f(p.output_lufs)}:TP={_f(p.true_peak_db)}:LRA={MUSIC_LRA}:"
+        "print_format=json[out]"
+    )
+
+
+def build_music_bed(asset: Path, workdir: Path, plan: MusicPlan) -> Path:
+    """Normalise the source music to a known level, mono 44.1k, so `duck_db` means
+    the same thing whatever the composition was exported at. Returns the bed path.
+
+    Reused when it already exists: sync_music_provenance is what deletes it when
+    the asset or the targets change, so a hit here is always a valid hit."""
+    bed = workdir / MUSIC_BED_FILENAME
+    if bed.exists():
+        log(f"music: reusing normalised bed {bed.name}")
+        return bed
+    run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(asset),
+            "-af",
+            f"loudnorm=I={_f(plan.music_lufs)}:TP={_f(MUSIC_BED_TRUE_PEAK_DB)}:LRA={MUSIC_LRA}",
+            "-ar",
+            str(AUDIO_SAMPLE_RATE),
+            "-ac",
+            str(AUDIO_CHANNELS),
+            str(bed),
+        ]
+    )
+    log(f"music: bed normalised to {plan.music_lufs} LUFS -> {bed.name}")
+    return bed
+
+
+def music_provenance(music: dict[str, Any] | None, asset: Path | None) -> dict[str, Any] | None:
+    """What a mix depends on, for the workdir's music.json.
+
+    Keyed on the CONFIG and the asset's BYTES, never on the derived plan: the plan
+    also moves when a segment's length changes, and that is already handled by the
+    per-segment TTS cache. Re-mixing on it would be noise; missing a re-recorded
+    asset at the same path would be the #177 failure one layer up — right length,
+    right text, wrong music, no error anywhere."""
+    if music is None:
+        return None
+    return {
+        "config": {k: music[k] for k in sorted(music) if k != "asset"},
+        "asset": str(asset),
+        "asset_sha256": artifact_fingerprint(asset) if asset and asset.exists() else None,
+    }
+
+
+def sync_music_provenance(workdir: Path, provenance: dict[str, Any] | None) -> bool:
+    """Reconcile the workdir against this run's music settings. Returns True when
+    something was invalidated.
+
+    A re-run in the same workdir reuses whatever it finds there. That is right for
+    the TTS takes and WRONG for anything downstream of the mix: a normalised bed
+    from yesterday's asset, an episode.mp3 mixed at a different duck level, a
+    timeline built for a different lead. Those are deleted here and their stages
+    dropped from state.json, so nothing later mistakes an old `concat` marker for
+    a current one. Speech is untouched — that is the whole point.
+
+    Turning music OFF counts as a change: an episode mixed with music must not
+    survive into a run that asked for none."""
+    marker = workdir / MUSIC_PROVENANCE_FILENAME
+    try:
+        previous = json.loads(marker.read_text()) if marker.exists() else None
+    except (json.JSONDecodeError, OSError):
+        previous = {}  # unreadable: treat as different, re-derive rather than trust it
+
+    current = dict(provenance) if provenance else None
+    if previous == current:
+        return False
+
+    changed = previous is not None or current is not None
+    if changed and previous is not None:
+        for name in MUSIC_DERIVED_ARTIFACTS:
+            path = workdir / name
+            if path.exists():
+                path.unlink()
+                log(f"music: settings changed, discarded stale {name}")
+        state = load_state(workdir)
+        for stage in MUSIC_DERIVED_STAGES:
+            state.get("stages", {}).pop(stage, None)
+        save_state(workdir, state)
+
+    if current is None:
+        if marker.exists():
+            marker.unlink()
+    else:
+        _atomic_write_text(marker, json.dumps(current, indent=2) + "\n")
+    return changed and previous is not None
+
+
+def record_music_plan(workdir: Path, plan: MusicPlan) -> None:
+    """Append the resolved plan to the workdir's music.json. Provenance only — the
+    plan is never read back as a cache key (see music_provenance). Best-effort,
+    like every other observability write in this file."""
+    marker = workdir / MUSIC_PROVENANCE_FILENAME
+    try:
+        data = json.loads(marker.read_text()) if marker.exists() else {}
+        data["plan"] = plan.to_dict()
+        _atomic_write_text(marker, json.dumps(data, indent=2) + "\n")
+    except (json.JSONDecodeError, OSError) as e:
+        log(f"warn: could not record the mix plan in {marker}: {e}")
+
+
+def _probe_duration_s(path: Path) -> float | None:
+    """Decoded duration in seconds, or None when the file is not decodable audio.
+    Used by pre-flight, so it never raises."""
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "csv=p=0",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        value = float((proc.stdout or "").strip())
+    except (ValueError, OSError):
+        return None
+    return value if math.isfinite(value) and value > 0 else None
+
+
+def _music_asset_check(music: dict[str, Any]) -> dict[str, Any]:
+    """Pre-flight: is the music this run was asked for actually renderable?
+
+    Local, so it runs under --dry-run too. Failing here is the point — an asset
+    that is missing, moved, or not the file the manifest recorded must stop the
+    run with an actionable message, not publish an episode silently without the
+    branding someone asked for."""
+    asset = resolve_music_asset(music)
+    if not asset.exists() or not asset.is_file():
+        return _check("music-asset", False, f"{asset} not found")
+    expected = music.get("asset_sha256")
+    if expected:
+        try:
+            actual = artifact_fingerprint(asset)
+        except OSError as e:
+            return _check("music-asset", False, f"{asset} unreadable: {e}")
+        if actual != expected:
+            return _check(
+                "music-asset",
+                False,
+                f"{asset} sha256 is {actual[:12]}…, manifest records {str(expected)[:12]}…",
+            )
+    seconds = _probe_duration_s(asset)
+    if seconds is None:
+        return _check("music-asset", False, f"ffprobe cannot decode {asset}")
+    return _check("music-asset", True, f"{asset.name} ({seconds:.2f}s)")
+
+
+def concat_segments(seg_paths: list[Path], silences_ms: list[int], workdir: Path) -> Path:
+    """Concatenate the rendered segments and their planned silences into
+    episode_raw.mp3 and return it. Unnormalised: the level is set in the pass that
+    follows, which is also where the optional music is mixed in."""
     parts: list[Path] = []
     for i, seg in enumerate(seg_paths):
         parts.append(seg)
@@ -2422,7 +3101,6 @@ def concat_and_normalize(
     concat_list.write_text("\n".join(f"file '{p}'" for p in parts) + "\n")
 
     raw = workdir / "episode_raw.mp3"
-    final = workdir / "episode.mp3"
     run(
         [
             "ffmpeg",
@@ -2444,25 +3122,72 @@ def concat_and_normalize(
             str(raw),
         ]
     )
-    loudnorm_proc = run(
-        [
+    return raw
+
+
+def normalize_episode(
+    raw: Path, workdir: Path, *, music: MusicMix | None = None
+) -> tuple[Path, dict[str, Any] | None]:
+    """Loudnorm `raw` into episode.mp3, mixing the optional music bed in the SAME
+    pass. Return (final mp3 path, loudnorm dict).
+
+    The loudnorm dict is the parsed LUFS measurement (#21) or None on a parse miss.
+    `print_format=json` only makes the (already single-pass) loudnorm filter REPORT
+    its measurements on stderr — it does not change the produced audio.
+
+    With `music=None` this is byte-for-byte the call it always was, down to the
+    bare `loudnorm=print_format=json` and its ffmpeg-default -24 LUFS target. Every
+    other show renders through here; the audition's louder -19 target is a property
+    of an enabled music config and reaches nothing else.
+
+    With a mix, the bed is looped (-stream_loop -1) under a filter graph that
+    delays the speech by the lead, envelopes an intro copy and an outro copy of the
+    bed, sums the three and normalises — one encode, exactly as many as before."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    final = workdir / "episode.mp3"
+    tail = [
+        "-ar",
+        str(AUDIO_SAMPLE_RATE),
+        "-ac",
+        str(AUDIO_CHANNELS),
+        "-c:a",
+        AUDIO_CODEC,
+        "-b:a",
+        AUDIO_BITRATE,
+        str(final),
+    ]
+    if music is None:
+        cmd = ["ffmpeg", "-y", "-i", str(raw), "-af", "loudnorm=print_format=json", *tail]
+    else:
+        plan = music.plan
+        if plan.mode == MUSIC_MODE_BED:
+            shape = f"bed under the intro to {plan.intro_end_ms}ms, back at {plan.outro_start_ms}ms"
+        else:
+            shape = f"sting alone, then again at {plan.outro_start_ms}ms"
+        log(
+            f"music [{plan.mode}]: {plan.lead_ms}ms lead, {shape}, {plan.tail_ms}ms tail "
+            f"-> {plan.total_ms}ms at {plan.output_lufs} LUFS"
+        )
+        cmd = [
             "ffmpeg",
             "-y",
             "-i",
             str(raw),
-            "-af",
-            "loudnorm=print_format=json",
-            "-ar",
-            str(AUDIO_SAMPLE_RATE),
-            "-ac",
-            str(AUDIO_CHANNELS),
-            "-c:a",
-            AUDIO_CODEC,
-            "-b:a",
-            AUDIO_BITRATE,
-            str(final),
+            # The bed is one eight-bar loop; -stream_loop -1 makes it as long as the
+            # graph needs. The atrims in the graph are what actually bound it.
+            "-stream_loop",
+            "-1",
+            "-i",
+            str(music.bed),
+            "-filter_complex",
+            music_filter_graph(plan),
+            "-map",
+            "[out]",
+            "-t",
+            _f(plan.total_ms / 1000),
+            *tail,
         ]
-    )
+    loudnorm_proc = run(cmd)
     loudnorm = parse_loudnorm(loudnorm_proc.stderr if loudnorm_proc else "")
     if loudnorm is None:
         log("warn: could not parse loudnorm measurement from ffmpeg stderr")
@@ -2470,6 +3195,16 @@ def concat_and_normalize(
         log(f"loudnorm: input_i={loudnorm.get('input_i')} output_i={loudnorm.get('output_i')}")
     log(f"final episode: {mp3_duration_ms(final) / 1000:.1f}s")
     return final, loudnorm
+
+
+def concat_and_normalize(
+    seg_paths: list[Path], silences_ms: list[int], workdir: Path, *, music: MusicMix | None = None
+) -> tuple[Path, dict[str, Any] | None]:
+    """Concatenate then normalise, in one call. Kept as the seam most callers and
+    tests hold; `_render` uses the two halves directly because the mix plan needs
+    the MEASURED duration of the concatenated speech, which only exists between
+    them (see plan_music_mix)."""
+    return normalize_episode(concat_segments(seg_paths, silences_ms, workdir), workdir, music=music)
 
 
 # --- cover -----------------------------------------------------------------
@@ -3132,10 +3867,19 @@ def build_timeline_and_description(
     summary: str,
     episode_mp3: Path,
     footer_html: str = DESCRIPTION_FOOTER,
+    lead_ms: int = 0,
 ) -> tuple[dict, str]:
+    """Chapters + source links + the HTML show notes, from the segment geometry.
+
+    `lead_ms` is the optional music lead: the episode gains that much audio before
+    the host speaks, so every chapter mark and every source link moves by it —
+    except the FIRST chapter, which is pinned to 0 because chapter one contains the
+    theme. A first segment that carries a source link still moves: the link fires
+    inside its segment's audio, which did shift. Zero (the default) is the geometry
+    every episode published before music existed, unchanged."""
     items: list[dict] = []
     chapters: list[tuple[int, str, str | None]] = []  # (ms, title, url)
-    cursor = 0
+    cursor = lead_ms
     for i, seg in enumerate(segments):
         title = seg.get("title") or seg.get("source_title") or f"Segment {i + 1}"
         url = seg.get("source_url")
@@ -3155,6 +3899,12 @@ def build_timeline_and_description(
             )
         chapters.append((cursor, title, url))
         cursor += dur + silences_ms[i]
+
+    if lead_ms and items:
+        # Chapter one starts at the top of the file: the lead is its theme, not a
+        # gap before it. Its LINK (if any) keeps the shifted position above.
+        items[0]["chapter"]["start_time_ms"] = 0
+        chapters[0] = (0, chapters[0][1], chapters[0][2])
 
     final_ms = mp3_duration_ms(episode_mp3)
     last_ch = max(c[0] for c in chapters)
@@ -4918,6 +5668,7 @@ def verify_artifact(
     segments: list[dict] | None = None,
     seg_paths: list[Path] | None = None,
     derailed: list[dict[str, Any]] | None = None,
+    music_plan: MusicPlan | None = None,
 ) -> list[str]:
     """Local conformance gate, run after render and before upload. Returns a list of
     human-readable problems (empty == good).
@@ -4958,8 +5709,15 @@ def verify_artifact(
         if str(profile[key]) != str(expected):
             errors.append(f"encoder {key} is {profile[key]!r}, expected {expected!r}")
 
+    # `start_time_ms` is the key build_timeline_and_description has always emitted
+    # and the key save-to-spotify's timeline API takes. This read said `start_ms`
+    # until 2026-09-10, so `starts` was empty on every real run and both checks
+    # below were vacuous — a music mix that shifted the chapters wrongly, or any
+    # other timeline regression, would have sailed through the gate. (`start_ms` is
+    # a DIFFERENT, downstream schema: chapters_from_timeline translates into it for
+    # the R2 manifest. Nothing in a timeline uses it.)
     starts = [
-        item["chapter"].get("start_ms")
+        item["chapter"].get("start_time_ms")
         for item in timeline.get("items", [])
         if isinstance(item, dict) and isinstance(item.get("chapter"), dict)
     ]
@@ -4982,6 +5740,19 @@ def verify_artifact(
                 f"{len(tight)} chapter(s) start less than {MIN_CHAPTER_GAP_MS}ms apart "
                 f"(smallest gap {min(tight)}ms); Spotify requires consecutive chapter "
                 f"starts to be at least {MIN_CHAPTER_GAP_MS // 1000}s apart"
+            )
+
+    # The music mix is the one step that changes the episode's LENGTH, and it plans
+    # that length before rendering it. Checking the decoded result against the plan
+    # is what proves the lead and the tail actually landed — a swallowed tail or a
+    # mis-applied lead is otherwise inaudible in every other check here.
+    if music_plan is not None:
+        drift = duration_ms - music_plan.total_ms
+        if abs(drift) > MUSIC_DURATION_TOLERANCE_MS:
+            errors.append(
+                f"music mix is {duration_ms}ms but the plan says {music_plan.total_ms}ms "
+                f"({drift:+d}ms, tolerance ±{MUSIC_DURATION_TOLERANCE_MS}ms); the lead or "
+                "the tail did not render as planned"
             )
 
     if segments is not None and seg_paths is not None:
@@ -5172,6 +5943,7 @@ def preflight(
     web_only: bool = False,
     cover_image: Path | None = None,
     engine: str = TTS_ENGINE_QWEN3,
+    music: dict[str, Any] | None = None,
 ) -> tuple[bool, list[dict[str, Any]]]:
     """Verify everything the run depends on BEFORE spending a render on it.
 
@@ -5187,7 +5959,11 @@ def preflight(
     check, so a --dry-run rehearsal gates the same art a real run would ship.
 
     `engine` is the manifest's tts_engine: its check (mlx-audio floor + license line)
-    runs right after tts-module, under --dry-run too, because a dry run renders."""
+    runs right after tts-module, under --dry-run too, because a dry run renders.
+
+    `music` is the manifest's resolved music config, checked only when a show asked
+    for music — a missing or altered asset must fail the run, not publish an episode
+    quietly without the branding."""
     checks: list[dict[str, Any]] = []
     log("preflight: verifying dependencies, credentials, and capacity...")
 
@@ -5228,6 +6004,12 @@ def preflight(
     if cover_image is not None:
         art = check_cover_image(cover_image)
         checks.append(_check("cover-image", art["ok"], art["detail"]))
+
+    # Local, so a --dry-run rehearsal gates the same asset a real run would mix.
+    # Gating, not advisory: an episode that was asked for music and shipped without
+    # it is a silent failure, and this is the last cheap place to catch one.
+    if music is not None:
+        checks.append(_music_asset_check(music))
 
     if not web_only:
         checks.append(
@@ -5709,6 +6491,9 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
     # TTS-degeneration gate and the bloopers bin for the whole show (#172). Derive it
     # here, once, before anything downstream measures a segment.
     materialize_line_text(manifest)
+    # Optional intro/outro music. None for every show that did not ask, which keeps
+    # every branch below on exactly the path it took before music existed.
+    music_cfg = resolve_music_config(manifest.get("music"))
     title = manifest["title"]
     summary = manifest["summary"]
     segments = manifest["segments"]
@@ -5794,11 +6579,22 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
             web_only=web_only,
             cover_image=cover_image,
             engine=engine,
+            music=music_cfg,
         )
         if not ok:
             failed = ", ".join(c["name"] for c in checks if not c["ok"])
             die(f"preflight failed ({failed}); nothing was rendered or uploaded")
         mark_stage(workdir, "preflight", checks=len(checks))
+
+    # Reconcile the workdir against this run's music settings BEFORE anything reuses
+    # what is in it. A re-run reuses the TTS takes (right) and would otherwise reuse
+    # a bed normalised from yesterday's asset and an episode mixed at a different
+    # duck level (wrong). Speech survives; everything downstream of the mix does not.
+    if sync_music_provenance(
+        workdir,
+        music_provenance(music_cfg, resolve_music_asset(music_cfg) if music_cfg else None),
+    ):
+        log("music: settings or asset changed since the last run in this workdir")
 
     voice, voice_instruct, ref_audio, ref_text = resolve_voice(manifest)
     voice_mode = resolve_voice_mode(voice_instruct, ref_audio)
@@ -5839,9 +6635,41 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
         record["rerolled_takes"] = sum(1 for e in derailed if not e.get("final"))
     mark_stage(workdir, "segments", count=len(seg_paths))
     silences_ms = plan_silences(seg_paths)
-    episode_mp3, loudnorm = concat_and_normalize(seg_paths, silences_ms, workdir)
+
+    # Concatenate, then plan the mix, then normalise. The two halves are called
+    # separately rather than through concat_and_normalize because the plan needs the
+    # MEASURED duration of the assembled speech, which only exists between them —
+    # mp3 concat re-encodes and comes out a few hundred ms short of the sum of its
+    # parts (see plan_music_mix).
+    raw = concat_segments(seg_paths, silences_ms, workdir)
+    music_mix = None
+    if music_cfg:
+        music_asset = resolve_music_asset(music_cfg)
+        # Measured, not assumed: in sting mode a null lead/tail means "the asset's
+        # own bar", and rounding a 2.307688s export to two seconds clips its last
+        # beat. Pre-flight has already proved the file decodes, so this cannot be
+        # None on a gated run — plan_music_mix dies naming the field if it ever is.
+        music_plan = plan_music_mix(
+            music_cfg,
+            seg_ms=[mp3_duration_ms(p) for p in seg_paths],
+            silences_ms=silences_ms,
+            speech_ms=mp3_duration_ms(raw),
+            asset_seconds=_probe_duration_s(music_asset),
+        )
+        music_mix = MusicMix(plan=music_plan, bed=build_music_bed(music_asset, workdir, music_plan))
+        record_music_plan(workdir, music_plan)
+        record["music"] = {
+            "asset": music_asset.name,
+            "asset_sha256": music_cfg.get("asset_sha256"),
+            "mode": music_plan.mode,
+            "lead_ms": music_plan.lead_ms,
+            "tail_ms": music_plan.tail_ms,
+            "duck_db": music_cfg["duck_db"],
+            "output_lufs": music_plan.output_lufs,
+        }
+    episode_mp3, loudnorm = normalize_episode(raw, workdir, music=music_mix)
     record["loudnorm"] = loudnorm
-    mark_stage(workdir, "concat", loudnorm=loudnorm)
+    mark_stage(workdir, "concat", loudnorm=loudnorm, music=record["music"])
 
     # 4: cover. Supplied art wins over the generated template — a show with its own
     # designed cover should not wear the daily show's gradient in a podcast client
@@ -5862,6 +6690,9 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
         summary,
         episode_mp3,
         footer_html=resolve_description_footer(manifest),
+        # Chapter one contains the theme, so it stays at 0; every later chapter and
+        # every source link moves by the lead. One plan drives audio and metadata.
+        lead_ms=music_mix.plan.lead_ms if music_mix else 0,
     )
     timeline_path = workdir / "timeline.json"
     timeline_path.write_text(json.dumps(timeline, indent=2))
@@ -5896,6 +6727,7 @@ def _render(args: argparse.Namespace, record: dict[str, Any]) -> int:
         segments=segments,
         seg_paths=seg_paths,
         derailed=derailed,
+        music_plan=music_mix.plan if music_mix else None,
     )
     if artifact_errors:
         die("artifact gate failed: " + "; ".join(artifact_errors))

@@ -43,6 +43,15 @@ DROPPED_LOG_PATH = CONFIG_DIR / "dropped.jsonl"
 
 SKILL_DIR = Path(__file__).resolve().parent
 RENDER_PY = SKILL_DIR / "render.py"
+
+# render.py is the sibling this script drives; importing it for the manifest
+# vocabulary (segment roles, music config resolution) keeps ONE definition of each
+# rather than a copy that drifts — same precedent as bloopers.py and retitle.py.
+# render.py's heavy deps (mlx-audio, boto3, Pillow) are all function-local, so this
+# import stays cheap. The RENDER PATH is still the subprocess above, not this import.
+sys.path.insert(0, str(SKILL_DIR))
+import render  # noqa: E402  (must follow the sys.path insert above)
+
 SUMMARIZE_PROMPT_PATH = SKILL_DIR / "prompts" / "summarize_item.md"
 
 # render.py's terminal success statuses. "web-ready" is what this show ships (#218);
@@ -902,10 +911,28 @@ def assemble_manifest(
     survivors: list[dict],
     intro_outro: dict,
     transitions: list[str] | None = None,
+    music: dict | None = None,
 ) -> dict:
     """Build the render.py manifest: intro + one segment per survivor (strict 1:1
-    source mapping) + sign-off. Shape matches render.validate_manifest."""
-    segments: list[dict] = [{"title": "Intro", "text": intro_outro["intro"], "source_url": None}]
+    source mapping) + sign-off. Shape matches render.validate_manifest.
+
+    The bookends carry an explicit `role`, always — music or not. A role is what the
+    optional music mix reads to find where the intro ends and the sign-off begins,
+    and it has to be a contract rather than an inference: "Intro" and "Sign-off" are
+    display text a writer may reword, and the music audition's own timeline labelled
+    those two chapters "Segment 1" and "Segment 12".
+
+    `music` is the show's fully-resolved music config (render.resolve_music_config),
+    or None. Absent, the manifest has no `music` key at all and renders exactly as
+    every episode before it did."""
+    segments: list[dict] = [
+        {
+            "title": "Intro",
+            "text": intro_outro["intro"],
+            "source_url": None,
+            "role": render.SEGMENT_ROLE_INTRO,
+        }
+    ]
     for i, s in enumerate(survivors):
         # The segue belongs to the INCOMING chapter, so the chapter mark lands on the
         # bridge rather than mid-sentence after it.
@@ -917,8 +944,15 @@ def assemble_manifest(
                 "source_url": s["source_url"],
             }
         )
-    segments.append({"title": "Sign-off", "text": intro_outro["outro"], "source_url": None})
-    return {
+    segments.append(
+        {
+            "title": "Sign-off",
+            "text": intro_outro["outro"],
+            "source_url": None,
+            "role": render.SEGMENT_ROLE_OUTRO,
+        }
+    )
+    manifest = {
         # Display-only free text: `date` below is what keys the slug and the guid (#128),
         # so enriching this cannot move a published identifier.
         "title": episode_title(intro_outro.get("topics"), date_long),
@@ -932,6 +966,12 @@ def assemble_manifest(
         "ship_mode": "web",
         "segments": segments,
     }
+    if music:
+        # Persisted RESOLVED (every default already filled in) so the manifest alone
+        # is enough to reproduce the mix — a re-run must not pick up a config.json
+        # that has changed underneath it.
+        manifest["music"] = music
+    return manifest
 
 
 def load_config() -> dict:
@@ -1105,7 +1145,12 @@ def main(argv: list[str] | None = None) -> int:
     intro_outro = make_intro_outro(titles, date_long, day_idx=day_idx)
     transitions = make_transitions(titles, day_idx)
     manifest = assemble_manifest(
-        date_long, date_iso, survivors, intro_outro, transitions=transitions
+        date_long,
+        date_iso,
+        survivors,
+        intro_outro,
+        transitions=transitions,
+        music=render.resolve_music_config(config.get("music")),
     )
 
     workdir = (

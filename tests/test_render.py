@@ -649,8 +649,9 @@ def _cover_show_name(monkeypatch, tmp_path, manifest_extra: dict, config: dict) 
     monkeypatch.setattr(render, "load_config", lambda: config)
     monkeypatch.setattr(render, "render_segments", lambda *a, **k: [tmp_path / "seg_01.mp3"])
     monkeypatch.setattr(render, "plan_silences", lambda paths: [0])
+    monkeypatch.setattr(render, "concat_segments", lambda *a, **k: tmp_path / "episode_raw.mp3")
     monkeypatch.setattr(
-        render, "concat_and_normalize", lambda *a, **k: (tmp_path / "episode.mp3", None)
+        render, "normalize_episode", lambda *a, **k: (tmp_path / "episode.mp3", None)
     )
     monkeypatch.setattr(
         render, "build_cover", lambda out, show_name, *a, **k: seen.append(show_name)
@@ -845,8 +846,9 @@ def _run_dry(monkeypatch, tmp_path, manifest_extra: dict) -> tuple[list, Path]:
     monkeypatch.setattr(render, "load_config", lambda: {"show_id": "spotify:show:1"})
     monkeypatch.setattr(render, "render_segments", lambda *a, **k: [tmp_path / "seg_01.mp3"])
     monkeypatch.setattr(render, "plan_silences", lambda paths: [0])
+    monkeypatch.setattr(render, "concat_segments", lambda *a, **k: tmp_path / "episode_raw.mp3")
     monkeypatch.setattr(
-        render, "concat_and_normalize", lambda *a, **k: (tmp_path / "episode.mp3", None)
+        render, "normalize_episode", lambda *a, **k: (tmp_path / "episode.mp3", None)
     )
     monkeypatch.setattr(
         render, "build_cover", lambda out, show_name, *a, **k: generated.append(show_name)
@@ -1709,8 +1711,9 @@ def test_main_recovers_inflight_before_fresh_render(tmp_path, monkeypatch):
     monkeypatch.setattr(render, "load_config", lambda: {"show_id": "spotify:show:1"})
     monkeypatch.setattr(render, "render_segments", lambda *a, **k: [tmp_path / "seg_01.mp3"])
     monkeypatch.setattr(render, "plan_silences", lambda paths: [0])
+    monkeypatch.setattr(render, "concat_segments", lambda *a, **k: tmp_path / "episode_raw.mp3")
     monkeypatch.setattr(
-        render, "concat_and_normalize", lambda *a, **k: (tmp_path / "episode.mp3", None)
+        render, "normalize_episode", lambda *a, **k: (tmp_path / "episode.mp3", None)
     )
     monkeypatch.setattr(render, "build_cover", lambda *a, **k: None)
     monkeypatch.setattr(
@@ -2206,8 +2209,9 @@ def _stub_full_render(monkeypatch, tmp_path, *, loudnorm=None):
     monkeypatch.setattr(render, "probe_audio_profile", lambda p: {})
     monkeypatch.setattr(render, "render_segments", lambda *a, **k: [tmp_path / "seg_01.mp3"])
     monkeypatch.setattr(render, "plan_silences", lambda paths: [0])
+    monkeypatch.setattr(render, "concat_segments", lambda *a, **k: tmp_path / "episode_raw.mp3")
     monkeypatch.setattr(
-        render, "concat_and_normalize", lambda *a, **k: (tmp_path / "episode.mp3", loudnorm)
+        render, "normalize_episode", lambda *a, **k: (tmp_path / "episode.mp3", loudnorm)
     )
     monkeypatch.setattr(render, "build_cover", lambda *a, **k: None)
     monkeypatch.setattr(
@@ -2276,9 +2280,8 @@ def test_failed_run_appends_failed_record_with_error(tmp_path, monkeypatch):
     monkeypatch.setattr(render, "render_segments", lambda *a, **k: [tmp_path / "seg_01.mp3"])
     monkeypatch.setattr(render, "plan_silences", lambda paths: [0])
     # Blow up inside the render with a die() so the failure path captures the message.
-    monkeypatch.setattr(
-        render, "concat_and_normalize", lambda *a, **k: render.die("ffmpeg exploded")
-    )
+    monkeypatch.setattr(render, "concat_segments", lambda *a, **k: tmp_path / "episode_raw.mp3")
+    monkeypatch.setattr(render, "normalize_episode", lambda *a, **k: render.die("ffmpeg exploded"))
     monkeypatch.setattr(render, "mp3_duration_ms", lambda p: 60_000)
     manifest = _full_render_manifest(tmp_path)
     monkeypatch.setattr(sys, "argv", ["render.py", "--manifest", str(manifest)])
@@ -2876,8 +2879,9 @@ def _footer_seen_by_description_builder(monkeypatch, tmp_path, manifest_extra: d
     monkeypatch.setattr(render, "load_config", lambda: {"show_id": "spotify:show:1"})
     monkeypatch.setattr(render, "render_segments", lambda *a, **k: [tmp_path / "seg_01.mp3"])
     monkeypatch.setattr(render, "plan_silences", lambda paths: [0])
+    monkeypatch.setattr(render, "concat_segments", lambda *a, **k: tmp_path / "episode_raw.mp3")
     monkeypatch.setattr(
-        render, "concat_and_normalize", lambda *a, **k: (tmp_path / "episode.mp3", None)
+        render, "normalize_episode", lambda *a, **k: (tmp_path / "episode.mp3", None)
     )
     monkeypatch.setattr(render, "build_cover", lambda *a, **k: None)
     monkeypatch.setattr(render, "build_timeline_and_description", fake_build)
@@ -3016,8 +3020,13 @@ def test_untitled_segments_names_exactly_the_placeholder_chapters(tmp_path, monk
 def test_untitled_segments_is_appended_to_the_run_log_schema():
     # Appended, never inserted: every existing record keeps its key order, and the
     # field is null-by-default so a run that never reached the check doesn't guess.
-    assert render.RUN_LOG_FIELDS[-1] == "untitled_segments"
+    # Pinned by POSITION rather than by being last, so a later field appended after
+    # it (music, 2026-09-10) does not have to move this one.
+    fields = render.RUN_LOG_FIELDS
+    assert fields.index("untitled_segments") == len(fields) - 2
+    assert fields[-1] == "music"
     assert render._new_run_record()["untitled_segments"] is None
+    assert render._new_run_record()["music"] is None
 
 
 def test_dry_run_warns_and_records_untitled_segments(tmp_path, monkeypatch, capsys):

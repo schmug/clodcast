@@ -1,0 +1,29 @@
+// pixel window — a sleepy handheld-console daydream
+// 78 BPM. One cycle = one 4/4 bar. Press Play in https://strudel.cc/
+setcps(78/60/4)
+
+stack(
+  // Dusty, slightly late backbeat.
+  s("bd ~ [~ bd] ~").lpf(950).gain(.55),
+  s("~ sd ~ sd").late(.012).lpf(1800).room(.12).gain(.24),
+  s("hh*8").late("[0 .018]*4").gain(".12 .06 .09 .05 .12 .06 .09 .07").lpf(4200),
+
+  // Am9 / Fmaj7 / Cmaj7 / G6: warm, gently wavering chords.
+  note("<[a3,c4,e4,b4] [f3,a3,c4,e4] [c4,e4,g4,b4] [g3,b3,d4,e4]>")
+    .s("triangle").attack(.04).decay(.8).sustain(.25).release(.5)
+    .lpf(1500).vib(4).vibmod(.07).room(.45).gain(.19),
+
+  note("<[a2 ~ e3 a2] [f2 ~ c3 f2] [c2 ~ g2 c3] [g2 ~ d3 g2]>")
+    .s("sine").attack(.01).decay(.3).sustain(.3).release(.12).gain(.48),
+
+  // A tiny square-wave tune, with space between the phrases.
+  note("<[e5 ~ b5 a5 ~ e5 d5 ~] [c5 ~ e5 ~ a5 g5 e5 ~] [g5 ~ e5 d5 ~ b4 d5 ~] [b4 d5 e5 ~ d5 ~ b4 ~]>")
+    .s("square").attack(.008).decay(.14).sustain(0).release(.07)
+    .lpf(2400).delay(.23).delaytime(.3846).delayfeedback(.25)
+    .room(.25).pan(".42 .58").gain(.105),
+
+  // Quiet save-point sparkles, returning every other four bars.
+  note("<[a5 e6 b5 e6] [a5 c6 e6 c6] [g5 b5 e6 b5] [g5 b5 d6 b5]>")
+    .s("triangle").attack(.005).decay(.1).sustain(0).release(.08)
+    .mask("<0 1>/4").delay(.3).room(.5).gain(.065)
+)

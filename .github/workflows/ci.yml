@@ -56,6 +56,14 @@ jobs:
       - name: Install a cover font
         run: sudo apt-get install -y --no-install-recommends fonts-dejavu-core
 
+      # ffmpeg + ffprobe are what tests/test_music.py's real-mix tests decode with:
+      # they assert the encoder profile, the planned duration and the actual audio
+      # in the lead / story / tail regions. Guarded by shutil.which, so without this
+      # step they silently SKIP — and the only test that proves the music mix is
+      # correct would not be part of the merge gate.
+      - name: Install ffmpeg
+        run: sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Ruff lint
         run: ruff check .
 

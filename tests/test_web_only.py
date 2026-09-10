@@ -239,7 +239,8 @@ def _stub_render_seams(monkeypatch, tmp_path):
     monkeypatch.setattr(render, "probe_audio_profile", lambda p: {})
     monkeypatch.setattr(render, "render_segments", lambda *a, **k: [tmp_path / "seg_01.mp3"])
     monkeypatch.setattr(render, "plan_silences", lambda paths: [0])
-    monkeypatch.setattr(render, "concat_and_normalize", lambda *a, **k: (mp3, None))
+    monkeypatch.setattr(render, "concat_segments", lambda *a, **k: tmp_path / "episode_raw.mp3")
+    monkeypatch.setattr(render, "normalize_episode", lambda *a, **k: (mp3, None))
     monkeypatch.setattr(render, "build_cover", lambda out, *a, **k: out.write_bytes(b"IMG"))
     monkeypatch.setattr(
         render,

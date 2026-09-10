@@ -221,8 +221,9 @@ def test_the_renderer_derives_the_text_before_the_gate_sees_it(tmp_path, monkeyp
     monkeypatch.setattr(render, "load_config", lambda: {"show_id": "spotify:show:1"})
     monkeypatch.setattr(render, "render_segments", lambda *a, **k: seg_paths)
     monkeypatch.setattr(render, "plan_silences", lambda paths: [0] * len(paths))
+    monkeypatch.setattr(render, "concat_segments", lambda *a, **k: tmp_path / "episode_raw.mp3")
     monkeypatch.setattr(
-        render, "concat_and_normalize", lambda *a, **k: (tmp_path / "episode.mp3", None)
+        render, "normalize_episode", lambda *a, **k: (tmp_path / "episode.mp3", None)
     )
     monkeypatch.setattr(render, "build_cover", lambda *a, **k: None)
     monkeypatch.setattr(

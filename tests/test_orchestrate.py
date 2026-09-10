@@ -429,6 +429,55 @@ def test_assemble_manifest_ships_web_only(monkeypatch):
     assert render.is_web_only(m) is True
 
 
+def test_assemble_manifest_always_marks_the_bookend_roles():
+    """Roles are written on every manifest, music or not: the optional music mix
+    reads them to find the bookends, and a chapter TITLE is display text a writer
+    may reword (the music audition's own timeline called these two "Segment 1"
+    and "Segment 12")."""
+    survivors = [
+        {"title": "A", "segment": "seg a", "source_url": "https://x.test/a", "feed_name": "F1"}
+    ]
+    io = {"intro": "I", "outro": "O", "summary": "S"}
+
+    m = orchestrate.assemble_manifest("June 4, 2026", "2026-06-04", survivors, io)
+
+    assert [s.get("role") for s in m["segments"]] == ["intro", None, "outro"]
+    render.validate_manifest(m)
+
+
+def test_assemble_manifest_omits_music_when_the_show_has_none():
+    survivors = [{"title": "A", "segment": "seg a", "source_url": "u/a", "feed_name": "F1"}]
+    io = {"intro": "I", "outro": "O", "summary": "S"}
+
+    m = orchestrate.assemble_manifest("June 4, 2026", "2026-06-04", survivors, io)
+
+    assert "music" not in m
+
+
+def test_assemble_manifest_persists_the_RESOLVED_music_config():
+    """The manifest alone must reproduce the mix: a re-run must not pick up a
+    config.json that has changed underneath it, so every default is filled in
+    before the key is written."""
+    survivors = [
+        {"title": "A", "segment": "seg a", "source_url": "https://x.test/a", "feed_name": "F1"}
+    ]
+    io = {"intro": "I", "outro": "O", "summary": "S"}
+    music = render.resolve_music_config(
+        {
+            "enabled": True,
+            "asset": "skills/daily-podcast/assets/music/pixel-window.flac",
+            "duck_db": -15.0,
+        }
+    )
+
+    m = orchestrate.assemble_manifest("June 4, 2026", "2026-06-04", survivors, io, music=music)
+
+    assert m["music"]["duck_db"] == -15.0
+    assert m["music"]["lead_seconds"] == render.MUSIC_DEFAULTS["lead_seconds"]
+    assert set(render.MUSIC_DEFAULTS) <= set(m["music"])
+    render.validate_manifest(m)
+
+
 def test_load_covered_malformed_is_empty(tmp_path, monkeypatch):
     p = tmp_path / "covered.json"
     p.write_text("{ not json")

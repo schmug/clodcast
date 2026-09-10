@@ -1,0 +1,42 @@
+{
+  "asset": "pixel-window.flac",
+  "sha256": "6c643cec1c5bec9a901e2948feb274a315bfa79db1cabe840d0e65e3d2987e2b",
+  "title": "Pixel Window",
+  "source": "pixel-window.strudel",
+  "composed_with": "Strudel (https://strudel.cc/)",
+  "composed": "2026-09-10",
+  "exported_by": "Cory Rothwell (schmug)",
+  "origin": "Composed for this show in a Claude conversation; exported from Strudel by the user as pixel-window-full.wav. The .strudel source beside this file is the composition itself and is what regenerates the audio.",
+  "encoding": {
+    "shipped": "FLAC, 48000 Hz, 2ch, 16-bit (1,097,323 bytes)",
+    "original_export": "WAV pcm_s16le, 48000 Hz, 2ch, 16-bit (4,726,196 bytes)",
+    "why_flac": "The original WAV is 4.6 MB, over this repo's check-added-large-files ceiling (2048 KB), and every plugin install would carry it. FLAC is lossless, so the audio is unchanged — only the container is.",
+    "render_pipeline": "render.py normalises this to mono 44.1 kHz at music_lufs before mixing (build_music_bed); the shipped file is never played directly."
+  },
+  "integrity": {
+    "original_wav_sha256": "3b94e28f9ede426c19390fb8f92882bc6ae8779d3c9cc234822c432d30610af3",
+    "decoded_pcm_sha256": "49196c9c2da2ba69ec84cd06dd440bbe26821c19fd93dd6a5c8d290b1aca0e61",
+    "verify": "ffmpeg -v error -i pixel-window.flac -f s16le - | shasum -a 256  ==  decoded_pcm_sha256. The same command against the original WAV produces the same digest, which is what proves the transcode lost nothing."
+  },
+  "bpm": 78,
+  "meter": "4/4",
+  "bars": 8,
+  "bar_seconds": 3.076923076923077,
+  "duration_s": 24.615375,
+  "loops": "The export is a whole number of bars, so -stream_loop seams land on the downbeat.",
+  "license": {
+    "status": "UNRESOLVED — do not assume, do not invent one",
+    "note": "No license has been granted or asserted for this file. The composition uses Strudel's built-in synth waveforms plus its default `bd`, `sd` and `hh` samples. Strudel's own engine license does NOT automatically cover the sample packs it ships. Before this audio is distributed publicly, check the attribution and license terms of the actual drum bank those default samples come from and record the answer here.",
+    "affects": "Every episode rendered with music enabled publishes this audio to the public RSS feed."
+  },
+  "reference_mix": {
+    "note": "The balance render.py's MUSIC_DEFAULTS reproduce, from the audition reviewed on 2026-09-10.",
+    "lead": "one bar of theme alone before the host",
+    "intro": "theme ducked to -18 dB under the intro segment, fading out over the 3s before the first story",
+    "stories": "no music at all",
+    "outro": "theme back at -18 dB under the sign-off, rising to full over 2s once the speech ends",
+    "tail": "two bars, fading out over the last 3s",
+    "output_target": "-19 LUFS / -2 dBTP (louder than the ~-24 LUFS ffmpeg default every music-free show renders at)",
+    "audition_measured": "-19.17 LUFS, -2.24 dBTP, LRA 3.30 (reference prototype); -18.85 LUFS, -2.00 dBTP, LRA 3.30 (this pipeline, 2026-09-10 rehearsal). Measurements, not a listening endorsement."
+  }
+}
