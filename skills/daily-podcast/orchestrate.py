@@ -125,6 +125,48 @@ OUTRO_MODES = {
     ),
 }
 
+# Every episode used to close by naming the host - "I'm <host_name>" - which was the
+# one line in the show that could never differ, and a fiction besides: nobody is
+# there. The close is now a BUTTON, one dry joke about the host being a machine,
+# written fresh by the model each day. The bank names the ANGLE to hit, never a
+# phrase to say - the TRANSITION_MOVES reason, and it binds harder here, because a
+# reused joke is a joke the daily listener has already heard. Five angles against
+# OUTRO_MODES' three so the mode and the button do not lock together: the pair cycles
+# every fifteen days rather than every three.
+SIGNOFF_BUTTONS = {
+    "machine-admission": (
+        "Admit the host is not a person, deadpan, as if it were a scheduling detail."
+    ),
+    "alias": (
+        "Introduce yourself under an invented model-shaped name - a checkpoint, release "
+        "or lab codename - in place of a real one."
+    ),
+    "idiom-swap": (
+        "Take an everyday sign-off idiom and swap one word of it for machine-learning vocabulary."
+    ),
+    "scheduled-return": (
+        "Promise tomorrow as a job that is already scheduled rather than a person "
+        "choosing to come back."
+    ),
+    "provenance": (
+        "Credit the episode to the corpus, the context window or the checkpoint rather "
+        "than to a self."
+    ),
+}
+
+# A button, not a bit: one line lands, two explains the joke.
+SIGNOFF_BUTTON_MAX_CHARS = 60
+
+# The writer path invents a button every day; this path has no model, so it needs
+# literal lines. These three are ALSO the register's calibration examples in SKILL.md,
+# and are burned there for exactly that reason - a line cannot be both the example
+# every writer sees and the day's joke without the show closing the same way forever.
+FALLBACK_BUTTONS = (
+    "Still a robot. See you tomorrow.",
+    "I'm preswarm. Check back tomorrow.",
+    "Same weights, different day.",
+)
+
 # Length rhythm. A uniform 600-900 made every chapter the same size; a lead read, a
 # body, and a scatter of short takes give the episode a pulse. Newly safe: Spotify's
 # sub-30s chapter cap was dropped upstream (see MIN_SEGMENT_CHARS above).
@@ -210,6 +252,14 @@ def intro_mode(day_idx: int) -> str:
 
 def outro_mode(day_idx: int) -> str:
     names = list(OUTRO_MODES)
+    return names[day_idx % len(names)]
+
+
+def signoff_button(day_idx: int) -> str:
+    """Name the joke ANGLE today's sign-off closes on. The wording is the writer's;
+    only the angle is assigned, so the show gets a new button rather than a new
+    rotation of the same five."""
+    names = list(SIGNOFF_BUTTONS)
     return names[day_idx % len(names)]
 
 
@@ -712,11 +762,14 @@ def episode_title(topics: list[str] | None, date_long: str) -> str:
     return f"{LEGACY_TITLE_PREFIX}{date_long}"
 
 
-def fallback_intro_outro(date_long: str, n: int) -> dict:
+def fallback_intro_outro(date_long: str, n: int, day_idx: int = 0) -> dict:
     noun = "story" if n == 1 else "stories"
+    # Even the degraded close keeps a button - a fallback episode that ends flat is
+    # audibly a different show - and the day seeds which literal it lands on.
+    button = FALLBACK_BUTTONS[day_idx % len(FALLBACK_BUTTONS)]
     return {
         "intro": f"Today's digest for {date_long}. {n} {noun} today. Here's the rundown.",
-        "outro": "That's the digest for today. Thanks for listening.",
+        "outro": f"That's the digest for today. Thanks for listening. {button}",
         "summary": f"{n} {noun} for {date_long}.",
         # Nothing survived to name, so there is no topic material for a title;
         # episode_title degrades to the date-only one.
@@ -738,7 +791,7 @@ def make_intro_outro(
     `day_idx` selects the day's cold-open and sign-off modes, so consecutive episodes
     do not start and end with the same sentence."""
     if not titles:
-        return fallback_intro_outro(date_long, 0)
+        return fallback_intro_outro(date_long, 0, day_idx)
     headlines = "\n".join(f"- {t}" for t in titles)
     prompt = (
         "You are writing the intro and sign-off for a daily NEWS-DIGEST podcast. Below are "
@@ -747,7 +800,11 @@ def make_intro_outro(
         f"INTRO (~350 chars): {INTRO_MODES[intro_mode(day_idx)]} Use the real story count "
         "and topic words drawn from the headlines.\n"
         f"SIGN-OFF (~250 chars): {OUTRO_MODES[outro_mode(day_idx)]} Do not mention show notes "
-        "or links.\n"
+        "or links, and never close on the host's real name - 'I'm <name>' is retired.\n"
+        f"BUTTON: make the LAST sentence of the sign-off one dry joke about the host being "
+        f"a machine, at most {SIGNOFF_BUTTON_MAX_CHARS} characters. "
+        f"{SIGNOFF_BUTTONS[signoff_button(day_idx)]} Write a new one rather than reusing a "
+        "closing line you have seen; no exclamation marks, and no new facts in it.\n"
         "SUMMARY: one sentence hook for the show-notes preview.\n"
         f"TOPICS: exactly {TITLE_TOPIC_COUNT} short noun phrases naming the LEAD stories, "
         f"in the running order above - {TITLE_TOPIC_WORDS} words each, naming the SUBJECT "
@@ -761,7 +818,7 @@ def make_intro_outro(
     try:
         proc = runner([claude_bin, "-p", prompt], capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        return fallback_intro_outro(date_long, len(titles))
+        return fallback_intro_outro(date_long, len(titles), day_idx)
     obj = extract_last_json(proc.stdout or "")
     if isinstance(obj, dict) and all(
         isinstance(obj.get(k), str) and obj[k].strip() for k in ("intro", "outro", "summary")
@@ -774,7 +831,7 @@ def make_intro_outro(
             [t for t in raw if isinstance(t, str) and t.strip()] if isinstance(raw, list) else []
         )
         return out
-    return fallback_intro_outro(date_long, len(titles))
+    return fallback_intro_outro(date_long, len(titles), day_idx)
 
 
 def make_transitions(

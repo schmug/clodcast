@@ -175,7 +175,7 @@ The story at position `i` takes the move at column `i - 1` of row `(day + 2) % 5
 
 **Never manufacture a connection.** A digest's adjacent items are often genuinely unrelated. If the assigned move needs a relationship the two stories don't have, write a plain topic change instead — a false link between unrelated news items is worse than a blunt hand-off. One short clause each; these are bridges, not summaries.
 
-### Sign-off (~250-300 chars)
+### Sign-off (~250-300 chars, ending on the button)
 
 Bank of three, indexed `day % 3`:
 
@@ -187,7 +187,29 @@ Bank of three, indexed `day % 3`:
 
 No new facts in any of them, and the same rule as segments: don't tell listeners to check the show notes or description.
 
-**If the script names the host anywhere - cold open or sign-off - take the name from `host_name` in [the config](#show--dedup-config), never a hardcoded one.** It is the same credit the public show page carries; a spoken name that disagrees with the show's `<itunes:author>` reads as a different person.
+### The button
+
+**Every sign-off ends on a button: one dry joke about the host being a machine.** It replaces the old `"I'm [host_name]"` close, which was the one line in the episode that could never differ — and a fiction besides, since nobody is there.
+
+The angle is assigned, the wording is yours. Take the angle from the bank below, indexed `day % 5`, and **write the line fresh every time** — this is the one place in the template where the model supplies the novelty rather than the rotation, because a joke a daily listener has already heard is not a joke.
+
+| # | Angle | Do |
+| --- | --- | --- |
+| 0 | `machine-admission` | Admit the host is not a person, deadpan, as if it were a scheduling detail. |
+| 1 | `alias` | Introduce yourself under an invented model-shaped name - a checkpoint, release or lab codename - in place of a real one. |
+| 2 | `idiom-swap` | Take an everyday sign-off idiom and swap one word of it for machine-learning vocabulary. |
+| 3 | `scheduled-return` | Promise tomorrow as a job that is already scheduled rather than a person choosing to come back. |
+| 4 | `provenance` | Credit the episode to the corpus, the context window or the checkpoint rather than to a self. |
+
+The rules on it:
+
+- **One sentence, 60 characters at most** (`SIGNOFF_BUTTON_MAX_CHARS`), and it is the last thing in the episode. A button lands; a second sentence explains the joke.
+- **Dry.** No exclamation marks, no winking at the listener, no "haha". The register is a shrug on the way out the door.
+- **Never the host's real name.** `alias` invents one on purpose; the other four don't name anybody. `host_name` no longer reaches the sign-off at all.
+- **No new facts.** The button is a joke about the show, never about a story.
+- **These three are burned — never ship one:** "Still a robot. See you tomorrow." / "I'm preswarm. Check back tomorrow." / "Same weights, different day." They calibrate the register, and they are the literal `FALLBACK_BUTTONS` in `orchestrate.py` that a failed writer call falls back to. A line cannot be both the example every writer sees and the day's joke without the show closing the same way forever.
+
+**If the COLD OPEN names the host, take the name from `host_name` in [the config](#show--dedup-config), never a hardcoded one.** It is the same credit the public show page carries; a spoken name that disagrees with the show's `<itunes:author>` reads as a different person. The sign-off is the exception: it closes on the button and names nobody.
 
 ### Rules
 - Convert relative dates from sources to absolute (today's date is available via the system clock)
@@ -196,6 +218,7 @@ No new facts in any of them, and the same rule as segments: don't tell listeners
 - "CLAUDE dot md" not "CLAUDE.md"
 - No em dashes — TTS encoding flakes; use hyphens
 - Segues are assigned too — see [Segues](#segues) below. Don't fall back to "Next up / Moving on / Also today"
+- The sign-off closes on the day's button — see [The button](#the-button) above. Never close on the host's name
 - Vary sentence rhythm inside a segment too: don't open every sentence with its subject, and don't close on a summarizing "ultimately" / "in short" clause
 - This is a news digest. Cover security, breach, and research stories at a reporting altitude — what was disclosed, who is affected, the response. Reporting on a disclosed vulnerability or breach is ordinary tech journalism; cover it confidently. Never write exploit steps, payloads, working commands, or attacker how-to; if an item can't be made substantive without them, it doesn't belong in the episode. (The [Unattended daily run](#unattended-daily-run) curation and fetch steps keep coverage at this altitude; this is the writing-side backstop.)
 
@@ -442,9 +465,12 @@ reaches the code that reads it, and keeping `show_id` is what a legacy
                                        //   and this has NOT been renamed to match
                                        //   - that decision is issue #133.
   "host_name": "Schmug",               // narration only - the name the script says
-                                       //   aloud. Matches the public show's
-                                       //   <itunes:author>/<itunes:owner> credit;
-                                       //   nothing derives a slug or filename from it.
+                                       //   aloud, and the COLD OPEN is the only place
+                                       //   it can be said: the sign-off closes on a
+                                       //   button instead (see "The button"). Matches
+                                       //   the public show's <itunes:author>/
+                                       //   <itunes:owner> credit; nothing derives a
+                                       //   slug or filename from it.
   "opml_files": ["/path/to/feeds.opml"], // optional; used by the unattended run
   "lookback_hours": 24,                  // optional; default 24
   "target_item_count": 10,               // optional; default 10
@@ -797,7 +823,7 @@ You are an unattended invocation. Ship today's episode and exit. Be decisive, do
 
    Several outlets cannot be fetched at all. Consult [`blocked_sources.json`](blocked_sources.json) *before* spending a fetch: it lists each blocked domain with the reason, a recovery `strategy` (`primary-source`, `alt-outlet`, `feed-summary`), and a `substitute`. It also lists `preferred` outlets that fetch clean, and `non_article_hosts` (YouTube, Reddit, HN permalinks) that must never be a segment `source_url`. When you recover a story from a different outlet, use **that** URL as `source_url` — it is what you actually read.
 
-5. **Write segments** per the [script template](#script-template) above. Compute `day` (day-of-year) once and use it for the cold open, the sign-off, and each segment's shape and length band — the template is a date-seeded rotation, so do not fall back to one fixed form. **Strict 1:1**: `segment[i]` ↔ `source[i]`, no merging, no reordering. **Report, don't instruct**: never include exploit steps, payloads, working commands, or any procedure an attacker could follow; if a kept item can't be substantive without them, drop it rather than sanitize it.
+5. **Write segments** per the [script template](#script-template) above. Compute `day` (day-of-year) once and use it for the cold open, the sign-off, the sign-off's button angle, and each segment's shape and length band — the template is a date-seeded rotation, so do not fall back to one fixed form. **Strict 1:1**: `segment[i]` ↔ `source[i]`, no merging, no reordering. **Report, don't instruct**: never include exploit steps, payloads, working commands, or any procedure an attacker could follow; if a kept item can't be substantive without them, drop it rather than sanitize it.
 
 6. **Self-critique pass** (silent): tighten segments over 900 chars or repetitive. Never reorder, never drop a segment.
 

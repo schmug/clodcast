@@ -810,6 +810,38 @@ def test_outro_mode_rotates_daily():
     assert cycle == set(orchestrate.OUTRO_MODES)
 
 
+def test_signoff_button_rotates_daily():
+    for day in range(1, 366):
+        assert orchestrate.signoff_button(day) != orchestrate.signoff_button(day + 1)
+    cycle = {orchestrate.signoff_button(d) for d in range(1, 1 + len(orchestrate.SIGNOFF_BUTTONS))}
+    assert cycle == set(orchestrate.SIGNOFF_BUTTONS)
+
+
+def test_signoff_button_is_not_locked_to_the_outro_mode():
+    """Two banks that share a period collapse into one axis: `plain` would carry the
+    same joke angle in every episode ever made. Five against three is what keeps the
+    pair on a fifteen-day cycle instead of a three-day one."""
+    pairs = {(orchestrate.outro_mode(d), orchestrate.signoff_button(d)) for d in range(1, 366)}
+    assert len(pairs) == len(orchestrate.OUTRO_MODES) * len(orchestrate.SIGNOFF_BUTTONS)
+
+
+def test_fallback_buttons_fit_the_button_cap():
+    # The fallback lines double as SKILL.md's calibration examples, so one that
+    # overran the cap would teach every writer to overrun it too.
+    for line in orchestrate.FALLBACK_BUTTONS:
+        assert len(line) <= orchestrate.SIGNOFF_BUTTON_MAX_CHARS
+
+
+def test_fallback_sign_off_still_lands_a_button():
+    # A run whose writer call dies still ships an episode; ending it flat makes that
+    # episode audibly a different show.
+    days = range(1, 1 + len(orchestrate.FALLBACK_BUTTONS))
+    outros = [orchestrate.fallback_intro_outro("June 4, 2026", 3, d)["outro"] for d in days]
+    assert len(set(outros)) == len(orchestrate.FALLBACK_BUTTONS)
+    for outro in outros:
+        assert any(outro.endswith(b) for b in orchestrate.FALLBACK_BUTTONS)
+
+
 def test_short_take_band_never_trips_the_drop_floor():
     # A short take under MIN_SEGMENT_CHARS is classified REFUSED and its item is
     # dropped, so a too-low floor would silently shorten every episode.
@@ -880,6 +912,26 @@ def test_make_intro_outro_prompt_carries_the_days_open_and_close_modes():
     orchestrate.make_intro_outro(["A", "B"], "June 4, 2026", runner=runner, day_idx=2)
     assert orchestrate.INTRO_MODES[orchestrate.intro_mode(2)] in captured["prompt"]
     assert orchestrate.OUTRO_MODES[orchestrate.outro_mode(2)] in captured["prompt"]
+    assert orchestrate.SIGNOFF_BUTTONS[orchestrate.signoff_button(2)] in captured["prompt"]
+
+
+def test_signoff_prompt_retires_the_hosts_name_and_hands_over_no_line_to_copy():
+    """The button is the one assignment whose WORDING the model supplies. A prompt
+    carrying a sample closing line gets that line back, which is the byte-identical
+    sign-off this change exists to retire - so the angle ships, the example does not."""
+    captured = {}
+
+    def runner(cmd, **kw):
+        captured["prompt"] = cmd[2]
+        return SimpleNamespace(
+            stdout='{"intro":"i","outro":"o","summary":"s"}', stderr="", returncode=0
+        )
+
+    orchestrate.make_intro_outro(["A", "B"], "June 4, 2026", runner=runner, day_idx=2)
+    prompt = captured["prompt"]
+    assert "I'm <name>" in prompt, "the prompt never retires the old host-name close"
+    for line in orchestrate.FALLBACK_BUTTONS:
+        assert line not in prompt, f"the prompt hands the writer {line!r} to copy"
 
 
 def test_summarize_prompt_declares_the_variety_placeholders():
@@ -894,8 +946,37 @@ def test_skill_md_documents_every_shape_and_mode():
     # SKILL.md is the production path (the cron follows it, not orchestrate.py), so
     # a shape that exists only in code never reaches a real episode.
     skill = (orchestrate.SKILL_DIR / "SKILL.md").read_text()
-    for name in (*orchestrate.SEGMENT_SHAPES, *orchestrate.INTRO_MODES, *orchestrate.OUTRO_MODES):
+    banks = (
+        *orchestrate.SEGMENT_SHAPES,
+        *orchestrate.INTRO_MODES,
+        *orchestrate.OUTRO_MODES,
+        *orchestrate.SIGNOFF_BUTTONS,
+    )
+    for name in banks:
         assert name in skill, f"SKILL.md never mentions {name!r}"
+
+
+def test_skill_md_burns_the_fallback_buttons_it_shows_as_examples():
+    """SKILL.md holds the fallback lines up as the register. Unless it also forbids
+    shipping them, the in-session writer - which IS the production path - copies one
+    and the show closes the same way every day."""
+    skill = (orchestrate.SKILL_DIR / "SKILL.md").read_text()
+    burned = skill.split("never ship one", 1)
+    assert len(burned) == 2, "SKILL.md shows no burned-example rule for the button"
+    for line in orchestrate.FALLBACK_BUTTONS:
+        assert line in burned[1].split("\n\n", 1)[0], f"{line!r} is shown but not burned"
+
+
+def test_skill_md_keeps_the_hosts_name_out_of_the_sign_off():
+    """The sign-off's whole job used to be saying "I'm <host_name>". The host credit
+    rule stays for the cold open, so the prose has to say which is which or a writer
+    reads the old instruction and puts the name back."""
+    skill = (orchestrate.SKILL_DIR / "SKILL.md").read_text()
+    rule = [ln for ln in skill.splitlines() if "take the name from `host_name`" in ln]
+    assert rule, "SKILL.md no longer routes the spoken host name through config"
+    assert all("COLD OPEN" in ln for ln in rule), (
+        "the host-credit rule still invites a writer to name the host in the sign-off"
+    )
 
 
 def test_no_position_holds_its_shape_two_days_running():
