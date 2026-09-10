@@ -26,6 +26,58 @@ python3 skills/daily-podcast/orchestrate.py --dry-run
 
 The orchestrator's final stdout is a single line — `SHIPPED <uri> ...` or `FAILED <reason>`. Don't change that contract; schedulers parse it, and SKILL.md's *"Unattended daily run"* section promises the same shape.
 
+### The sandbox: a real ship, into a namespace nobody reads
+
+`--dry-run` rehearses everything except the ship. The four steps it deliberately
+stops before — the R2 PUTs, the feed-manifest upsert, the Pages deploy hook, the
+`covered.json` write — had only ever run against the two live shows.
+[tests/data/sandbox_manifest.json](tests/data/sandbox_manifest.json) is a disposable
+publishing target that exercises them for real:
+
+```bash
+python3 skills/daily-podcast/render.py --manifest tests/data/sandbox_manifest.json --workdir "$TMPDIR/clodcast-sandbox"
+```
+
+No `--dry-run`. It publishes, and the objects are real and public until deleted.
+First verified end to end 2026-09-10: `r2_status: published`, public URL HTTP 200,
+and both live feed manifests byte-identical afterwards (sha `74639eed…` / `26b489c6…`)
+with `covered.json` unmoved at 1064 entries.
+
+**Reach for it when a change touches the ship** — the feed schema, R2 keys, slug
+minting, the publish path. **Not for audio or script changes**, which a dry run
+covers completely; a live publish adds nothing there but litter.
+
+Four keys hold it away from both live shows, and
+[tests/test_sandbox_fixture.py](tests/test_sandbox_fixture.py) is what keeps them
+true — it re-derives the live namespaces from their own sources (the daily show's
+constants, Frontier Commits' documented manifest) and fails if the sandbox ever
+collides with either. Every one of those guards is mutation-tested. The rules the
+fixture must keep:
+
+- **`r2_key_prefix`** namespaces the audio and cover objects. The slug is
+  date-keyed, so without it a same-day spike overwrites a published episode's mp3
+  in the shared bucket — #142, one show up.
+- **`r2_manifest_name`** defaults to `manifest.json`, which IS the daily show's
+  live feed. Losing this key upserts a test episode into it.
+- **`slug_prefix`** keeps the permalink and the `isPermaLink` guid out of both
+  shows' namespaces.
+- **Every `source_url` is null.** `covered.json` is shared with both live shows; a
+  sandbox segment carrying a real URL would withhold that story from the show that
+  wanted it.
+- **No `date` key**, so each run mints today's slug. R2 objects are
+  immutable-cached: re-publishing a slug replaces the origin bytes while the edge
+  keeps serving the old ones per POP, so a pinned date makes every later spike
+  fight a stale cache.
+
+Two things it does not isolate, both harmless but worth knowing: the Pages deploy
+hook fires and rebuilds cortech.online (verified 2026-09-10 to surface nothing —
+the sandbox is absent from `/podcast/`, `/frontier-commits/` and the real
+manifest), and the run appends a normal `web-ready` record to `runs.jsonl`.
+
+To reshape it for a NEW show's spike, change `show_name`, `cover_style` and the
+three namespace keys together — never one alone, and let the tests confirm the
+result still collides with nothing.
+
 ## Architecture: the big picture
 
 Four documents are load-bearing; read all of them before changing behavior:
