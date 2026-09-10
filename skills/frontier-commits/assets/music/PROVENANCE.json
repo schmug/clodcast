@@ -1,0 +1,40 @@
+{
+  "asset": "midnight-terminal.wav",
+  "sha256": "49d227186ba61833b9072ad2b29bebb6b8b090b5250930a062f6998d4a3b9cf3",
+  "title": "Midnight Terminal",
+  "source": "midnight-terminal.strudel",
+  "composed_with": "Strudel (https://strudel.cc/)",
+  "composed": "2026-09-10",
+  "exported_by": "Cory Rothwell (schmug)",
+  "origin": "Composed for Frontier Commits in a Claude conversation; exported from Strudel by the user. The .strudel source beside this file is the full composition and carries a `theme` switch (set theme = 0 to export a narration bed).",
+  "encoding": "WAV pcm_s16le, 48000 Hz, 2ch, 16-bit (443,120 bytes) — the user's export, byte-for-byte. render.py normalises it to mono 44.1 kHz at music_lufs before mixing (build_music_bed); the shipped file is never played directly. Unlike the daily show's Pixel Window this needed no transcode: at 433 KB it is already under the repo's check-added-large-files ceiling, so the exact supplied bytes ship.",
+  "bpm": 104,
+  "meter": "4/4",
+  "bar_seconds": 2.307692,
+  "duration_s": 2.307688,
+  "WHAT_THIS_IS": "ONE BAR. Not the eight-bar composition, not the arpeggio entrance, not the full progression. It is a short opening/closing signature and render.py uses it as one (`\"mode\": \"sting\"`). Do not loop this single bar under a whole introduction — that is a stutter, not a theme, which is why the bed treatment refuses to run on it.",
+  "full_theme": {
+    "status": "NOT INCLUDED, NOT AUDIO-TESTED",
+    "how_to_export": "From midnight-terminal.strudel, export cycles 0 through 8 with Multi Channel Orbits OFF. Expected length 18.461538 s.",
+    "narration_bed": "Set `theme = 0` in the source and export the same range.",
+    "then_what": "A full theme plus a bed stem is what `\"mode\": \"bed\"` was written for: suggested opening lead one bar (2.307692 s), closing tail two bars (4.615385 s), the bed quiet under narration and faded out before the first story. Those are PROPOSED settings and want their own audition — they are not an approved mix."
+  },
+  "license": {
+    "status": "UNRESOLVED — do not assume, do not invent one",
+    "note": "No license has been granted or asserted for this file. The composition uses Strudel's built-in synths plus its default `bd`, `sd` and `hh` samples. Strudel's own engine license does NOT automatically cover the sample packs it ships. Before this audio is distributed publicly, check the attribution and license terms of the actual drum bank those default samples come from and record the answer here.",
+    "affects": "Every Frontier Commits episode rendered with music enabled publishes this audio to the public RSS feed.",
+    "see_also": "skills/daily-podcast/assets/music/PROVENANCE.json — Pixel Window carries the same open question from the same engine."
+  },
+  "approval": {
+    "music": "Approved by the user in Strudel.",
+    "mix": "NOT approved. The user approved the music itself; the sting placement, level and edge fades in this repo are a proposal awaiting a listen. Music is OFF for this show until then — see the skill's 'Intro/outro sting' section for the one key that turns it on."
+  },
+  "reference_mix": {
+    "note": "What render.py's sting-mode defaults produce, measured 2026-09-10 against the 2026-09-07 episode.",
+    "opening": "the bar plays once, alone, before the cold open; narration starts the instant it ends",
+    "stories": "no music at all, anywhere",
+    "closing": "the bar plays once, alone, starting the instant the sign-off ends; it extends the last chapter and creates no new one",
+    "edge_fades": "30 ms in and out on each sting — de-click only. The bar already opens at -29 dB and decays to -42 dB in its final 50 ms, so the fades take nothing off the music.",
+    "output_target": "-24 LUFS / -2 dBTP, i.e. ffmpeg loudnorm's default — the level this show already renders at. A sting sits beside the narration rather than under it, so the speech is not re-mastered to play it."
+  }
+}

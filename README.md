@@ -115,6 +115,33 @@ A `"show_id"` (plus the `auto_prune_episodes` / `max_prune_per_run` / `episode_c
 `poll_timeout_s` keys) is only read by a legacy `"ship_mode": "spotify"` manifest, which
 no show emits any more. Leaving them in an existing config is harmless; nothing reads them.
 
+### Optional intro/outro music
+
+Off unless you ask for it. Add a `music` block to `config.json` and every assembled
+episode gets one bar of theme before the host, the theme ducked under the intro,
+**clean speech under the stories**, the theme back under the sign-off, and a two-bar
+finish:
+
+```jsonc
+  "music": {
+    "enabled": true,
+    "asset": "skills/daily-podcast/assets/music/pixel-window.flac",   // relative to skills/daily-podcast/
+    "asset_sha256": "6c643cec1c5bec9a901e2948feb274a315bfa79db1cabe840d0e65e3d2987e2b"
+  }
+```
+
+Every balance knob (`duck_db`, `lead_seconds`, `output_lufs`, …) is optional and
+defaults to the reference mix; the full list is in
+[SKILL.md](skills/daily-podcast/SKILL.md#introoutro-music). A second mode,
+`"mode": "sting"`, plays a short signature at each end without ever overlapping speech —
+that is what Frontier Commits uses for its one-bar Midnight Terminal. Rehearse a change with
+`--dry-run` — it produces the real mixed mp3 without publishing.
+
+The bundled theme is *Pixel Window*, composed in Strudel for this show. Its source
+and its **unresolved sample licensing** are recorded in
+[`skills/daily-podcast/assets/music/PROVENANCE.json`](skills/daily-podcast/assets/music/PROVENANCE.json) —
+read it before distributing this audio anywhere new.
+
 ### Publish to a web feed (Cloudflare R2)
 
 Each finished episode is published to a Cloudflare R2 bucket, which

@@ -44,9 +44,15 @@ def _mp3(path: Path, body: bytes = b"ID3fake-audio") -> Path:
 
 
 def _timeline(chapter_starts_ms: list[int]) -> dict:
+    """A timeline in the shape build_timeline_and_description actually emits.
+
+    This helper said `start_ms` until 2026-09-10, matching a typo in verify_artifact
+    rather than the real schema — so these tests passed while the gate they exercise
+    saw no chapters at all on any real run. Keep it `start_time_ms`."""
     return {
         "items": [
-            {"chapter": {"start_ms": s, "title": f"c{i}"}} for i, s in enumerate(chapter_starts_ms)
+            {"chapter": {"start_time_ms": s, "title": f"c{i}"}}
+            for i, s in enumerate(chapter_starts_ms)
         ]
     }
 
@@ -931,8 +937,9 @@ def test_dry_run_exercises_the_artifact_gate(monkeypatch, tmp_path):
     monkeypatch.setattr(render, "load_config", lambda: {"show_id": "spotify:show:1"})
     monkeypatch.setattr(render, "render_segments", lambda *a, **k: [tmp_path / "seg_01.mp3"])
     monkeypatch.setattr(render, "plan_silences", lambda paths: [0])
+    monkeypatch.setattr(render, "concat_segments", lambda *a, **k: tmp_path / "episode_raw.mp3")
     monkeypatch.setattr(
-        render, "concat_and_normalize", lambda *a, **k: (tmp_path / "episode.mp3", None)
+        render, "normalize_episode", lambda *a, **k: (tmp_path / "episode.mp3", None)
     )
     monkeypatch.setattr(render, "build_cover", lambda *a, **k: None)
     monkeypatch.setattr(

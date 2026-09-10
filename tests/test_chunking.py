@@ -621,12 +621,15 @@ def _stub_render_pipeline(monkeypatch, tmp_path, *, events):
     monkeypatch.setattr(render, "load_config", lambda: {"show_id": "spotify:show:1"})
     monkeypatch.setattr(render, "plan_silences", lambda paths: [0])
 
-    def fake_concat(paths, silences, workdir):
+    def fake_normalize(raw, workdir, **kw):
         out = workdir / "episode.mp3"
         out.write_bytes(b"\x00")
         return out, None
 
-    monkeypatch.setattr(render, "concat_and_normalize", fake_concat)
+    monkeypatch.setattr(
+        render, "concat_segments", lambda paths, silences, workdir: workdir / "episode_raw.mp3"
+    )
+    monkeypatch.setattr(render, "normalize_episode", fake_normalize)
     monkeypatch.setattr(render, "build_cover", lambda *a, **k: None)
     monkeypatch.setattr(
         render,

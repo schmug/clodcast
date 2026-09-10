@@ -1,0 +1,26 @@
+// Midnight Terminal — Frontier Commits / 104 BPM
+// Set theme = 0 for the quieter narration bed.
+setcps(104/60/4)
+const theme = 1
+stack(
+  s("bd ~ bd [~ bd]").lpf(1800).gain(.5),
+  s("~ sd ~ sd").lpf(3200).room(.08).gain(.19),
+  s("hh*8").gain(".11 .045 .075 .045 .11 .045 .075 .065").lpf(6500),
+  s("white*16").attack(.001).decay(.012).sustain(0).release(.01)
+    .hpf(6500).gain(".012 0 .008 0").pan(".35 .65"),
+  note("<[e2 e2 ~ e3 e2 ~ b2 e2] [c2 c2 ~ c3 c2 ~ g2 c2] [a1 a1 ~ a2 a1 ~ e2 a1] [b1 b1 ~ b2 b1 ~ fs2 b1]>")
+    .s("sawtooth").lpf(650).attack(.008).decay(.16).sustain(.12).release(.06).gain(.23),
+  note("<[e3,b3,fs4] [c3,g3,d4] [a2,e3,b3] [b2,fs3,cs4]>")
+    .s("triangle").attack(.12).decay(.6).sustain(.25).release(.4)
+    .lpf(1600).room(.38).gain(.11),
+  // A rising terminal signature, with a clipped answer.
+  note("<[e5 ~ b4 fs5 ~ g5 fs5 ~] [e5 ~ d5 b4 ~ g4 b4 ~] [e5 ~ b4 a4 ~ b4 e5 ~] [fs5 ~ e5 cs5 ~ b4 ~ ~]>")
+    .s("square").attack(.004).decay(.1).sustain(0).release(.04)
+    .lpf(3200).delay(.2).delaytime(.28846).delayfeedback(.22)
+    .room(.15).gain(.095 * theme),
+  // Clocked arpeggio appears in the second half of the eight-bar loop.
+  note("<[e4 b4 fs5 b4 e5 b4 fs5 b4] [c4 g4 d5 g4 e5 g4 d5 g4] [a3 e4 b4 e4 e5 e4 b4 e4] [b3 fs4 cs5 fs4 ds5 fs4 cs5 fs4]>")
+    .s("triangle").fm(1.2).attack(.002).decay(.075).sustain(0).release(.035)
+    .hpf(500).lpf(4200).pan(".3 .7").delay(.16).delaytime(.14423)
+    .mask("<0 1>/4").gain(.07 * theme)
+)

@@ -32,7 +32,7 @@ Four documents are load-bearing; read all of them before changing behavior:
 
 1. **[skills/daily-podcast/SKILL.md](skills/daily-podcast/SKILL.md)** — the script template, voice rules, chapter-duration guardrail, manifest schema. This is what Claude reads when the skill activates.
 2. **[skills/daily-podcast/render.py](skills/daily-podcast/render.py)** — the manifest → episode driver. Single file, ~590 lines, no internal modules.
-3. **[skills/daily-podcast/orchestrate.py](skills/daily-podcast/orchestrate.py)** — the **self-contained shell entry point**. Pure-Python gather → deterministic metadata-only ranking → one isolated `claude -p` per item → assemble manifest → invoke `render.py`. **Not universally the unattended path:** its child `claude -p` subprocesses need a durable on-disk/env credential, which a Claude-routine scheduler does not provide (see [incidents/auth-failure.md](incidents/auth-failure.md)). Under a Claude routine, the unattended path is the skill itself — SKILL.md's *"Unattended daily run"* section.
+3. **[skills/daily-podcast/orchestrate.py](skills/daily-podcast/orchestrate.py)** — the **shell entry point**. It imports `render` for manifest vocabulary only (segment roles, `resolve_music_config`) — the sibling-module precedent below — while the render PATH is still the subprocess pipeline, not that import. Pure-Python gather → deterministic metadata-only ranking → one isolated `claude -p` per item → assemble manifest → invoke `render.py`. **Not universally the unattended path:** its child `claude -p` subprocesses need a durable on-disk/env credential, which a Claude-routine scheduler does not provide (see [incidents/auth-failure.md](incidents/auth-failure.md)). Under a Claude routine, the unattended path is the skill itself — SKILL.md's *"Unattended daily run"* section.
 4. **[skills/daily-podcast/prompts/daily.md](skills/daily-podcast/prompts/daily.md)** — a **stub**. The unattended procedure was folded into SKILL.md's *"Unattended daily run"* section so there is exactly one copy; this file only points there.
 
 `render.py` is intentionally "dumb": it consumes a manifest that already has the segments written and only handles TTS, concat, cover, upload, timeline, poll, and dedup-log update. Anything script-shaped (curation, fetching, segment writing, self-critique) lives in the skill prose / headless prompt — i.e., is Claude's job, not the renderer's.
@@ -131,6 +131,102 @@ left alone — disposing of them is the operator's call, not this repo's.
 `bench.py --engine <name>` is how a candidate engine gets measured (#200), and three things about it are load-bearing. **It renders only through `render.validate_manifest` and `render.render_segments` with the engine on the manifest** — the corpus goes through the same refusals, text prep and mono-44.1k encode a show does, and per-take timing wraps `render._render_take` at the module seam for the length of a pass (restored in `finally`), and it passes `detect_derailment=False` because it measures the raw derailment rate the renderer's own detector (#202) would hide; `test_bench_never_calls_mlx_audio_directly` fails on any import-shaped mention of the TTS package, because a bench with its own generate call measures something other than what ships (the 2026-09-04 scratch harness). **The control is `render.resolve_tts_engine({})` re-rendered every run, never a stored baseline** — an mlx-audio upgrade moves the baseline while it still looks like a number. **The corpus (`corpus.json`) is append-only and stays under every finite `max_take_chars` in `ENGINES`** — a changed line makes every earlier ledger entry incomparable, and a line over a registered ceiling means the bench cannot run its whole corpus on that engine. The ledger (`~/.config/daily-podcast/evals/<date>-<engine>.json`, never overwritten) and the report derive from `render.CONFIG_DIR` at call time so the test sandbox covers them; analysis deps are the `bench` extra, imported function-locally, and checked with `find_spec` before a single take renders. Its SKILL.md tables are pinned to `bench.METRICS` and the corpus by drift tests, the `test_st_skill_md.py` pattern.
 
 Pre-flight's `tts-engine` check fails when the installed mlx-audio is below the engine's floor and prints the engine's license on every run; an absent package is `tts-module`'s finding. `tts_engine` is appended LAST to `RUN_LOG_FIELDS` and `BLOOPER_FIELDS`, null on paths that never resolve one. No show sets the key yet; switching one is a deliberate assembler change of the key plus, where the assembler emits a preset episode voice (Surface Tension does), a clone `voice` the new engine can render.
+
+### Optional intro/outro music (`music`, `mode`)
+
+`render.py` mixes music around the bookends when — and only when — a manifest carries
+an enabled `music` object. Absent it, an episode renders byte-for-byte as it did before
+the feature existed, which is the only thing that makes this safe on a renderer three
+shows share. Each show owns its music under its own skill directory —
+[skills/daily-podcast/assets/music/](skills/daily-podcast/assets/music/) (Pixel Window,
+`bed`) and [skills/frontier-commits/assets/music/](skills/frontier-commits/assets/music/)
+(Midnight Terminal, `sting`) — each with a `PROVENANCE.json` carrying the composition
+source and the **unresolved drum-sample licensing** both share. Contracts are in
+[SKILL.md](skills/daily-podcast/SKILL.md#introoutro-music) and
+[the frontier skill](skills/frontier-commits/SKILL.md), pinned by
+[tests/test_music.py](tests/test_music.py). Eight things are load-bearing.
+
+- **Two treatments, ONE implementation.** `mode` is a closed whitelist: `bed` (a
+  loopable theme, ducked under the intro and the sign-off) and `sting` (a short
+  signature that never overlaps speech — one play before narration, one after). They
+  are not two code paths: both resolve into one `MusicPlan` and render through one
+  unbranched `music_filter_graph`, so neither can rot into an untested half. In sting
+  mode `duck_db` is 0, which collapses both gain envelopes to a constant and drops the
+  `volume` filter from the graph entirely. `MUSIC_MODE_DEFAULTS` holds only the keys
+  that genuinely differ. **A one-bar asset must not use `bed`**: Midnight Terminal is a
+  2.31 s export, and looping one bar under a whole introduction is a stutter, not a
+  theme — the mode whitelist is what stops a typo doing it.
+- **A sting's length is MEASURED, never rounded.** `lead_seconds`/`tail_seconds` are
+  null by default in sting mode, meaning "the asset's own bar"; `_render` measures it
+  with `_probe_duration_s` and hands it to the plan. Rounding 2.307688 s to two seconds
+  clips the last beat off. Null is refused in `bed` mode, where a lead is a musical bar
+  rather than the whole composition.
+- **`output_lufs` is per mode, and sting does not re-master the show.** `bed` targets
+  -19 LUFS (the audited Pixel Window mix); `sting` targets -24, which IS ffmpeg's
+  loudnorm default — the level every music-free show already renders at. A sting sits
+  beside the narration rather than under it, so there is no reason to move a show's
+  loudness to play one.
+
+- **The mix is on the MANIFEST, closed whitelist, same posture as `ship_mode` and
+  `tts_engine`** — and unknown keys DIE rather than being ignored. A typo'd `duck_dB`
+  that fell through to the default would ship a balance the operator believes they
+  tuned, with no error anywhere. `orchestrate.py` writes the fully RESOLVED object
+  (every default filled) so a manifest reproduces its own mix rather than picking up a
+  `config.json` that changed underneath it.
+- **The bookends come from `role`, never from a title.** `role: "intro"` on the first
+  segment and `"outro"` on the last, required once music is on and written on every
+  newly assembled manifest regardless. A `title` is display text a writer may reword —
+  the audition's own timeline called these two chapters `Segment 1` and `Segment 12`,
+  so a title match would have found nothing and failed silently. Exactly one of each,
+  first and last, at least three segments; anything else dies at validation.
+- **ONE plan drives the audio and the metadata.** `plan_music_mix` is pure and, in bed
+  mode, reads the same `seg_ms`/`silences_ms` cursor `build_timeline_and_description`
+  walks, so the intro's exit lands exactly on the first story's chapter mark. A sting
+  reads none of that geometry — it pins to the speech itself — which is why it needs
+  only two segments where a bed needs three. Chapter one pins to 0
+  (it contains the theme); every later chapter and every source link — including a
+  first segment's — shifts by exactly `lead_ms`. A 2026-09-10 rehearsal against the
+  real Sept 10 workdir reproduced the reference audition's twelve chapter starts
+  byte-identically.
+- **`speech_ms` is MEASURED, not summed.** mp3 concat re-encodes: a 9-part rehearsal
+  came out 282 ms SHORT of the sum of its parts. Planning the total off the sum leaves
+  that much dead air after the tail fade and makes the duration gate's tolerance
+  meaningless. This is why `_render` calls `concat_segments` and `normalize_episode`
+  separately rather than through `concat_and_normalize` — the measurement only exists
+  between them. `concat_and_normalize` is kept as the seam most tests hold.
+- **`output_lufs` is LOCAL to an enabled music config.** Every other show renders at
+  ffmpeg's `loudnorm` default (~-24 LUFS); music renders at -19. `normalize_episode`
+  with `music=None` is byte-for-byte the call it always was, down to the bare
+  `loudnorm=print_format=json`. Keep it that way — a target that leaked would re-master
+  three shows silently.
+- **Relative `asset` paths resolve against the PLUGIN ROOT**, derived from `__file__`
+  — not the CWD (the scheduler has no stable one) and not `CLAUDE_PLUGIN_ROOT` (unset
+  under it). The root rather than `SCRIPT_DIR` because this renderer serves several
+  shows and each owns its music under its own skill directory.
+- **Music never reaches a speech measurement.** `speech_rate_rows`, the bloopers bin
+  and the derailment detector all read `seg_NN.mp3`, which the mix does not touch;
+  `plan_silences` and `MIN_CHAPTER_GAP_MS` are unchanged. The mix folds into the
+  loudnorm pass that already ran, so it costs no extra lossy encode.
+- **A changed asset or parameter invalidates the MIX and keeps the SPEECH.**
+  `sync_music_provenance` compares `<workdir>/music.json` (config + asset BYTES, never
+  the derived plan) before anything reuses the workdir, and on a difference deletes the
+  bed, the assembled audio, the timeline and the description and drops those stages
+  from `state.json`. Keying on the path instead of the bytes would be #177 one level
+  up: a re-recorded asset at the same path replays the old bed under the new one's
+  name. Turning music OFF counts as a change. Speech takes cost minutes and are valid
+  whatever the music does — never invalidate them.
+
+A missing, moved, altered or undecodable asset fails PRE-FLIGHT (`music-asset`, local,
+so `--dry-run` gates it too), not the render: an episode asked for music and published
+without it is a silent failure.
+
+**Retired bug, same change:** `verify_artifact` read `start_ms` from the timeline while
+`build_timeline_and_description` has always emitted `start_time_ms`, so `starts` was
+empty on every real run and the monotonicity and 5 s-gap checks passed vacuously.
+(`start_ms` is a DIFFERENT, downstream schema — `chapters_from_timeline` translates
+into it for the R2 manifest.) The gate is live now, which is what makes the shifted
+chapter marks actually checked; `tests/test_reliability.py`'s `_timeline` helper
+carried the same typo and had to move with it.
 
 ### The reliability layer (pre-flight, artifact gate, durable state, incidents)
 
@@ -297,6 +393,10 @@ User-level config sits outside the repo at `~/.config/daily-podcast/`:
 - `runs.jsonl` — append-only JSONL operational log, one record per run (see the run-log invariant above). Best-effort observability; not load-bearing for any pipeline decision. Retention is the operator's job (≈ one line/day).
 - `feed_usage.json` — `{feed_name: last_used_date}` map written by `orchestrate.py` after each successful real run. Drives the variety penalty so the same feed doesn't dominate consecutive episodes.
 - `bloopers/` — the bloopers bin (#169): `clips/<sha16>.mp3` plus an append-only `index.jsonl`, one full-key-set row per clip (`BLOOPER_FIELDS`). Written by `render.py` on four triggers (a gate rejection, a near-miss, a failed run's sweep, and a derailed take before its re-roll, #202) and by `bloopers.py mark` on the fifth. **Nothing in a run reads it back** — it is write-only until a meta-episode is cut from it by hand, so it is never load-bearing for a pipeline decision. Not pruned: an archive that deletes its oldest material defeats its own purpose, and the sole growth path is roughly a dozen ~1 MB segments per failed run.
+- `music` (in `config.json`) — optional `{enabled, asset, asset_sha256, ...}` block.
+  Absent means no music and no behavior change. `orchestrate.py` resolves it through
+  `render.resolve_music_config` and persists the fully-defaulted object into each
+  manifest; relative `asset` paths resolve against the SKILL directory, never the CWD.
 - `dropped.jsonl` — append-only JSONL log written by `orchestrate.py` for every item that was blocked, refused, timed out, errored, or hit an auth failure. One record per dropped item: `{timestamp, run_date, feed_name, url, reason, detail}` (`reason` ∈ `refused`/`blocked`/`auth`/`timeout`/`error`). Observability-only; never affects pipeline decisions — except that the systemic `auth` case (zero survivors) drives the fail-fast diagnostic noted in the orchestrator invariant above.
 
 All are documented in [SKILL.md](skills/daily-podcast/SKILL.md#show--dedup-config) and [README.md](README.md#setup).
@@ -323,6 +423,7 @@ Diagnostic gotchas, not runtime issues — `render.py` works correctly against t
 ## Editing conventions specific to this repo
 
 - **Keep `render.py` single-file.** It's deliberately not split into a package — the skill ships as a flat directory and the prompt at `prompts/daily.md` resolves its path via `${CLAUDE_PLUGIN_ROOT}/skills/daily-podcast/render.py`. Don't introduce sibling modules without also updating that resolution path.
+- **Sibling modules import `render`; they never re-implement it.** `bloopers.py`, `retitle.py` and (since the music work) `orchestrate.py` all `import render` rather than copying a schema or a resolver — that is what keeps `render.py` single-file with one definition of each contract. `render.py`'s heavy deps are function-local, so the import stays cheap.
 - **`bloopers.py` is a maintenance CLI; nothing in a run calls it.** Same sibling-module precedent as `retitle.py` — it imports `render` (calling `render.run`, not a bare `run`, so the seam stays patchable) rather than duplicating the bin-writing code, which keeps `render.py` single-file and the index schema in one place. Unlike the automatic captures it *raises* on a bad timecode or a missing file: it is a human at a prompt, and the best-effort contract protects runs, not interactive commands. Reading the bin back is deliberately unimplemented — it is one JSONL file and `jq` does it better.
 - **`retitle.py` is a maintenance CLI that writes to a PUBLIC feed — its guards are load-bearing.** It back-fills #139's topical titles onto already-published R2 manifest entries (#144). Nothing in a run calls it. Preserve all of: dry run is the **default** and `--apply` is the opt-in; `assert_title_only` refuses any write where a field other than `title` moved or the slug sequence changed (a manifest that fails cortech.online's `episodeSchema` empties the **entire** public feed, silently); `retitle_entries` re-proves per entry that `slug_for_date(pubDate)` reproduces the slug, because the retitle is guid-neutral only while that holds (#128) — a moved guid duplicates a published episode on Spotify; the title is composed by `orchestrate.episode_title`, never re-implemented, so #144 applies #139's format rather than inventing a second one; the topic phrases stay **data** (`backfill_topics.json`, pinned against `tests/data/published_slugs.tsv`), which is what makes a re-run idempotent and the copy reviewable before publication; it deliberately does **not** route through `upsert_manifest` (that re-sorts and caps to 200 — right for adding an episode, wrong for rewriting in place, #124); and `--apply` must fire the Pages deploy hook via `resolve_pages_hook_url`, because cortech.online is a static build that reads the manifest at build time and nothing on its side rebuilds on a schedule. Covers are deliberately not regenerated — the reasoning is in the module docstring; revisit it there rather than silently changing the answer.
 - **Comments in `render.py` should explain the *why*, not the *what*.** The existing comments on `HOUSE_VOICE_INSTRUCT`, `MIN_CHAPTER_GAP_MS`, and `LAST_SILENCE_MS` are the model: each captures a constraint or a piece of history that's not obvious from the code.

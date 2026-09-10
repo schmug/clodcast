@@ -213,6 +213,9 @@ A standard `render.py` manifest (the daily skill's Form 2) plus seven keys, all 
 - `"cover_style": "commit-rail"` — this show's own generated episode art: a commit rail in the show's green, stamped with the week and the episode's topics (#168 follow-up). `render.py` defaults every cover to the DAILY show's `ascii-horizon` design, so the opt-in has to be explicit — drop the key and the next weekly episode silently restyles, in a public feed, into art nobody has looked at. The value is whitelisted, so a typo fails validation rather than falling back to the default. Replaces the bundled `refs/cover.jpg` that every episode used to ship verbatim (#164). The rail is a redraw of the motif on cortech.online's `public/frontier-commits-cover.jpg` — the channel tile a podcast client renders directly above these covers — and its palette is sampled from that file, which is what makes the two read as one show. **Nothing mechanical ties them together**, so if that tile is ever redesigned, redraw `_cover_commit_rail` to match; `render.py`'s header says the same in the other direction.
 - `"description_footer_text": "Sources: the labs' public GitHub — every story links its repo above. More at cortech.online/frontier-commits."` — replaces the daily show's credit footer on the episode description (#152). The default footer credits the OPML feeds curated in Don't Hype Me — wrong attribution for this show, in show notes that land verbatim in the public RSS feed. PLAIN TEXT by contract: `render.py` escapes it into one `<p>` and rejects markup; links aren't supported here — every story's repo is already linked on its own chapter line.
 
+Plus `music` — the intro/outro sting, **on since 2026-09-10**. See
+[Intro/outro sting](#introoutro-sting-music).
+
 **No `show_id`.** There is no Spotify show to upload to; render.py ignores the key in this mode and pre-flight does not ask for one.
 
 ⚠️ **The R2 bucket and credentials for the EPISODE publish come from the daily skill's config**, i.e. `~/.config/daily-podcast/config.json` + `secrets.json` + env — never from `~/.config/frontier-commits/config.json`. That file's `r2_bucket` / `r2_public_base_url` drive only `fc_snapshot`'s `labs.json` publish. The two live in different config roots on purpose: `render.py` owns the episode bucket for every show it renders. Do not "fix" render.py to read the frontier config — it would silently change which bucket published episodes land in.
@@ -230,12 +233,18 @@ A standard `render.py` manifest (the daily skill's Form 2) plus seven keys, all 
   "r2_key_prefix": "frontier-commits/",
   "slug_prefix": "week-of",
   "description_footer_text": "Sources: the labs' public GitHub — every story links its repo above. More at cortech.online/frontier-commits.",
+  "music": {
+    "enabled": true,
+    "mode": "sting",
+    "asset": "skills/frontier-commits/assets/music/midnight-terminal.wav",
+    "asset_sha256": "49d227186ba61833b9072ad2b29bebb6b8b090b5250930a062f6998d4a3b9cf3"
+  },
   "segments": [
-    {"text": "Cold open...", "source_url": null, "title": "Cold open"},
+    {"text": "Cold open...", "source_url": null, "title": "Cold open", "role": "intro"},
     {"text": "Lead story, 1100-1500 chars...", "source_url": "https://github.com/openai/git", "source_title": "openai/git"},
     {"text": "Body story...", "source_url": "https://github.com/anthropics/example", "source_title": "anthropics/example"},
     {"text": "Trend watch...", "source_url": null, "title": "Trend watch"},
-    {"text": "Sign-off...", "source_url": null, "title": "Sign-off"}
+    {"text": "Sign-off...", "source_url": null, "title": "Sign-off", "role": "outro"}
   ]
 }
 ```
@@ -254,8 +263,60 @@ A standard `render.py` manifest (the daily skill's Form 2) plus seven keys, all 
   episode `Frontier Commits — Week of ...`: the show name is already on every directory
   listing, and the first thirty characters are the only ones a browsing listener sees.
 - **Strict 1:1** segment ↔ source mapping: every story segment carries exactly its own repo URL; the cold open, trend watch, and sign-off carry `null`. Never merge stories or attach two URLs to one segment.
+- **The cold open and the sign-off carry a `role`.** `"intro"` on the first segment,
+  `"outro"` on the last. Inert on its own; required once music is enabled, because
+  the mix reads the bookends from roles and never from chapter titles — a title is
+  display text a writer may reword. Write them on every manifest so enabling music is
+  a one-key change rather than a script change.
 - **Frame segments must carry a `title`.** Story segments get their chapter title from `source_title`, but the three frame segments have no source — without an explicit `"title"` ("Cold open", "Trend watch", "Sign-off"), `render.py` falls back to positional chapter titles like "Segment 1" in the published timeline.
 - **Voice defaults to house.** Do not set `voice_instruct`; no new voice modes.
+
+## Intro/outro sting (`music`)
+
+**On since 2026-09-10**, after the mix was auditioned against the *Week of August 31*
+episode and approved. The shared optional-music layer in `render.py` (the daily skill's
+SKILL.md documents it in full) serves this show in its **`sting`** mode. Every manifest
+carries the block shown in [Manifest](#manifest); drop the key to turn it off.
+
+**The asset is ONE BAR.** `assets/music/midnight-terminal.wav` is a 2.307688 s export —
+one bar at 104 BPM — not the eight-bar composition. That is why this show uses
+`"mode": "sting"` and not the daily show's `"bed"`: a bed loops its theme under the
+whole introduction, and looping a single bar there is a stutter, not a theme. The mode
+is a closed whitelist, so the wrong one dies at validation instead of rendering that.
+`assets/music/PROVENANCE.json` records the composition, how to export the full theme
+and a separate narration bed if this show ever wants the bed treatment, and the
+**unresolved drum-sample licensing** — read it before this audio reaches the feed.
+
+**The treatment.** The bar plays once, alone, before the cold open; narration starts
+the instant it ends. **No music anywhere in the stories.** The bar plays once more the
+instant the sign-off ends, extending the final chapter without creating a new one.
+30 ms de-click fades on each edge. The narration is *not* re-mastered to play it: sting
+mode targets -24 LUFS, which is what this show already renders at.
+
+**The block** (step 7 of the weekly run writes it; this is the live setting):
+
+```jsonc
+"music": {
+  "enabled": true,
+  "mode": "sting",
+  "asset": "skills/frontier-commits/assets/music/midnight-terminal.wav",
+  "asset_sha256": "49d227186ba61833b9072ad2b29bebb6b8b090b5250930a062f6998d4a3b9cf3"
+}
+```
+
+Relative asset paths resolve against the **plugin root**, never the working directory —
+the scheduled run has no stable CWD. `lead_seconds` and `tail_seconds` are omitted on
+purpose: in sting mode they default to the asset's own measured length, so the bar is
+never clipped by a rounded number. Every other knob (`intro_fade_seconds`,
+`outro_fade_seconds`, `music_lufs`, `output_lufs`, `true_peak_db`) is optional and
+documented in the daily skill's *Intro/outro music* section; unknown keys die.
+
+**This show's music is separate from the daily show's** — different asset, different
+mode, different directory, different manifest. Neither can move the other.
+
+Rehearse any change with `--dry-run`: it produces the real mixed mp3 and runs the same
+artifact gate a real run does, without publishing. A missing, moved or altered asset
+fails pre-flight (`music-asset`) before any TTS is spent.
 
 ## Show + state config
 
@@ -279,7 +340,7 @@ Shared with the daily show: `~/.config/daily-podcast/covered.json` — `render.p
 4. **Get the script plan:** `python3 fc_script_plan.py plan --date <today> --stories <n>` → `<workdir>/plan.json`.
 5. **Write each story in its own subagent context** — one story's material per context, the weekly analogue of the daily show's one-body-per-request invariant. Per story: read `prompts/write_story.md`, fill `<<TYPE>>/<<TITLE>>/<<URL>>/<<FACTS>>/<<SHAPE>>/<<MIN_CHARS>>/<<MAX_CHARS>>` from `stories.json` + `plan.json`, research the repo first (README via `gh api repos/<org>/<repo>/readme`, recent commits/releases), write the segment, return the JSON contract. A refused/failed story is dropped and logged; if survivors fall below `min_stories_per_episode` → print `SKIPPED thin-week after drops` and exit 0.
 6. **Write the frame:** the intro (assigned mode), the segues (assigned moves — `cold` means no segue text at all), the trend-watch close (from today's `labs.json`), and the outro (assigned mode, closing on the week's assigned button — see [The button](#the-button)).
-7. **Assemble `<workdir>/manifest.json`** per [Manifest](#manifest) — including `"ship_mode": "web"`, without which this ships to the wrong place — and render in the **background**: `python3 <root>/skills/daily-podcast/render.py --manifest <workdir>/manifest.json --workdir <workdir>` — the 10-minute foreground Bash cap SIGTERMs a long render; monitor the render log instead. Never pass `--dry-run` (this is a real episode) and never pass `--skip-preflight`.
+7. **Assemble `<workdir>/manifest.json`** per [Manifest](#manifest) — including `"ship_mode": "web"`, without which this ships to the wrong place, and the `music` block, without which the episode ships with no sting — and render in the **background**: `python3 <root>/skills/daily-podcast/render.py --manifest <workdir>/manifest.json --workdir <workdir>` — the 10-minute foreground Bash cap SIGTERMs a long render; monitor the render log instead. Never pass `--dry-run` (this is a real episode) and never pass `--skip-preflight`.
 8. **On a successful publish** — exit 0 and a final JSON object with `"status": "web-ready"` and `"r2_status": "published"` — take its `mp3_url` and run `python3 fc_stories.py mark --stories <workdir>/stories.json --episode-uri <mp3_url>`. (`mark` reads the date from the file's `run_date`; there is no `--date` flag.) A nonzero exit means nothing was published: do **not** mark, and report `FAILED`. The renderer leaves the sources unmarked in `covered.json` too, so the next run re-selects them.
 9. **Report once and exit.** Single-line stdout: `SHIPPED <mp3_url> - <title> - <n> chapters - <dur>s - r2=ok` on success (all four values come from the renderer's final JSON: `mp3_url`, `title`, `chapter_count`, `duration_s`), `SKIPPED <reason>` for a thin week, `FAILED <reason>` on genuine failure. `r2=ok` is the only success value here — a publish that did not succeed is a failed run, not a degraded one.
 

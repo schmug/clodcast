@@ -61,13 +61,26 @@ Already-written segments. Skip straight to rendering.
   "tts_engine": "qwen3",                   // optional; "qwen3" (default) or "breeze". Closed whitelist that lives on the manifest like ship_mode — see "TTS engines"
   "description_footer_text": "Sources: …", // optional; replaces the standard credit footer on the episode description (see "Episode description footer"). PLAIN TEXT: render.py escapes it into one <p> and rejects markup. Set it when rendering a SECOND show — the default footer credits the daily show's feeds
   "cast": {"anchor": "Ryan", "skeptic": "Ethan"}, // optional; speaker -> preset name OR {"ref_audio","ref_text"} clip, for multi-voice `lines` segments (see "Multi-voice scenes"). The daily show does not use this
+  "music": {                               // THIS SHOW SETS THIS (approved 2026-09-10). Omitting it renders
+    "enabled": true,                       //   a music-free episode — not a failure, just a different one.
+    "asset": "skills/daily-podcast/assets/music/pixel-window.flac", // relative to the PLUGIN ROOT, never the CWD
+    "asset_sha256": "6c643cec1c5bec9a901e2948feb274a315bfa79db1cabe840d0e65e3d2987e2b"
+  },                                       // full key list + the treatment: "Intro/outro music"
   "segments": [
-    {"title": "Intro",    "text": "Intro segment...",            "source_url": null},
+    {"title": "Intro",    "text": "Intro segment...",            "source_url": null, "role": "intro"},
     {"text": "Item 1 segment, 600+ chars.", "source_url": "https://...", "source_title": "..."},
-    {"title": "Sign-off", "text": "Outro segment...",            "source_url": null}
+    {"title": "Sign-off", "text": "Outro segment...",            "source_url": null, "role": "outro"}
   ]
 }
 ```
+
+**Mark the bookends with `role`.** `"intro"` on the first segment and `"outro"` on
+the last, on every manifest — music or not. It is inert without music and required
+with it: the mix reads the roles to find where the intro ends and the sign-off
+begins, and a chapter `title` cannot serve, because a title is display text a writer
+may reword (the audition's own timeline called these two chapters `Segment 1` and
+`Segment 12`). Exactly one of each, first and last; anything else dies at validation
+rather than guessing.
 
 **Every segment needs a chapter name.** `title` is the chapter shown in the public
 show notes; a segment with neither `title` nor `source_title` falls back to a
@@ -431,6 +444,93 @@ Spotify requires consecutive chapter starts to be at least 5 seconds apart (the 
 
 Chapters under 30 seconds used to be capped at 3 per episode, and `render.py` padded up to 12s of silence to comply. Upstream dropped that cap (save-to-spotify PR #44), verified 2026-08-22 against CLI 0.2.0. Short segments no longer risk the episode, so the 600+ chars-per-segment target is now editorial pacing, not a platform constraint.
 
+## Intro/outro music
+
+**On for this show since 2026-09-10.** Every manifest carries the `music` block in the
+schema above; the theme is *Pixel Window*. It stays optional in the renderer and off
+for every other show that does not ask — absent the key, an episode renders
+byte-for-byte as it did before the feature existed, including its loudness target.
+
+**Two treatments, one implementation.** `mode` is a closed whitelist. `"bed"` (the
+default, below) is for a loopable theme; `"sting"` is for a short signature that never
+overlaps speech — it plays once before narration and once after the sign-off, with
+de-click edge fades, and its `lead_seconds`/`tail_seconds` default to the asset's own
+measured length. Frontier Commits uses `sting` for its one-bar Midnight Terminal; see
+that skill. Both resolve into the same mix plan and the same filter graph, so neither
+is an untested half. **A one-bar asset must not use `bed`** — looping a single bar
+under a whole introduction is a stutter, not a theme.
+
+**The bed treatment.** One bar of theme alone before the host; the theme ducked to
+-18 dB under the intro segment and faded out over the three seconds before the first
+story; **no music at all under the stories**; the theme back at -18 dB under the
+sign-off, rising to full over two seconds once the speech ends; a two-bar finish
+fading out over its last three seconds. The shipped theme is *Pixel Window*
+(`skills/daily-podcast/assets/music/pixel-window.flac`, 78 BPM, eight bars) — its composition source and
+its **unresolved sample licensing** are recorded in `assets/music/PROVENANCE.json`.
+Read that before this audio is distributed anywhere new.
+
+**Where the switch lives.** The manifest is what the renderer reads, so the block in
+the schema above is the live setting. `~/.config/daily-podcast/config.json` carries the
+same block for `orchestrate.py`, which resolves it and writes the fully-defaulted
+object into every manifest it assembles. **To turn music OFF**, drop the key from the
+manifest (and from config.json); nothing else changes. The full shape:
+
+```jsonc
+"music": {
+  "enabled": true,                              // false or absent = no music, no behavior change
+  "mode": "bed",                                // default; "sting" for a short non-overlapping
+                                                //   signature (Frontier Commits). Closed whitelist
+  "asset": "skills/daily-podcast/assets/music/pixel-window.flac",     // RELATIVE PATHS RESOLVE AGAINST skills/daily-podcast/,
+                                                //   never the working directory - the scheduled run
+                                                //   executes from a version-keyed plugin cache
+  "asset_sha256": "6c643cec...",                // optional; pre-flight fails the run if the file's
+                                                //   bytes have changed. Record it.
+  "lead_seconds": 3.076923076923077,            // one bar at 78 BPM
+  "tail_seconds": 6.153846153846154,            // two bars
+  "duck_db": -18.0,                             // how far the bed drops under speech
+  "intro_fade_seconds": 0.08,                   // the theme's fade-in at t=0
+  "outro_fade_seconds": 1.5,                    // the theme's fade-in under the sign-off
+  "music_lufs": -23.0,                          // the bed is normalised to this BEFORE ducking, so
+                                                //   duck_db means the same thing for any source file
+  "output_lufs": -19.0,                         // the finished episode's target
+  "true_peak_db": -2.0
+}
+```
+
+Every key but `enabled` and `asset` is optional and defaults to the value above —
+the reference mix. **Unknown keys die**: a typo'd `duck_dB` that fell through to the
+default would ship a balance the operator believes they tuned.
+
+**`output_lufs` is the one number that changes the master, and only in bed mode.**
+Every music-free show renders at ffmpeg's loudnorm default (about -24 LUFS); a bed
+episode renders at -19. Sting mode defaults to -24 — the same default — because a
+sting sits beside the narration rather than under it, so there is no reason to move a
+show's loudness to play one. That louder target is a property of the music config and reaches nothing
+else. A rehearsal on 2026-09-10 measured -18.85 LUFS / -2.0 dBTP / LRA 3.3.
+
+**What music does NOT touch.** The per-segment `seg_NN.mp3` files, and therefore the
+speech-rate gate, the bloopers bin, and the derailment detector — all of which
+measure speech, not the master. `plan_silences` and the 5-second chapter-gap rule are
+unchanged. The mix is one extra ffmpeg pass folded into the loudnorm that already
+ran, so it costs no additional lossy encode.
+
+**Timeline.** Chapter one starts at 0 and contains the theme; every later chapter and
+every source link shifts by exactly `lead_seconds`. The bookend positions the audio
+uses are read off the same segment geometry the timeline walks, so the two cannot
+disagree. The artifact gate re-checks the finished duration against the plan within
+250 ms.
+
+**Changing the asset or any number re-mixes, and keeps the speech.** A re-run in the
+same workdir compares `<workdir>/music.json` against this run's config and asset
+bytes; on a difference it discards the bed, the assembled audio, the timeline and the
+description, and drops those stages from `state.json`. The TTS takes are never
+touched — they cost minutes and are valid whatever the music does.
+
+**If the asset is missing, moved, or not the file the manifest recorded, the run
+fails** at pre-flight (`music-asset`), under `--dry-run` too. An episode that was
+asked for music and published without it is a silent failure; this is the last cheap
+place to catch one.
+
 ## Show + dedup config
 
 Since #218 this show ships web-only, which moves two keys across the required line
@@ -474,6 +574,11 @@ reaches the code that reads it, and keeping `show_id` is what a legacy
   "opml_files": ["/path/to/feeds.opml"], // optional; used by the unattended run
   "lookback_hours": 24,                  // optional; default 24
   "target_item_count": 10,               // optional; default 10
+  "music": {                             // optional; ABSENT = no music, no behavior change.
+    "enabled": true,                     //   orchestrate.py resolves this (filling every
+    "asset": "skills/daily-podcast/assets/music/pixel-window.flac", //   default) into the manifest it assembles, so
+    "asset_sha256": "6c643cec..."        //   a manifest reproduces its own mix. Full key list
+  },                                     //   and the treatment: "Intro/outro music" above.
   "auto_prune_episodes": false,          // INERT under ship_mode "web" (#218). Spotify-only:
                                          //   when true, an upload that hits the show's
                                          //   episode cap (429 RATE_LIMIT_EXCEEDED /
@@ -617,8 +722,11 @@ Every `render.py` run appends one JSON record to `~/.config/daily-podcast/runs.j
   "resumed": false,
   "mp3_url": null,                            // public R2 URL on a web-only ship, else null (#155)
   "bloopers_captured": 0,                     // clips banked into the bloopers bin this run (#169)
-  "untitled_segments": []                     // 1-based segments that fell back to a "Segment N"
+  "untitled_segments": [],                    // 1-based segments that fell back to a "Segment N"
                                               // chapter (#96); [] = checked and clean, null = not reached
+  "music": null                               // {asset, asset_sha256, lead_ms, tail_ms, duck_db,
+                                              // output_lufs} when a mix ran; null on every
+                                              // music-free run - see "Intro/outro music"
 }
 ```
 
@@ -634,6 +742,8 @@ jq -r '"\(.timestamp)  \(.voice) (\(.voice_mode))"' ~/.config/daily-podcast/runs
 # Episodes that published a "Segment N" placeholder chapter (#96)
 jq -r 'select(.untitled_segments != null and (.untitled_segments | length) > 0)
        | "\(.timestamp)  \(.title)  segments \(.untitled_segments)"' ~/.config/daily-podcast/runs.jsonl
+# Which episodes shipped with music, and at what balance
+jq -r 'select(.music) | "\(.timestamp)  \(.music.asset)  duck \(.music.duck_db)dB  \(.music.output_lufs) LUFS"' ~/.config/daily-podcast/runs.jsonl
 ```
 
 First run with no `config.json`: ask the user for the R2 bucket and public base URL to publish to, then persist the choice. A `show_id` is no longer part of setup — nothing uploads (#218).
@@ -827,7 +937,7 @@ You are an unattended invocation. Ship today's episode and exit. Be decisive, do
 
 6. **Self-critique pass** (silent): tighten segments over 900 chars or repetitive. Never reorder, never drop a segment.
 
-7. **Build the manifest** at `/tmp/daily-podcast-<date>/manifest.json` per the [manifest schema](#form-2--pre-built-manifest-manifestjson). Title it per [Episode title](#episode-title) — the day's three lead stories, then the date, never the bare date. **Set `"ship_mode": "web"`** — without it the run defaults to `spotify` and uploads to the retired private show, which deletes a published episode to make room (#218). Do **not** set `voice_instruct` (`"voice": "house"` resolves to the locked house voice) and do **not** set `show_id` (nothing reads it in this mode).
+7. **Build the manifest** at `/tmp/daily-podcast-<date>/manifest.json` per the [manifest schema](#form-2--pre-built-manifest-manifestjson). Title it per [Episode title](#episode-title) — the day's three lead stories, then the date, never the bare date. **Set `"ship_mode": "web"`** — without it the run defaults to `spotify` and uploads to the retired private show, which deletes a published episode to make room (#218). **Include the `music` block** exactly as the schema shows it: this show has had an intro/outro theme since 2026-09-10, and a manifest that omits the key ships an episode without it. Do **not** set `voice_instruct` (`"voice": "house"` resolves to the locked house voice) and do **not** set `show_id` (nothing reads it in this mode).
 
 8. **Run the renderer** at the pinned plugin path. `${CLAUDE_PLUGIN_ROOT}` is set when this runs under a Claude Code plugin; if it is somehow unset, exit immediately with `FAILED CLAUDE_PLUGIN_ROOT unset` — do **not** search the filesystem for `render.py`.
 
@@ -953,6 +1063,7 @@ error: preflight failed (r2-credentials); nothing was rendered or uploaded
 | `encoder-profile` | encoder settings drifting off mono / 44.1 kHz / 192 kbps |
 | `house-voice` | missing ref clip or transcript |
 | `tts-module` | `mlx_audio` not importable (a `find_spec` probe, not a model load) |
+| `music-asset` | a missing, moved, altered or undecodable music file *(only when `music.enabled`; runs on `--dry-run`)* |
 | `r2-credentials` | an R2 config that can't publish — **the ship** under `ship_mode: "web"` |
 | `show-id` | no show configured *(Spotify mode only)* |
 | `save-to-spotify-auth` | dead or missing credentials *(Spotify mode only; skipped on `--dry-run`)* |
@@ -968,7 +1079,8 @@ calls Spotify and never prunes.
 
 Once the mp3 exists, `verify_artifact` runs a local conformance check —
 encoder profile, monotonic chapter starts, the 5 s minimum gap between
-consecutive chapter starts, last chapter inside the duration — and refuses to upload an artifact whose sha256 is in
+consecutive chapter starts, last chapter inside the duration, and (with music
+enabled) the finished duration against the mix plan within 250 ms — and refuses to upload an artifact whose sha256 is in
 `rejections.jsonl` (Spotify rejected those exact bytes before; retrying costs a
 pruned episode). It runs under `--dry-run` too, so a rehearsal is a real rehearsal.
 
@@ -983,6 +1095,11 @@ skipped below `MIN_RATE_SAMPLE_SEGMENTS` body segments, where a median means
 nothing. Fix by deleting the flagged `seg_NN.mp3` and re-running: the per-segment
 cache re-renders only that one, and the failure is stochastic, so a retry
 normally comes back clean.
+
+The chapter checks read `start_time_ms`, the key the timeline actually carries.
+They read `start_ms` until 2026-09-10 — a key no timeline has ever had — so the
+monotonicity and 5 s-gap checks matched nothing and passed vacuously on every real
+run. They are live now; a timeline regression fails the gate rather than shipping.
 
 ### Durable state + resume
 
