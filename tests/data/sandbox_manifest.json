@@ -1,0 +1,40 @@
+{
+  "title": "clodcast sandbox - ship-tail probe",
+  "summary": "A disposable episode whose only purpose is to exercise the web-only ship tail end to end against the real bucket, in a namespace no feed reads. Not a show; nothing links to it.",
+  "voice": "house",
+  "ship_mode": "web",
+  "show_name": "clodcast sandbox",
+  "slug_prefix": "sandbox",
+  "r2_manifest_name": "manifest-sandbox.json",
+  "r2_key_prefix": "sandbox/",
+  "description_footer_text": "Disposable test artifact from the clodcast sandbox. Not a published show.",
+  "music": {
+    "enabled": true,
+    "asset": "skills/daily-podcast/assets/music/pixel-window.flac",
+    "asset_sha256": "6c643cec1c5bec9a901e2948feb274a315bfa79db1cabe840d0e65e3d2987e2b"
+  },
+  "segments": [
+    {
+      "title": "Intro",
+      "role": "intro",
+      "source_url": null,
+      "text": "This is the clodcast sandbox. It exists to prove one thing: that the ship tail works end to end against a real bucket, without touching a real feed. Everything here was produced by the same renderer the live shows use, on the same house voice, with the same intro music."
+    },
+    {
+      "title": "What is under test",
+      "source_url": null,
+      "text": "The interesting part is not the audio. It is the four steps after the audio: putting the mp3 and the cover into object storage, upserting an entry into a feed manifest, firing the site's deploy hook, and writing the dedup log. Those four are the only part of the pipeline a local dry run cannot rehearse, because a dry run deliberately stops before them."
+    },
+    {
+      "title": "How isolation works",
+      "source_url": null,
+      "text": "Four keys do the work. A key prefix namespaces the audio and the cover, so a sandbox episode published on the same day as a real one cannot overwrite it. A manifest name puts the feed entry in its own object. A slug prefix keeps the permalink and the feed identifier out of every real show. And every segment carries a null source, so the shared dedup log gains nothing and no real story is ever marked as covered by a test."
+    },
+    {
+      "title": "Sign-off",
+      "role": "outro",
+      "source_url": null,
+      "text": "If you are hearing this from a public URL, the ship tail works. This episode is disposable and can be deleted from the bucket at any time without consequence. Thanks for listening to a test."
+    }
+  ]
+}
