@@ -1334,12 +1334,16 @@ def test_skill_md_documents_the_public_host_credit():
     assert '"host_name": "Cory"' not in skill
 
 
-def test_skill_md_routes_the_spoken_host_name_through_config():
-    """Documenting the value is not enough: before this, no line of prose or code
-    read `host_name`, so a writer naming the host had nothing to take it from and
-    the config key could never reach the audio."""
+def test_skill_md_keeps_the_host_name_out_of_the_narration():
+    """`host_name` is a real config key, so the script template has to say it is a
+    WRITTEN credit - or a writer reads the key, opens on "I'm Schmug" and the show is
+    back to claiming a person read it the news."""
     skill = (_repo_root() / "skills" / "daily-podcast" / "SKILL.md").read_text()
+    template = skill.split("## Show + dedup config")[0]
 
-    assert "`host_name`" in skill.split("## Show + dedup config")[0], (
-        "the script template never tells the writer where a spoken host name comes from"
+    assert "`host_name`" in template, (
+        "the script template never tells the writer what to do with the host name"
+    )
+    assert "never spoken" in template, (
+        "the script template never says the host name stays out of the audio"
     )

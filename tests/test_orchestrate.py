@@ -912,6 +912,77 @@ def test_signoff_button_is_not_locked_to_the_outro_mode():
     assert len(pairs) == len(orchestrate.OUTRO_MODES) * len(orchestrate.SIGNOFF_BUTTONS)
 
 
+# --- the cold open's fourth-wall line --------------------------------------
+#
+# The open used to credit a person ("I'm <host_name>"). Nobody reads these headlines,
+# so the credit is now one assigned-angle, freshly-written sentence saying the episode
+# is machine-made. Same posture as the button: the bank names the angle, never a line.
+
+
+def test_fourth_wall_angle_is_not_locked_to_the_intro_mode():
+    """Two banks that share a period collapse into one axis: `classic` would carry the
+    same disclosure in every episode ever made. Four against five keeps the pair on a
+    twenty-day cycle instead of a five-day one."""
+    pairs = {(orchestrate.intro_mode(d), orchestrate.fourth_wall_angle(d)) for d in range(1, 366)}
+    assert len(pairs) == len(orchestrate.INTRO_MODES) * len(orchestrate.FOURTH_WALL_ANGLES)
+
+
+def test_intro_prompt_carries_the_days_angle_and_hands_over_no_line_to_copy():
+    """The wording is the model's - that is the whole point of replacing a fixed credit
+    with prose. A prompt carrying a sample disclosure gets that disclosure back, which
+    is a jingle with extra steps."""
+    captured = {}
+
+    def runner(cmd, **kw):
+        captured["prompt"] = cmd[2]
+        return SimpleNamespace(
+            stdout='{"intro":"i","outro":"o","summary":"s"}', stderr="", returncode=0
+        )
+
+    orchestrate.make_intro_outro(["A", "B"], "June 4, 2026", runner=runner, day_idx=2)
+    prompt = captured["prompt"]
+    assert orchestrate.FOURTH_WALL_ANGLES[orchestrate.fourth_wall_angle(2)] in prompt
+    assert "machine-made" in prompt, "the intro prompt never asks for the fourth-wall line"
+    for line in orchestrate.FALLBACK_FOURTH_WALLS:
+        assert line not in prompt, f"the prompt hands the writer {line!r} to copy"
+
+
+def test_intro_prompt_retires_the_hosts_name_at_the_TOP_of_the_episode_too():
+    # The sign-off's retirement landed first; an intro prompt that stayed silent about
+    # it is where "I'm <name>" comes back, since that is where it used to be said.
+    captured = {}
+
+    def runner(cmd, **kw):
+        captured["prompt"] = cmd[2]
+        return SimpleNamespace(
+            stdout='{"intro":"i","outro":"o","summary":"s"}', stderr="", returncode=0
+        )
+
+    orchestrate.make_intro_outro(["A"], "June 4, 2026", runner=runner)
+    intro_block = captured["prompt"].split("INTRO (", 1)[1].split("SIGN-OFF (", 1)[0]
+    assert "never name a host" in intro_block
+
+
+def test_fallback_fourth_wall_lines_fit_the_cap():
+    # They double as SKILL.md's calibration examples, so one that overran the cap would
+    # teach every writer to overrun it too.
+    for line in orchestrate.FALLBACK_FOURTH_WALLS:
+        assert len(line) <= orchestrate.FOURTH_WALL_MAX_CHARS
+
+
+def test_fallback_intro_still_says_what_is_speaking():
+    """A degraded run ships an episode too. An opening that quietly drops the
+    disclosure is the one episode that sounds like a person made it."""
+    days = range(1, 1 + len(orchestrate.FALLBACK_FOURTH_WALLS))
+    intros = [orchestrate.fallback_intro_outro("June 4, 2026", 3, d)["intro"] for d in days]
+    assert len(set(intros)) == len(orchestrate.FALLBACK_FOURTH_WALLS)
+    for intro, day in zip(intros, days, strict=True):
+        expected = orchestrate.FALLBACK_FOURTH_WALLS[day % len(orchestrate.FALLBACK_FOURTH_WALLS)]
+        assert expected in intro
+        # The rundown still lands last: the disclosure is a beat of the open, not its end.
+        assert intro.endswith("Here's the rundown.")
+
+
 def test_fallback_buttons_fit_the_button_cap():
     # The fallback lines double as SKILL.md's calibration examples, so one that
     # overran the cap would teach every writer to overrun it too.
@@ -1036,6 +1107,7 @@ def test_skill_md_documents_every_shape_and_mode():
     banks = (
         *orchestrate.SEGMENT_SHAPES,
         *orchestrate.INTRO_MODES,
+        *orchestrate.FOURTH_WALL_ANGLES,
         *orchestrate.OUTRO_MODES,
         *orchestrate.SIGNOFF_BUTTONS,
     )
@@ -1043,26 +1115,45 @@ def test_skill_md_documents_every_shape_and_mode():
         assert name in skill, f"SKILL.md never mentions {name!r}"
 
 
+def _burned_lines_after(heading: str) -> str:
+    """The paragraph SKILL.md burns its fallback literals in, under `heading`. Two
+    sections carry such a bank now (the cold open's and the sign-off's), so the search
+    has to be scoped to one or a bank can pass on the other section's rule."""
+    skill = (orchestrate.SKILL_DIR / "SKILL.md").read_text()
+    section = skill.split(heading, 1)
+    assert len(section) == 2, f"SKILL.md lost the {heading!r} section"
+    burned = section[1].split("never ship one", 1)
+    assert len(burned) == 2, f"{heading!r} shows no burned-example rule"
+    return burned[1].split("\n\n", 1)[0]
+
+
 def test_skill_md_burns_the_fallback_buttons_it_shows_as_examples():
     """SKILL.md holds the fallback lines up as the register. Unless it also forbids
     shipping them, the in-session writer - which IS the production path - copies one
     and the show closes the same way every day."""
-    skill = (orchestrate.SKILL_DIR / "SKILL.md").read_text()
-    burned = skill.split("never ship one", 1)
-    assert len(burned) == 2, "SKILL.md shows no burned-example rule for the button"
+    paragraph = _burned_lines_after("### The button")
     for line in orchestrate.FALLBACK_BUTTONS:
-        assert line in burned[1].split("\n\n", 1)[0], f"{line!r} is shown but not burned"
+        assert line in paragraph, f"{line!r} is shown but not burned"
 
 
-def test_skill_md_keeps_the_hosts_name_out_of_the_sign_off():
-    """The sign-off's whole job used to be saying "I'm <host_name>". The host credit
-    rule stays for the cold open, so the prose has to say which is which or a writer
-    reads the old instruction and puts the name back."""
+def test_skill_md_burns_the_fallback_fourth_wall_lines_it_shows_as_examples():
+    """Same trap at the other end of the episode: an opening disclosure copied off the
+    example list is the byte-identical cold open the rotation exists to retire."""
+    paragraph = _burned_lines_after("### The fourth-wall line")
+    for line in orchestrate.FALLBACK_FOURTH_WALLS:
+        assert line in paragraph, f"{line!r} is shown but not burned"
+
+
+def test_skill_md_keeps_the_hosts_name_out_of_the_whole_script():
+    """The sign-off stopped saying "I'm <host_name>" first; the cold open kept the
+    credit until the show admitted nobody is reading it. A rule that still routes a
+    SPOKEN name through config is an invitation to put it back at either end."""
     skill = (orchestrate.SKILL_DIR / "SKILL.md").read_text()
-    rule = [ln for ln in skill.splitlines() if "take the name from `host_name`" in ln]
-    assert rule, "SKILL.md no longer routes the spoken host name through config"
-    assert all("COLD OPEN" in ln for ln in rule), (
-        "the host-credit rule still invites a writer to name the host in the sign-off"
+    assert "take the name from `host_name`" not in skill, (
+        "SKILL.md still tells a writer to speak the host's name"
+    )
+    assert "never spoken" in skill.split("## Show + dedup config")[0], (
+        "the script template never says the host name stays out of the audio"
     )
 
 

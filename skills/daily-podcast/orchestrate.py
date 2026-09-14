@@ -128,6 +128,47 @@ INTRO_MODES = {
     ),
 }
 
+# The open used to credit a person - "I'm <host_name>" - which was not a fiction the
+# show could keep: nobody reads these headlines, a scheduled job pulls, ranks and
+# writes them and a model speaks them. So the credit is now a FOURTH-WALL line: one
+# sentence in the cold open saying the episode is machine-made. The bank names the
+# ANGLE, never a phrase to say (the TRANSITION_MOVES posture) - a stock disclosure
+# read every morning stops being information and becomes a jingle. Four angles against
+# INTRO_MODES' five so the open's mode and its disclosure do not lock together: the
+# pair cycles every twenty days rather than every five.
+FOURTH_WALL_ANGLES = {
+    "machine-byline": (
+        "State it as flatly as a wire service states its byline: this episode was "
+        "assembled by a machine. No apology, no flourish."
+    ),
+    "pipeline": (
+        "Point at the mechanism that produced the episode - feeds pulled, items ranked, "
+        "the script written overnight - rather than a person who read the news."
+    ),
+    "synthetic-voice": (
+        "Acknowledge that the voice itself is generated, in one clause, then keep moving."
+    ),
+    "no-one-here": (
+        "Say plainly that there is no host in the room: the show exists because a "
+        "scheduled job ran."
+    ),
+}
+
+# A beat of the open, not a paragraph of it. The cold open's whole band is ~350-400
+# chars and the stories are what the listener came for.
+FOURTH_WALL_MAX_CHARS = 90
+
+# The writer path states it fresh every day; this path has no model, so it needs
+# literal lines. These three are ALSO the register's calibration examples in SKILL.md,
+# and are burned there for the same reason FALLBACK_BUTTONS are: a line cannot be both
+# the example every writer sees and the day's opening without the show opening the
+# same way forever.
+FALLBACK_FOURTH_WALLS = (
+    "This digest was assembled by a machine.",
+    "Nobody read these headlines to you; a job did.",
+    "The voice is synthetic, the reporting is not.",
+)
+
 OUTRO_MODES = {
     "plain": "Plain sign-off: a simple thanks. No new content.",
     "throughline": (
@@ -266,6 +307,14 @@ def intro_mode(day_idx: int) -> str:
 
 def outro_mode(day_idx: int) -> str:
     names = list(OUTRO_MODES)
+    return names[day_idx % len(names)]
+
+
+def fourth_wall_angle(day_idx: int) -> str:
+    """Name the angle today's cold open breaks the fourth wall from. The wording is
+    the writer's; only the angle is assigned, so the show tells the listener what it
+    is in a new sentence each day rather than reciting a disclaimer."""
+    names = list(FOURTH_WALL_ANGLES)
     return names[day_idx % len(names)]
 
 
@@ -781,8 +830,14 @@ def fallback_intro_outro(date_long: str, n: int, day_idx: int = 0) -> dict:
     # Even the degraded close keeps a button - a fallback episode that ends flat is
     # audibly a different show - and the day seeds which literal it lands on.
     button = FALLBACK_BUTTONS[day_idx % len(FALLBACK_BUTTONS)]
+    # Same posture at the top: the degraded open still says what is speaking. A
+    # fallback that quietly drops the disclosure is the one episode that sounds like
+    # a person made it.
+    fourth_wall = FALLBACK_FOURTH_WALLS[day_idx % len(FALLBACK_FOURTH_WALLS)]
     return {
-        "intro": f"Today's digest for {date_long}. {n} {noun} today. Here's the rundown.",
+        "intro": (
+            f"Today's digest for {date_long}. {n} {noun} today. {fourth_wall} Here's the rundown."
+        ),
         "outro": f"That's the digest for today. Thanks for listening. {button}",
         "summary": f"{n} {noun} for {date_long}.",
         # Nothing survived to name, so there is no topic material for a title;
@@ -802,8 +857,8 @@ def make_intro_outro(
     """Write intro/outro/summary from the kept TITLES ONLY (benign — no bodies, so no
     block risk). Any failure → deterministic fallback so a run never dies here.
 
-    `day_idx` selects the day's cold-open and sign-off modes, so consecutive episodes
-    do not start and end with the same sentence."""
+    `day_idx` selects the day's cold-open mode, its fourth-wall angle and the sign-off
+    mode, so consecutive episodes do not start and end with the same sentence."""
     if not titles:
         return fallback_intro_outro(date_long, 0, day_idx)
     headlines = "\n".join(f"- {t}" for t in titles)
@@ -812,7 +867,13 @@ def make_intro_outro(
         f"the headlines for today's episode (titles only). Write for {date_long}.\n\n"
         f"HEADLINES:\n{headlines}\n\n"
         f"INTRO (~350 chars): {INTRO_MODES[intro_mode(day_idx)]} Use the real story count "
-        "and topic words drawn from the headlines.\n"
+        "and topic words drawn from the headlines. Never introduce yourself as a person "
+        "and never name a host - 'I'm <name>' is retired here too.\n"
+        f"FOURTH WALL: one sentence INSIDE the intro, at most {FOURTH_WALL_MAX_CHARS} "
+        "characters, telling the listener the show is machine-made. "
+        f"{FOURTH_WALL_ANGLES[fourth_wall_angle(day_idx)]} Write a new one rather than "
+        "reusing an opening you have seen; state it dry and keep moving - no apology, no "
+        "disclaimer voice, and no joke in it (the sign-off carries that).\n"
         f"SIGN-OFF (~250 chars): {OUTRO_MODES[outro_mode(day_idx)]} Do not mention show notes "
         "or links, and never close on the host's real name - 'I'm <name>' is retired.\n"
         f"BUTTON: make the LAST sentence of the sign-off one dry joke about the host being "
