@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 This file is generated from conventional commits by [git-cliff](https://git-cliff.org).
 
+## [0.1.16](https://github.com/schmug/clodcast/compare/v0.1.15...v0.1.16) (2026-09-14)
+
+
+### Features
+
+* **daily:** open on a fourth-wall line instead of the host's name ([#231](https://github.com/schmug/clodcast/issues/231)) ([4cd36dc](https://github.com/schmug/clodcast/commit/4cd36dc4a09a16fac213f4709a861917cd5a97a0))
+
 ## [0.1.15](https://github.com/schmug/clodcast/compare/v0.1.14...v0.1.15) (2026-09-10)
 
 
