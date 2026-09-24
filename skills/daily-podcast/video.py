@@ -130,22 +130,8 @@ AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3"
 API_URL = "https://www.googleapis.com/youtube/v3"
 
+# Literal, like render._LEGACY_TITLE_MONTHS (reused below): strftime follows LC_TIME.
 _WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
-# Literal, like render._LEGACY_TITLE_MONTHS: strftime("%B") follows LC_TIME.
-_MONTHS = (
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-)
 
 
 def log(msg: str) -> None:
@@ -332,7 +318,8 @@ def split_title(title: str) -> tuple[str, str]:
 
 
 def long_date(d: dt.date) -> str:
-    return f"{_WEEKDAYS[d.weekday()]} · {_MONTHS[d.month - 1]} {d.day}, {d.year}"
+    month = render._LEGACY_TITLE_MONTHS[d.month - 1]
+    return f"{_WEEKDAYS[d.weekday()]} · {month} {d.day}, {d.year}"
 
 
 # --- YouTube text ------------------------------------------------------------
