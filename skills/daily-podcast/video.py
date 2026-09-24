@@ -91,6 +91,9 @@ VIDEO_DEFAULTS: dict[str, Any] = {
     "page_base_url": "https://cortech.online/podcast/",
     "feed_url": "https://cortech.online/podcast/rss.xml",
     "jobs": 0,  # 0 = one worker per CPU, capped at 8
+    # The public show's name, as its RSS feed carries it. NOT config.json's
+    # `show_name`: that is the legacy cover label, deliberately left unrenamed (#133).
+    "show_name": "Cortech Daily",
     # The disc at the centre of the ring. Not the episode cover: that is a text card
     # sized for a podcast directory, and a circle crop cuts its corners off.
     "monogram": "CT",
@@ -393,7 +396,7 @@ def build_youtube_description(
         f"Episode page: {page}",
         f"Subscribe (RSS): {vcfg['feed_url']}",
         "",
-        "Cortech Daily is curated, written and voiced by an automated pipeline; "
+        f"{vcfg['show_name']} is curated, written and voiced by an automated pipeline; "
         "the voice is synthetic.",
     ]
     sources = [f"- {c['title']}: {c['source_url']}" for c in chapters if c.get("source_url")]
@@ -819,7 +822,6 @@ def build_plan(
     words: list[dict[str, Any]] | None,
     *,
     audio: Path,
-    config: dict[str, Any],
     vcfg: dict[str, Any],
 ) -> dict[str, Any]:
     """Everything video_frames needs, as plain JSON (workers rebuild from it)."""
@@ -833,7 +835,7 @@ def build_plan(
     return {
         "audio": str(audio),
         "monogram": str(vcfg["monogram"]),
-        "show_name": str(config.get("show_name") or "Cortech Daily"),
+        "show_name": str(vcfg["show_name"]),
         "date_long": long_date(d) if d else date_text,
         "teaser": html.unescape(lead),
         "outro_url": _display_url(vcfg["page_base_url"]),
@@ -851,7 +853,6 @@ def build_plan(
 
 def process_episode(
     entry: dict[str, Any],
-    config: dict[str, Any],
     vcfg: dict[str, Any],
     *,
     upload: bool,
@@ -877,7 +878,7 @@ def process_episode(
         rec["captions"] = len(words) if words is not None else None
         if words:
             snap_chapter_starts(chapters, words)
-        plan = build_plan(entry, chapters, words, audio=mp3, config=config, vcfg=vcfg)
+        plan = build_plan(entry, chapters, words, audio=mp3, vcfg=vcfg)
         video = out_path or (workdir / f"{slug}.mp4")
         thumb = workdir / "thumbnail.jpg"
         if renderer is None:
@@ -1140,7 +1141,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
     failed = False
     for entry in todo:
-        rec = process_episode(entry, config, vcfg, upload=upload, out_path=args.out, keep=args.keep)
+        rec = process_episode(entry, vcfg, upload=upload, out_path=args.out, keep=args.keep)
         print(report_line(rec), flush=True)
         failed = failed or rec["status"] == "failed"
     return 1 if failed else 0

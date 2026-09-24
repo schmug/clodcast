@@ -397,7 +397,6 @@ def _run(upload=True, client=None, renderer=None, vcfg=None, **kw):
     calls = []
     rec = video.process_episode(
         _entry(),
-        {"show_name": "Cortech Daily"},
         vcfg or _vcfg(),
         upload=upload,
         fetch=lambda url: b"mp3",
@@ -459,6 +458,25 @@ def test_render_only_keeps_the_video_and_never_counts_as_uploaded():
     assert plan["date_long"] == "Wednesday · September 23, 2026"
     assert plan["chapters"][1]["source"] == "simonwillison.net"
     assert plan["monogram"] == "CT"
+
+
+def test_video_brands_the_public_show_not_the_legacy_cover_name():
+    # config.json's show_name is the cover label and deliberately NOT the public
+    # show's name (SKILL.md, #133); the video goes out under the RSS feed's name.
+    calls = []
+    video.process_episode(
+        _entry(),
+        _vcfg(),
+        upload=False,
+        fetch=lambda url: b"mp3",
+        renderer=_fake_renderer(calls),
+        transcriber=lambda p: None,
+    )
+    assert calls[0]["show_name"] == "Cortech Daily"
+    desc = video.build_youtube_description(
+        _entry(), video.parse_chapters(_entry()), _vcfg(show_name="Other Show")
+    )
+    assert "Other Show is curated" in desc and "Cortech Daily" not in desc
 
 
 def test_video_workdirs_stay_out_of_render_prune_namespace():

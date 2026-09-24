@@ -952,6 +952,8 @@ whether an episode goes public must never fall back to a default.
     "captions": true,          // transcribe for burned-in captions + the caption track
     "lookback_days": 3,        // --pending only considers episodes this recent
     "max_per_run": 1,          // ...and at most this many per invocation
+    "show_name": "Cortech Daily",  // the name on screen and in the description: the
+                                   //   RSS feed's, NOT config.json's cover label (#133)
     "monogram": "CT",          // the disc at the centre of the ring
     "jobs": 0,                 // render processes; 0 = one per CPU, max 8
     "page_base_url": "https://cortech.online/podcast/",
