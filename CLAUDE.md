@@ -425,6 +425,45 @@ Four properties are load-bearing:
 `speech_rate_problems` formats its rejections from those rows and its wording is
 still matched by `classify_incident` on the `"speech rate"` substring.
 
+### Episode video is a post-ship step, not part of the run (`video.py`)
+
+`skills/daily-podcast/video.py` renders a PUBLISHED episode as a 1080p video
+(`video_frames.py` draws the frames) and uploads it to YouTube; contracts and config
+are in [SKILL.md](skills/daily-podcast/SKILL.md#episode-video-youtube), pinned by
+[tests/test_video.py](tests/test_video.py). Five things are load-bearing.
+
+- **It never runs inside the audio run.** The audio is the product and R2/RSS its ship
+  (#218); a video is derived from an episode that already exists. So `video.py` reads the
+  public feed manifest (millisecond `chapters`, `mp3_url`, title, summary) rather than a
+  workdir, runs on its own launchd schedule (`launchd/com.cortech.clodcast-video.plist`),
+  and nothing in SKILL.md's *Unattended daily run* or `orchestrate.py` calls it. Wiring
+  it into the run would let a render or YouTube failure change a `SHIPPED` line, and
+  would make the daily run need numpy, OpenCV and an OAuth token.
+- **The ledger (`videos.jsonl`) is append-only and is the ONLY idempotency source**, and
+  the `uploaded` row is written the moment YouTube returns an id — BEFORE the caption,
+  thumbnail and playlist calls. Moving it after them re-opens a double upload on any
+  crash in between. Those extras are best-effort; their outcomes go in a separate
+  informational `extras` row that `uploaded_slugs` ignores. Same append-only contract as
+  `runs.jsonl`: never through `_atomic_write_text`. Its path derives from
+  `render.CONFIG_DIR` at call time so the test sandbox covers it.
+- **`--pending` is bounded twice** (`lookback_days`, `max_per_run`) and skips an
+  unparseable `pubDate` rather than guessing. A fresh install or a wiped ledger must not
+  push the back catalogue to a public channel in one run; back-fill is explicit
+  (`--slug`), and re-uploading an uploaded slug needs `--force`.
+- **The `video` config block is a closed whitelist, private by default.** An unknown key
+  or `privacy_status` dies — the `music` / `ship_mode` posture, because this key decides
+  whether something goes PUBLIC. `containsSyntheticMedia` is always true (the house voice
+  is a realistic clone). Unverified API projects are forced private by YouTube anyway.
+- **`video.py` is stdlib-only at import**; numpy/OpenCV/Pillow live in `video_frames.py`
+  and the transcriber is imported inside `transcribe`, so CI tests every contract without
+  the `video` extra (`test_video_module_stays_importable_without_the_render_extras`).
+  Every frame is a pure function of (plan, audio analysis, frame index) — no state carries
+  between frames — which is what lets the render split into parallel frame ranges and
+  still stitch seamlessly. Keep it that way: a particle system that integrates state
+  frame-to-frame would seam at every range boundary. Video workdirs use
+  `clodcast-video-`, deliberately outside `render.WORKDIR_PREFIX`, so `--prune-workdirs`
+  never judges them.
+
 ### The "house" voice is `ref_audio` cloning, not VoiceDesign
 
 This is the most important design decision in the project and it's load-bearing for every episode. See [docs/durable-voices.md](docs/durable-voices.md) for the full rationale — short version: VoiceDesign drifts ~2.5% in pacing and noticeably in timbre across runs; `ref_audio` cloning is stable. The locked house voice lives in [skills/daily-podcast/refs/house_voice.wav](skills/daily-podcast/refs/house_voice.wav) and its transcript in `refs/house_voice.txt`.
@@ -450,6 +489,7 @@ User-level config sits outside the repo at `~/.config/daily-podcast/`:
   Absent means no music and no behavior change. `orchestrate.py` resolves it through
   `render.resolve_music_config` and persists the fully-defaulted object into each
   manifest; relative `asset` paths resolve against the SKILL directory, never the CWD.
+- `videos.jsonl` — the episode-video ledger, append-only, written only by `video.py` (see *Episode video* above). `secrets.json` additionally holds `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET` / `YOUTUBE_REFRESH_TOKEN`, written by `video.py auth`; `config.json` may carry the optional `video` block.
 - `dropped.jsonl` — append-only JSONL log written by `orchestrate.py` for every item that was blocked, refused, timed out, errored, or hit an auth failure. One record per dropped item: `{timestamp, run_date, feed_name, url, reason, detail}` (`reason` ∈ `refused`/`blocked`/`auth`/`timeout`/`error`). Observability-only; never affects pipeline decisions — except that the systemic `auth` case (zero survivors) drives the fail-fast diagnostic noted in the orchestrator invariant above.
 
 All are documented in [SKILL.md](skills/daily-podcast/SKILL.md#show--dedup-config) and [README.md](README.md#setup).

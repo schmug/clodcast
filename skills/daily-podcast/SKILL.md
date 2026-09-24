@@ -21,6 +21,7 @@ This skill ships an executable `render.py` and a headless prompt. References in 
 - `./orchestrate.py` — the unattended entry point for scheduled runs (deterministic metadata-only curation + one isolated `claude -p` per item)
 - `./prompts/daily.md` — a stub pointing back here; the unattended procedure lives in [Unattended daily run](#unattended-daily-run)
 - `./blocked_sources.json` — outlets that can't be fetched for article bodies, with recovery strategies
+- `./video.py` + `./video_frames.py` — the post-ship [episode video](#episode-video-youtube): renders a published episode as a 1080p video and uploads it to YouTube, on its own schedule
 
 ## Input
 
@@ -915,6 +916,115 @@ first-non-empty-wins across three homes: env → `secrets.json`
 > exactly as on the fresh path. (An older workdir from before this change that lacks
 > `description.html` degrades to a skipped back-fill rather than aborting the resume.)
 
+## Episode video (YouTube)
+
+A published episode can also ship as a **1080p video** — an audio-reactive spectrum
+ring and waveform halo, a chapter card per story whose headline "decrypts" in,
+word-by-word captions, a glitch cut on every story change, and a chapter-ticked
+progress bar — uploaded to YouTube with chapters, a caption track and a thumbnail.
+
+It is a **post-ship step with its own schedule, never part of the audio run.** The
+audio is the product and R2/RSS is its ship; nothing in the
+[Unattended daily run](#unattended-daily-run) calls it and its outcome cannot change
+that run's `SHIPPED` line. `video.py` reads what the run already published — the
+public feed manifest, whose `chapters` carry millisecond starts — so it needs no
+workdir, no manifest and no Claude credential.
+
+```bash
+python3 video.py --pending                    # recent published episodes without a video
+python3 video.py --slug <slug>                # one episode: explicit back-fill / re-render
+python3 video.py --slug <slug> --no-upload --out ~/Movies/ep.mp4   # render only
+python3 video.py auth --client-secrets client_secret.json          # one-time OAuth
+```
+
+`launchd/com.cortech.clodcast-video.plist` runs `--pending` at 09:30 and 18:30. It is
+safe to run as often as you like: the ledger decides what is already on the channel.
+
+### Config (`video` in `config.json`)
+
+Absent or `"enabled": false` means off — `--pending` prints `VIDEO disabled` and exits 0.
+Unknown keys and an unknown `privacy_status` **die**: a typo in the key that decides
+whether an episode goes public must never fall back to a default.
+
+```jsonc
+  "video": {
+    "enabled": true,
+    "captions": true,          // transcribe for burned-in captions + the caption track
+    "lookback_days": 3,        // --pending only considers episodes this recent
+    "max_per_run": 1,          // ...and at most this many per invocation
+    "monogram": "CT",          // the disc at the centre of the ring
+    "jobs": 0,                 // render processes; 0 = one per CPU, max 8
+    "page_base_url": "https://cortech.online/podcast/",
+    "feed_url": "https://cortech.online/podcast/rss.xml",
+    "youtube": {
+      "enabled": true,         // false = render only, never upload
+      "privacy_status": "private",   // private | unlisted | public
+      "category_id": "28",           // Science & Technology
+      "tags": ["Cortech Daily", "tech news", "cybersecurity", "AI"],
+      "playlist_id": null,           // e.g. the channel's podcast playlist
+      "caption_track": true,
+      "thumbnail": true
+    }
+  }
+```
+
+**`privacy_status` defaults to `private`, and that is not only caution:** YouTube locks
+every video uploaded by an *unverified* API project to private regardless of what the
+request asks for. Until the Google Cloud project passes YouTube's API audit, publish
+by flipping the video to public in YouTube Studio. `containsSyntheticMedia` is always
+sent `true`: the house voice is a realistic synthetic clone, which is exactly what
+YouTube's altered-or-synthetic-content disclosure is for.
+
+### YouTube credentials
+
+Create an OAuth client of type **Desktop app** in a Google Cloud project with the
+YouTube Data API v3 enabled, download its JSON, then run
+`video.py auth --client-secrets <file>` once, on the Mac, in a browser. It stores
+`YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET` and `YOUTUBE_REFRESH_TOKEN` in the 0600
+`secrets.json`, merged with what is there. Resolution is env first, then
+`secrets.json` — the R2 credentials' order, so a launchd job finds them.
+
+### What a run does
+
+1. **Pre-flight** — ffmpeg/ffprobe, the bundled fonts, numpy/OpenCV/Pillow importable
+   (`pip install -e ".[video]"`), and YouTube credentials when uploading. A failure
+   prints `FAILED preflight: …` before a minute of rendering is spent.
+2. **Pick episodes** from the public `manifest.json`: `--pending` takes the newest
+   episodes inside `lookback_days` with no `uploaded` ledger row, at most `max_per_run`.
+   A failed or render-only attempt never blocks a retry. Back-fill is only ever
+   explicit (`--slug`), so a wiped ledger cannot walk the back catalogue onto YouTube.
+3. **Transcribe** the published mp3 with mlx-whisper (`small.en`) for word timings. No
+   transcriber installed → the video renders without captions, never fails.
+4. **Place the cuts**: each story's transition moves into the silence just before
+   its first word, never over the previous story's last one.
+5. **Render** frame ranges in parallel processes and stitch them: H.264 High, 1080p30,
+   AAC-LC 192 kbps stereo (the up-mix is deliberate — Spotify's video spec wants
+   stereo and the episode mp3 is mono by design). Every frame is a pure function of
+   the audio and the frame index, which is what makes the ranges seamless.
+6. **Upload** (resumable, chunked, resumes from YouTube's own offset after a 5xx), then
+   ledger it **immediately** — before the caption track, thumbnail and playlist calls,
+   each of which is best-effort (thumbnails are refused until a channel is verified).
+
+One line per episode on stdout: `VIDEO uploaded <slug> <url> privacy=… caption_track=ok
+thumbnail=failed playlist=skipped`, `VIDEO rendered <slug> <path>`, `VIDEO none pending`,
+or `FAILED <slug> <reason>` (exit 1). A failed attempt keeps its workdir
+(`$TMPDIR/clodcast-video-<slug>-*`) and says where.
+
+### The ledger (`videos.jsonl`)
+
+`~/.config/daily-podcast/videos.jsonl` is append-only, one full-key-set JSON line per
+event (`timestamp`, `slug`, `status`, `youtube_id`, `youtube_url`, `privacy_status`,
+`duration_s`, `video_bytes`, `captions`, `extras`, `output_path`, `error_message`).
+`status` is `uploaded`, `extras` (the best-effort calls' outcomes, informational),
+`rendered` or `failed`; only `uploaded` marks a slug done. `--slug` refuses to upload
+a slug that already has one unless `--force` is passed.
+
+### Spotify
+
+Spotify only takes video for an RSS-hosted show by hand: claim the show in Spotify for
+Creators, then **Upload video** on the episode (web only). The mp4 already meets
+Spotify's spec. Render the file to keep with `--no-upload --out`.
+
 ## Unattended daily run
 
 **This section is the canonical procedure for shipping an episode with no human in the loop** — a scheduled Claude routine, a cron `claude -p`, or any headless invocation. It is the single source of truth: a scheduler should invoke this skill and follow this section rather than carrying its own copy of these steps, which drift.
@@ -1301,6 +1411,7 @@ A crash *during* recovery leaves `inflight.json` intact for the next attempt, an
 - `ffmpeg` + `ffprobe`
 - Apple Silicon Mac (Qwen3-TTS via MLX needs Metal)
 - ~4 GB free disk for the VoiceDesign model on first run
+- Episode video only: the `video` extra (`numpy`, `opencv-python-headless`, `Pillow`, `mlx-whisper`) and a YouTube OAuth client — see [Episode video](#episode-video-youtube). Nothing else in the skill needs either
 
 ## Final report
 

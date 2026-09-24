@@ -37,6 +37,16 @@ bench = [
     "librosa",
     "resemblyzer",
 ]
+# The episode-video step (skills/daily-podcast/video.py, video_frames.py). Not a
+# runtime dep of any show: the audio ship never imports it, and video.py itself is
+# stdlib-only so CI tests its contracts without these. mlx-whisper (also in `bench`)
+# is what captions the video on a Mac; without it the video renders caption-free.
+video = [
+    "numpy",
+    "opencv-python-headless",
+    "Pillow",
+    "mlx-whisper",
+]
 dev = [
     "pytest>=8.0",
     # ruff is pinned exactly (not a floor) so lint results are reproducible across
@@ -86,4 +96,6 @@ known-first-party = [
     "st_script_plan",
     "st_write",
     "bench",
+    "video",
+    "video_frames",
 ]

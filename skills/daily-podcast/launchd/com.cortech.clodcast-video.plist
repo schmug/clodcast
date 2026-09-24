@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Episode video (SKILL.md, "Episode video (YouTube)"): render any recently published
+  episode that has no video yet, and upload it. Twice a day so a late or re-run
+  episode is still picked up; the ledger makes extra runs no-ops. Pure Python +
+  ffmpeg + mlx-whisper + the YouTube OAuth refresh token in secrets.json - no Claude
+  credential. Install:
+    cp skills/daily-podcast/launchd/com.cortech.clodcast-video.plist ~/Library/LaunchAgents/
+    mkdir -p ~/Library/Logs/clodcast
+    launchctl load ~/Library/LaunchAgents/com.cortech.clodcast-video.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.cortech.clodcast-video</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/cory/.pyenv/shims/python3</string>
+    <string>/Users/cory/clodcast/skills/daily-podcast/video.py</string>
+    <string>--pending</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>30</integer></dict>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin</string></dict>
+  <key>StandardOutPath</key>
+  <string>/Users/cory/Library/Logs/clodcast/video.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/cory/Library/Logs/clodcast/video.err.log</string>
+  <key>RunAtLoad</key><false/>
+</dict>
+</plist>
