@@ -94,3 +94,19 @@ def test_weekly_prompt_stays_a_stub():
     assert not re.search(r"^\s*\d+\.\s", stub, re.M), "the stub grew numbered procedure steps"
     for cmd in ("syw_gather.py", "syw_write.py", "render.py"):
         assert cmd not in stub
+
+
+def test_every_procedure_placeholder_is_defined():
+    """#236: step 8 used `<root>` without defining it beside D, S and W."""
+    proc = _section("## Unattended weekly run")
+    lets = next(ln for ln in proc.splitlines() if ln.startswith("Let `D`"))
+    for name in ("`D`", "`S`", "`W`", "`<root>`"):
+        assert f"{name} =" in lets, f"{name} is not defined"
+
+
+def test_an_already_published_workdir_goes_to_commit_never_render():
+    """#236 item 7: assemble refuses a workdir whose render.log already published;
+    the procedure must send that run to commit, not stop it as a plain failure."""
+    step = _step(7)
+    assert "ASSEMBLE FAILED already published" in step
+    assert "step 9" in step and "never re-render" in step

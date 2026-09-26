@@ -1,7 +1,7 @@
 # Show Your Work — design spec
 
 **Date:** 2026-09-26
-**Status:** Approved design, pre-implementation. Amended 2026-09-26 during planning (§4.2 `observed.json` + `commit`, §4.3 banks + casebook rule, §4.4 fixed Anthropic reminder + casebook template + inline `basis`, §4.5 band semantics); each amendment is marked *Amended*.
+**Status:** Approved design, pre-implementation. Amended 2026-09-26 during planning (§4.2 `observed.json` + `commit`, §4.3 banks + casebook rule, §4.4 fixed Anthropic reminder + casebook template + inline `basis`, §4.5 band semantics), and again for #236 (§4.3 undated items, §4.8 a crash between render and commit); each amendment is marked *Amended*.
 **Decisions locked by Cory:**
 - audience = **public explainer** (newcomers, YouTube-forward)
 - shape = **one feature + short briefs**, weekly
@@ -255,7 +255,10 @@ rotations.
 effective date is `date`, except for month-precision or undated items, which use
 `first_observed` (§4.2). *Amended (execution):* a month-precision item must also satisfy
 `month_end >= first_observed - max_age_days`. A post cannot have been older than the window on
-the day it was first seen, which keeps a never-seen 2024 post out of the pool.
+the day it was first seen, which keeps a never-seen 2024 post out of the pool. *Amended (#236):*
+an **undated** lead item is not in the pool at all. With no date there is nothing to bound, so a
+never-seen old post whose date the parser lost would read as new. Every lead item in the
+2026-09-26 fixtures is dated, so this excludes nothing a source publishes correctly.
 
 **Feature score:**
 - recency
@@ -558,6 +561,11 @@ Otherwise every episode also appears as audio over a static cover next to the re
   `FAILED <reason>`, followed by the video line.
 - **Quiet week:** a week with no eligible lead items reports `SKIPPED no new lab items` and ships
   nothing.
+- *Amended (#236):* **a crash between render and commit.** `assemble` refuses
+  (`ASSEMBLE FAILED already published`) a workdir whose `render.log` already ends in a
+  `web-ready` + `published` result. The procedure then runs `commit` against that log instead
+  of rendering again, because R2 objects are immutable-cached and a second publish of the slug
+  fights the edge cache.
 
 ## 5. Episode shape
 

@@ -25,7 +25,6 @@ import re
 import sys
 import unicodedata
 from pathlib import Path
-from typing import NoReturn
 
 import syw_gather
 
@@ -137,11 +136,6 @@ BEAT_RULES = {
     "{from, to, label}; your own simple drawing of the mechanism",
     "term": "a term of art and a one-sentence plain definition, the first time it is spoken",
 }
-
-
-def die(msg: str, code: int = 1) -> NoReturn:
-    print(f"ERROR: {msg}", file=sys.stderr)
-    raise SystemExit(code)
 
 
 class CliError(RuntimeError):
@@ -296,9 +290,10 @@ def fill_frame(plan: dict, which: str, briefs: list[tuple[dict, list[dict]]]) ->
     if not briefs:
         out.append("- No briefs this week.")
     if cold:
-        pool = 1 + sum(len(b["items"]) for b in plan["briefs"]) + len(plan.get("leftover", []))
+        week = plan["this_week"]
+        count = f"{week['count']} ({', '.join(week['labs'])})" if week["count"] else "none"
         out += [
-            f"- New lab posts this week: {pool}",
+            f"- Lab posts from the last 7 days: {count}",
             "",
             "## Assigned",
             f"- Opening mode `{rot['intro_mode']}`: {INTRO_MODES[rot['intro_mode']]}",
@@ -386,9 +381,10 @@ def fetch_post_text(url: str) -> str:
 
 
 # What a failed fetch raises: OSError covers URLError/HTTPError, timeouts, a reset
-# connection and a bad gzip body; HTTPException an IncompleteRead; ValueError a URL
-# urllib cannot open. Nothing broader — a programming error must still surface.
-FETCH_ERRORS = (OSError, http.client.HTTPException, ValueError)
+# connection and a bad gzip header; EOFError a truncated gzip body; HTTPException an
+# IncompleteRead; ValueError a URL urllib cannot open. Nothing broader — a
+# programming error must still surface.
+FETCH_ERRORS = (OSError, EOFError, http.client.HTTPException, ValueError)
 
 
 def post_text(urls: list[str], what: str) -> str:
@@ -657,9 +653,9 @@ def assemble_manifest(
     for which, lines in (("cold_open", cold_open), ("sign_off", sign_off)):
         probs = validate_frame(lines, which)
         if probs:
-            die("; ".join(probs))
+            raise CliError("; ".join(probs))
     if not COVER_IMAGE.is_file() and not allow_missing_cover:
-        die(f"cover art missing: {COVER_IMAGE} (a live ship needs the show's own art)")
+        raise CliError(f"cover art missing: {COVER_IMAGE} (a live ship needs the show's own art)")
 
     feature = plan["feature"]
     segments: list[dict] = [
@@ -735,6 +731,15 @@ def _read(p: Path):
         raise CliError(f"{p} is not valid JSON: {e}") from None
 
 
+def _plan(wd: Path) -> dict:
+    """plan.json, which every subcommand indexes by key: a hand-edited one holding a
+    list would be a TypeError traceback, not the command's line (#236)."""
+    plan = _read(wd / "plan.json")
+    if not isinstance(plan, dict):
+        raise CliError(f"{wd / 'plan.json'} must hold a JSON object")
+    return plan
+
+
 def _write(p: Path, obj) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(obj, indent=2, ensure_ascii=False))
@@ -772,7 +777,7 @@ def _check_args(a, plan: dict) -> None:
 
 def _cmd_fill(a) -> int:
     wd = Path(a.workdir)
-    plan = _read(wd / "plan.json")
+    plan = _plan(wd)
     _check_args(a, plan)
     if a.what == "digest":
         print(fill_digest((PROMPTS_DIR / "digest.md").read_text(), _find_item(plan, a.url)))
@@ -811,7 +816,7 @@ def _refused(a, reason: str) -> int:
 
 def _cmd_accept(a) -> int:
     wd = Path(a.workdir)
-    plan = _read(wd / "plan.json")
+    plan = _plan(wd)
     _check_args(a, plan)
     res = classify_output(_read_text(Path(a.output)), "", 0)
     if res["outcome"] != "OK":
@@ -860,7 +865,12 @@ def _cmd_accept(a) -> int:
         probs = validate_frame(obj.get("lines"), a.what)
         if probs:
             return _refused(a, "; ".join(probs))
-        _write(wd / "writes" / f"{a.what}.json", {"lines": obj["lines"]})
+        # Stamped like feature.json: a failed rmtree of writes/ on a re-plan must
+        # not let the old plan's frames through (#236).
+        _write(
+            wd / "writes" / f"{a.what}.json",
+            {"url": plan["feature"]["url"], "lines": obj["lines"]},
+        )
     _write(terms_p, sorted(seen_terms))
     for d in dropped:
         syw_gather.append_dropped({"stage": "beat", **d})
@@ -897,26 +907,52 @@ def aired_items(wd: Path, brief: dict) -> list[dict]:
     return [it for it in brief["items"] if digest_path(wd, it["url"]).is_file()]
 
 
+def _already_published(wd: Path) -> bool:
+    """Whether this workdir's render.log ends in a published result — the same test
+    `syw_gather commit` applies. A session that dies between render and commit
+    re-runs onto the same plan (#236); a second render would re-publish a slug whose
+    R2 objects are immutable-cached, so commit is the recovery, never a re-render."""
+    log = wd / "render.log"
+    result = extract_last_json(log.read_text()) if log.is_file() else None
+    return (
+        isinstance(result, dict)
+        and result.get("status") == "web-ready"
+        and result.get("r2_status") == "published"
+    )
+
+
+def _stamped(writes: Path, name: str, plan: dict) -> dict:
+    """A write accepted for THIS plan's feature. A new plan deletes writes/, but
+    that delete can fail silently, so each write names the feature it was for."""
+    write = _read(writes / name)
+    if write.get("url") != plan["feature"]["url"]:
+        raise CliError(
+            f"writes/{name} was written for {write.get('url')!r}, not this plan's "
+            f"feature {plan['feature']['url']} — re-run fill/accept {name.removesuffix('.json')}"
+        )
+    return write
+
+
 def _cmd_assemble(a) -> int:
     wd = Path(a.workdir)
-    plan = _read(wd / "plan.json")
-    writes = wd / "writes"
-    feature = _read(writes / "feature.json")
-    if feature.get("url") != plan["feature"]["url"]:
+    plan = _plan(wd)
+    if _already_published(wd):
         raise CliError(
-            f"writes/feature.json was written for {feature.get('url')!r}, not this plan's "
-            f"feature {plan['feature']['url']} — re-run fill/accept feature"
+            f"already published: {wd / 'render.log'} holds a web-ready result — "
+            "run commit (SKILL.md step 9), never re-render"
         )
+    writes = wd / "writes"
+    feature = _stamped(writes, "feature.json", plan)
     briefs = accepted_briefs(wd, plan)
     manifest, beats = assemble_manifest(
         plan["date"],
         episode_title(plan),
         a.summary,
         plan,
-        _read(writes / "cold_open.json")["lines"],
+        _stamped(writes, "cold_open.json", plan)["lines"],
         feature["scenes"],
         [write for _, write in briefs],
-        _read(writes / "sign_off.json")["lines"],
+        _stamped(writes, "sign_off.json", plan)["lines"],
         allow_missing_cover=a.allow_missing_cover,
     )
     # What `syw_gather commit` marks seen: exactly what went into the manifest (I1).
