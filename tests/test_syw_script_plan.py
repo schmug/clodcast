@@ -62,6 +62,26 @@ def test_month_precision_items_age_from_first_observation():
     assert p["feature"]["url"] == "https://a.test/aug"
 
 
+def test_a_back_catalogue_month_item_first_observed_today_is_not_in_the_pool():
+    """C1: after a partial (or no) seed, a never-seen 2024 alignment.anthropic.com
+    post is first observed today. Its first-observed age is 0, but its MONTH ended
+    long before any post first seen now could be new."""
+    old = item(
+        "https://a.test/2024", lab="anthropic", date="2024-12-01", precision="month",
+        first_observed=TODAY,
+    )  # fmt: skip
+    p = plan([old])
+    assert p["feature"] is None and p["skip"] == "no new lab items"
+
+
+def test_a_month_item_whose_month_ends_inside_the_window_stays_in_the_pool():
+    this_month = item(
+        "https://a.test/sep", lab="anthropic", date="2026-09-01", precision="month",
+        first_observed=TODAY,
+    )  # fmt: skip
+    assert plan([this_month])["feature"]["url"] == "https://a.test/sep"
+
+
 def test_seen_and_stale_items_are_not_in_the_pool():
     p = plan(
         [item("https://a.test/seen", seen=True), item("https://a.test/old", date="2026-08-01")]

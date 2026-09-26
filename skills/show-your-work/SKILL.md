@@ -124,7 +124,7 @@ Let `D` = today (`YYYY-MM-DD`), `S` = this skill's directory (`${CLAUDE_PLUGIN_R
 ## Setup
 
 1. `mkdir -p ~/.config/show-your-work && echo '{}' > ~/.config/show-your-work/config.json` — every key has a default (`syw_gather.DEFAULT_CONFIG`); override only what you need.
-2. `python3 skills/show-your-work/syw_gather.py seed --date <today>` — marks everything currently published as seen so episode one covers only what arrives next.
+2. `python3 skills/show-your-work/syw_gather.py seed --date <today>` — marks everything currently published as seen so episode one covers only what arrives next. **`gather` refuses until this has run** (`GATHER FAILED no seen.json — run seed first (SKILL.md Setup)`). Seed refuses (`SEED FAILED <adapter errors>`, nothing written to `seen.json`) if any lead source failed; re-run it until it prints `SEED ok`.
 3. R2 credentials as for every show (`render.py --selftest`).
 
 ## State (`~/.config/show-your-work/`)

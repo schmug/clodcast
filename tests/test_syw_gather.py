@@ -424,6 +424,7 @@ def test_an_adapter_that_parses_zero_items_has_failed(monkeypatch, offline):
 
 def test_gather_fails_when_every_lead_adapter_fails(offline, capsys, tmp_path):
     offline.update(u for u in FIXTURE_FOR_URL if u not in g.CHECK_FEEDS.values())
+    g.seen_path().write_text("{}")  # seeded: the CLI refuses an unseeded host (C1)
     rc = g.main(["gather", "--date", "2026-09-26", "--out", str(tmp_path / "c.json")])
     assert rc == 1
     assert capsys.readouterr().out.strip().splitlines()[-1].startswith("GATHER FAILED every lead")
@@ -433,6 +434,30 @@ def test_gather_cli_reports_a_missing_config_on_its_line(capsys, tmp_path):
     rc = g.main(["gather", "--date", "2026-09-26", "--out", str(tmp_path / "c.json")])
     assert rc == 1
     assert capsys.readouterr().out.strip().splitlines()[-1].startswith("GATHER FAILED")
+
+
+def test_the_gather_cli_refuses_until_seeded(offline, capsys, tmp_path):
+    """C1: an unseeded host would plan from the whole back catalogue."""
+    out = tmp_path / "c.json"
+    rc = g.main(["gather", "--date", "2026-09-26", "--out", str(out)])
+    assert rc == 1
+    assert capsys.readouterr().out.strip().splitlines()[-1] == (
+        "GATHER FAILED no seen.json — run seed first (SKILL.md Setup)"
+    )
+    assert not out.exists()
+    g.seen_path().write_text("{}")
+    assert g.main(["gather", "--date", "2026-09-26", "--out", str(out)]) == 0
+    assert capsys.readouterr().out.strip().splitlines()[-1].startswith("GATHER ok lead=148 ")
+
+
+def test_seed_refuses_when_any_lead_adapter_failed(offline, capsys):
+    """C1: a seed missing one lead source leaves that source's whole back catalogue
+    unseen, and next week plans from it."""
+    offline.add(g.ANTHROPIC_ALIGNMENT_URL)
+    assert g.main(["seed", "--date", "2026-09-26"]) == 1
+    last = capsys.readouterr().out.strip().splitlines()[-1]
+    assert last.startswith("SEED FAILED ") and "anthropic-alignment" in last
+    assert not g.seen_path().exists()
 
 
 def test_seed_marks_everything_seen(offline, capsys):

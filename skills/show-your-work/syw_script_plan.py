@@ -121,6 +121,28 @@ def age_days(item: dict, today: dt.date) -> int:
     return (today - dt.date.fromisoformat(d)).days
 
 
+def month_end(date_iso: str) -> dt.date:
+    d = dt.date.fromisoformat(date_iso)
+    return dt.date(d.year + d.month // 12, d.month % 12 + 1, 1) - dt.timedelta(days=1)
+
+
+def month_is_plausibly_new(item: dict, today: dt.date, max_age_days: int) -> bool:
+    """A month-precision item ages from first observation, which puts no bound on
+    its month: after a partial seed, a never-seen 2024 alignment.anthropic.com post
+    is first observed today and reads as brand new (C1). So its month must end
+    within `max_age_days` of when it was first observed — a post first seen then
+    could have been published then.
+
+    Anchored at `first_observed`, not `today`: from today, a post published Aug 28
+    and first seen Sep 2 would fall out on Sep 22 at a first-observed age of 20,
+    undoing the aging rule above for every late-month post."""
+    if item.get("date_precision") != "month" or not item.get("date"):
+        return True
+    seen_from = item.get("first_observed") or today.isoformat()
+    anchor = dt.date.fromisoformat(seen_from)
+    return month_end(item["date"]) >= anchor - dt.timedelta(days=max_age_days)
+
+
 def _score(item: dict, today: dt.date, recent_labs: set[str], last_kind: str | None) -> int:
     s = -age_days(item, today)
     if item.get("lab") in recent_labs:
@@ -145,6 +167,7 @@ def build_plan(
         if not it.get("seen")
         and it["url"] not in exclude
         and 0 <= age_days(it, today) <= int(config["max_age_days"])
+        and month_is_plausibly_new(it, today, int(config["max_age_days"]))
     ]
     weeks = int(config["lab_penalty_weeks"])
     recent_labs = {h["lab"] for h in history[-weeks:]} if weeks > 0 else set()

@@ -764,8 +764,16 @@ def gather(config: dict, date_iso: str) -> dict:
 
 def seed(config: dict, date_iso: str) -> int:
     """Mark everything currently on every index as seen, so episode one is not a
-    two-year back catalogue. Ships nothing."""
+    two-year back catalogue. Ships nothing.
+
+    ANY failed lead adapter refuses the whole seed (C1): gather() isolates one
+    failing source, which is right for a weekly run and wrong here — a seed missing
+    one source leaves its entire back catalogue unseen, and next week plans from it.
+    """
     out = gather(config, date_iso)
+    lead_errors = [e["error"] for e in out["errors"] if e["role"] == LEAD]
+    if lead_errors:
+        raise AdapterFailed("; ".join(lead_errors))
     seen = load_seen()
     for it in out["lead"]:
         seen.setdefault(it["url"], {"date": date_iso, "role": "seeded"})
@@ -838,7 +846,12 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     try:
         if a.cmd == "gather":
-            out = gather(load_config(), _date(a.date))
+            config, date_iso = load_config(), _date(a.date)
+            # The CLI only, never gather() itself (seed calls that): an unseeded
+            # host would plan next week from the whole back catalogue (C1).
+            if not seen_path().exists():
+                raise ConfigError("no seen.json — run seed first (SKILL.md Setup)")
+            out = gather(config, date_iso)
             Path(a.out).parent.mkdir(parents=True, exist_ok=True)
             Path(a.out).write_text(json.dumps(out, indent=2, ensure_ascii=False))
             new = sum(1 for it in out["lead"] if not it["seen"])
