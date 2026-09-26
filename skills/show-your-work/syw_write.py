@@ -439,6 +439,11 @@ def validate_feature(obj: dict, plan: dict, post_text: str, seen_terms: set) -> 
     allowed_basis = {"post-limitations"} | {c["url"] for c in plan.get("checks", [])}
     problems: list[str] = []
     out, dropped = [], []
+    # A structural problem elsewhere in the loop still lets this scene's beats
+    # validate (no `continue` on the hook/pushback checks below), so a term's
+    # first use is only committed to the caller's set once the whole feature is
+    # `ok` — a refused writer attempt must not consume it before the retry.
+    local_terms = set(seen_terms)
     for scene in scenes:
         slot, lines = scene["slot"], scene.get("lines")
         probs = _line_problems(lines, slot)
@@ -459,9 +464,11 @@ def validate_feature(obj: dict, plan: dict, post_text: str, seen_terms: set) -> 
                         f"pushback line {j} basis {ln.get('basis')!r} is neither "
                         "post-limitations nor a matched check"
                     )
-        kept, drop = _validate_beats(scene.get("beats"), lines, post_text, seen_terms, slot)
+        kept, drop = _validate_beats(scene.get("beats"), lines, post_text, local_terms, slot)
         dropped += drop
         out.append({"slot": slot, "lines": lines, "beats": kept})
+    if not problems:
+        seen_terms |= local_terms
     return {"ok": not problems, "problems": problems, "scenes": out, "dropped_beats": dropped}
 
 

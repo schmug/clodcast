@@ -249,6 +249,21 @@ def test_a_bad_beat_is_dropped_but_the_feature_ships():
     assert v["ok"] and v["dropped_beats"][0]["where"] == "finding"
 
 
+def test_a_refused_feature_does_not_consume_a_terms_first_use():
+    term = {"type": "term", "line": 0, "cue": None, "term": "Reward hacking", "definition": "d"}
+    invented = _feature(
+        hook={"beats": [term]},
+        pushback={"lines": [L("explainer", LONG), L("skeptic", LONG, basis="common sense")]},
+    )
+    seen: set = set()
+    v = w.validate_feature(invented, PLAN, POST, seen)
+    assert not v["ok"] and seen == set()
+    valid = _feature(hook={"beats": [term]})
+    seen2: set = set()
+    assert w.validate_feature(valid, PLAN, POST, seen2)["ok"]
+    assert "reward hacking" in seen2
+
+
 def test_briefs_allow_at_most_one_skeptic_line():
     ok = {
         "lines": [L("explainer", LONG), L("skeptic", "But is the sample big enough?")],
