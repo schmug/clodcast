@@ -126,14 +126,20 @@ class Item:
 
 def normalize_url(url: str) -> str:
     """Identity form of a URL: lowercase scheme and host, no query, no fragment, no
-    trailing slash. Medium appends `?source=rss-…`; OpenAI's index links
-    `/metagaming/` where METR links `/metagaming` — both must collapse.
+    trailing `/index.html`, no trailing slash. Medium appends `?source=rss-…`;
+    OpenAI's index links `/metagaming/` where METR links `/metagaming`;
+    transformer-circuits' feed lists `/2026/nla/index.html` where Redwood links
+    `/2026/nla/` — each pair must collapse, or a check never matches its lead.
+    Identity is sticky once seed writes seen.json, so this form is a contract.
 
     Fragments are dropped on purpose. The one place a fragment IS identity
     (misalignment notices, which all share one openai.com page) builds its URL
     without calling this — see parse_openai_misalignment."""
     parts = urlsplit(url.strip())
-    path = parts.path.rstrip("/") or "/"
+    path = parts.path
+    if path.endswith("/index.html"):
+        path = path[: -len("index.html")]
+    path = path.rstrip("/") or "/"
     return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, "", ""))
 
 

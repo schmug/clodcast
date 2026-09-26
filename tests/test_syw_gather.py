@@ -23,6 +23,18 @@ def test_normalize_url_collapses_query_fragment_case_and_trailing_slash():
     assert g.normalize_url("https://metr.org/") == "https://metr.org/"
 
 
+def test_normalize_url_strips_a_trailing_index_html():
+    # transformer-circuits.pub's feed links `.../nla/index.html`; Redwood links
+    # `.../nla/`. Both must be one identity or the check never matches.
+    assert (
+        g.normalize_url("https://transformer-circuits.pub/2026/nla/index.html")
+        == "https://transformer-circuits.pub/2026/nla"
+    )
+    assert g.normalize_url("https://metr.org/index.html") == "https://metr.org/"
+    # Only a whole trailing path segment: a page NAMED like it is left alone.
+    assert g.normalize_url("https://a.test/xindex.html") == "https://a.test/xindex.html"
+
+
 def test_decode_body_gunzips_an_unrequested_gzip_body():
     raw = (DATA / "gdm-blog.xml.gz").read_bytes()
     assert raw[:2] == b"\x1f\x8b"
@@ -110,8 +122,9 @@ def test_transformer_circuits_feed():
         _pages((g.TRANSFORMER_CIRCUITS_URL, "transformer-circuits.xml"))
     )
     assert len(items) == 12
+    # The feed links `.../index.html`; identity drops it (I6).
     assert items[0].url == (
-        "https://transformer-circuits.pub/2026/interference_effectiveness_helpfulness/index.html"
+        "https://transformer-circuits.pub/2026/interference_effectiveness_helpfulness"
     )
     assert items[0].date == "2026-08-21" and items[0].lab == "anthropic"
 
@@ -233,6 +246,18 @@ def test_mentions_come_from_links_in_the_check_content():
     )
     af = next(c for t, c in checks.items() if t.startswith("Four LLM loss"))
     assert af.mentions == ["https://alignment.anthropic.com/2026/psm"]
+
+
+def test_a_check_linking_a_directory_matches_a_lead_listed_as_index_html():
+    """The captured Redwood post links `transformer-circuits.pub/2026/nla/`; the
+    transformer-circuits feed lists the same paper as `.../nla/index.html`."""
+    pairs = g.parse_check_feed((DATA / "redwood.xml").read_text(), "redwood")
+    [latent] = [
+        c
+        for c in g.attach_mentions(pairs, _lead_items())
+        if "latent-reasoning-architectures" in c.url
+    ]
+    assert "https://transformer-circuits.pub/2026/nla" in latent.mentions
 
 
 def test_mentions_match_a_verbatim_title_without_a_link():
