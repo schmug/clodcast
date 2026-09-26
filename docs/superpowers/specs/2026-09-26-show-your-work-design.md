@@ -364,10 +364,10 @@ runaway):
 | Segment | Band |
 | --- | --- |
 | cold open | 400–800 |
-| feature scene | 1500–2400 |
+| feature scene | 2100–2600 (*Amended (rehearsal):* was 1500–2400, which measured a 7.7-min feature) |
 | brief | 800–1300 |
-| casebook brief | 1100–1800 |
-| sign-off | 250–500 |
+| casebook brief | 1000–1500 (*Amended (rehearsal):* was 1100–1800, which measured 106 s) |
+| sign-off | 350–500 (*Amended (rehearsal):* was 250–500, which measured 16 s) |
 
 A brief is an Explainer scene with **at most one** Skeptic line.
 

@@ -118,3 +118,12 @@ def test_an_already_published_workdir_goes_to_commit_never_render():
     step = _step(7)
     assert "ASSEMBLE FAILED already published" in step
     assert "step 9" in step and "never re-render" in step
+
+
+def test_the_frame_steps_quote_the_codes_bands():
+    """Step 6 tells the main context each frame's band; a tuned band that the
+    procedure still quotes the old way sends the frame writer to the wrong length."""
+    proc = _section("## Unattended weekly run")
+    step = proc[proc.index("6. **Write the frames**") : proc.index("7. **Assemble.**")]
+    for band in (w.COLD_OPEN_BAND, w.SIGN_OFF_BAND):
+        assert f"{band[0]}–{band[1]}" in step

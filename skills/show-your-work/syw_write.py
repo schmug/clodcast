@@ -103,11 +103,15 @@ BURNED_LINES = tuple(FALLBACK_BUTTONS) + tuple(FALLBACK_FOURTH_WALLS)
 # Guidance to the writer. Only the floor (MIN_SEGMENT_CHARS, the daily show's drop
 # floor) and a runaway ceiling (RUNAWAY_FACTOR x the band's top) refuse.
 
+# Tuned against the first rehearsal (2026-09-26, ~17 chars/s): writers land near a
+# band's floor, and 1500-2400 gave a 7.7-min feature against spec §5's 10-12; a
+# 1775-char casebook ran 106 s against 60-90; a 267-char sign-off ran 16 s against
+# 20-30. Re-measure after any change to the voices or the writers.
 COLD_OPEN_BAND = (400, 800)
-FEATURE_SCENE_BAND = (1500, 2400)
+FEATURE_SCENE_BAND = (2100, 2600)
 BRIEF_BAND = (800, 1300)
-CASEBOOK_BAND = (1100, 1800)
-SIGN_OFF_BAND = (250, 500)
+CASEBOOK_BAND = (1000, 1500)
+SIGN_OFF_BAND = (350, 500)
 RUNAWAY_FACTOR = 1.5
 DIGEST_MAX_CHARS = 4000
 
