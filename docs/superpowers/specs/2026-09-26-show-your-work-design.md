@@ -224,14 +224,21 @@ fails.**
 - **Notices** are `kind: notice`. When the full report appears under its own URL, that is a new
   `incident` item.
 - **GDM keyword filter:** the main blog feed has no categories, so a closed keyword list decides
-  which items are safety items (`safety`, `alignment`, `interpretability`, `misuse`, `frontier
-  safety`, `evaluation`), matched on title and summary. The list is a module constant with a test.
+  which items are safety items, matched as whole words on title and summary. The list is a module
+  constant with a test. *Amended (execution):* the shipped list is `GDM_SAFETY_KEYWORDS` in
+  `syw_gather.py`: `evaluation` is dropped as too broad, and scheming/deception/oversight terms
+  are added. The fixture check confirmed it excludes all 25 captured product posts.
 - **`seed`** marks everything currently parsed as seen and ships nothing, so episode one covers
-  only what arrives after installation.
+  only what arrives after installation. *Amended (execution):* `seed` writes nothing and prints
+  `SEED FAILED` if ANY lead adapter errored, and the `gather` CLI refuses until `seen.json`
+  exists. A partial seed, or none at all, would otherwise present the whole back catalogue as
+  new.
 - **`commit --plan <plan.json> --render-output <render.log>`** (*Amended:* was `--commit-seen`)
-  adds the URLs of the plan's feature, briefs and casebook items to `seen.json` and appends
-  `features.jsonl`, and refuses unless the renderer's final JSON reports `status: web-ready` **and**
-  `r2_status: published`. The ship gate lives in code, not in the procedure's prose. Leftover
+  adds the URLs that **aired** to `seen.json` and appends `features.jsonl`. It refuses unless the
+  renderer's final JSON reports `status: web-ready` **and** `r2_status: published`. *Amended
+  (execution):* "aired" is `<wd>/aired.json`, written by `syw_write.py assemble`: the feature, each
+  assembled brief, and only the casebook incidents that had a digest. A refused brief or an
+  undigested incident is never marked covered. The ship gate lives in code, not in the procedure's prose. Leftover
   pool items are deliberately *not* committed, so they compete again next week.
 - *Amended:* **`observed.json`** records the first date each lead URL was parsed. It is written
   on every gather, because an observation withholds nothing. A month-precision item (the
@@ -246,7 +253,9 @@ rotations.
 
 **Pool:** lead items not in `seen.json`, whose effective date is within `max_age_days`. The
 effective date is `date`, except for month-precision or undated items, which use
-`first_observed` (§4.2).
+`first_observed` (§4.2). *Amended (execution):* a month-precision item must also satisfy
+`month_end >= first_observed - max_age_days`. A post cannot have been older than the window on
+the day it was first seen, which keeps a never-seen 2024 post out of the pool.
 
 **Feature score:**
 - recency
@@ -439,9 +448,10 @@ Commits, or the sandbox.
 
 **Ship:** `render.py --manifest <wd>/manifest.json --workdir <wd>`, run **in the background** and
 monitored through its log. That's the 10-minute Bash cap memory. Then:
-- Then `syw_gather.py commit --plan <wd>/plan.json --render-output <wd>/render.log` marks the
-  items seen and appends `{date, feature_url, lab, kind}` to `features.jsonl`. It refuses unless
-  the renderer's final JSON reports `status: web-ready` and `r2_status: published`.
+- Once `render.py` has exited, `syw_gather.py commit --plan <wd>/plan.json --render-output
+  <wd>/render.log` marks the items in `<wd>/aired.json` seen and appends
+  `{date, feature_url, lab, kind}` to `features.jsonl`. It refuses unless the renderer's final JSON
+  reports `status: web-ready` and `r2_status: published`.
 - Otherwise nothing is written, and every item returns to the pool.
 
 **Known cross-show interaction, accepted:**
@@ -544,7 +554,7 @@ Otherwise every episode also appears as audio over a static cover next to the re
 - **Run day:** chosen so this run doesn't share the Mac's TTS with the Frontier Commits or
   Surface Tension runs. Read their current schedules (`mcp__scheduled-tasks__list_scheduled_tasks`)
   before picking.
-- **Reporting line:** `SHIPPED <mp3_url> feature=<url> briefs=<n> r2=<status>` or
+- **Reporting line:** `SHIPPED <mp3_url> feature=<url> briefs=<n> gather_errors=<n> r2=ok` or
   `FAILED <reason>`, followed by the video line.
 - **Quiet week:** a week with no eligible lead items reports `SKIPPED no new lab items` and ships
   nothing.
