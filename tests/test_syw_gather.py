@@ -460,3 +460,23 @@ def test_a_corrupt_seen_ledger_refuses_rather_than_resetting(offline):
     g.seen_path().write_text("{not json")
     with pytest.raises(g.ConfigError, match="seen.json"):
         g.load_seen()
+
+
+def test_gather_cli_reports_a_calendar_invalid_date_on_its_line(capsys, tmp_path):
+    rc = g.main(["gather", "--date", "2026-13-45", "--out", str(tmp_path / "c.json")])
+    assert rc == 1
+    assert capsys.readouterr().out.strip().splitlines()[-1].startswith("GATHER FAILED")
+
+
+def test_commit_cli_reports_a_missing_plan_file_on_its_line(capsys, tmp_path):
+    rc = g.main(
+        [
+            "commit",
+            "--plan",
+            str(tmp_path / "missing-plan.json"),
+            "--render-output",
+            str(tmp_path / "missing-render-output.txt"),
+        ]
+    )
+    assert rc == 1
+    assert capsys.readouterr().out.strip().splitlines()[-1].startswith("COMMIT FAILED")

@@ -846,8 +846,9 @@ def main(argv: list[str] | None = None) -> int:
             plan = json.loads(Path(a.plan).read_text())
             n = commit(plan, Path(a.render_output).read_text())
             print(f"COMMIT ok urls={n}")
-    except (AdapterFailed, ConfigError) as e:
-        print(f"{'GATHER' if a.cmd != 'commit' else 'COMMIT'} FAILED {e}")
+    except (AdapterFailed, ConfigError, ValueError, OSError) as e:
+        prefix = {"gather": "GATHER", "seed": "SEED", "commit": "COMMIT"}[a.cmd]
+        print(f"{prefix} FAILED {e}")
         return 1
     except CommitRefused as e:
         print(f"COMMIT refused {e}")
