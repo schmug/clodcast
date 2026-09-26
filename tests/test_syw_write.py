@@ -862,3 +862,21 @@ def test_a_non_object_plan_is_the_commands_line(tmp_path, capsys, argv, line):
     assert w.main(argv) in (1, 2)
     last = capsys.readouterr().out.strip().splitlines()[-1]
     assert last.startswith(line) and "plan.json must hold a JSON object" in last
+
+
+def test_the_cast_is_recorded_clips_never_presets():
+    """#243: the production Qwen3 Base checkpoint has no preset speakers — mlx-audio
+    <=0.5.0 silently ignored "Ryan"/"Chelsie", 0.5.1 dies on the first take. Both
+    roles clone a recorded clip (Cory, 2026-09-26, by ear): the explainer is the
+    house voice, the skeptic this show's own clip derived from Surface Tension's
+    Ethan."""
+    manifest, _ = _assemble()
+    render.validate_manifest(manifest)
+    cast = manifest["cast"]
+    assert set(cast) == set(sp.SPEAKERS)
+    for entry in cast.values():
+        assert set(entry) == {"ref_audio", "ref_text"} and entry["ref_text"].strip()
+        assert Path(entry["ref_audio"]).is_file()
+    assert Path(cast["explainer"]["ref_audio"]) == render.BUNDLED_HOUSE_AUDIO
+    assert Path(cast["skeptic"]["ref_audio"]) == w.REFS_DIR / "skeptic.wav"
+    assert manifest["voice"] == "house"

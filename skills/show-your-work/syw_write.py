@@ -68,9 +68,22 @@ SLUG_PREFIX = "syw-week-of"
 REFS_DIR = _HERE / "refs"
 COVER_IMAGE = REFS_DIR / "cover.jpg"
 PROMPTS_DIR = _HERE / "prompts"
-# Two Qwen3 presets on the base model (one load). Phase 2 confirms the pairing by
-# ear; changing a value re-renders every take and nothing else.
-CAST = {"explainer": "Ryan", "skeptic": "Chelsie"}
+# Recorded clips, cloned on the base model (one load) — never presets: the
+# production Qwen3 Base checkpoint has no preset speakers, so mlx-audio <=0.5.0
+# silently rendered an unconditioned voice for "Ryan" and 0.5.1 dies on the first
+# take (#243). Cory's picks by ear at the rehearsal gate (2026-09-26):
+# - explainer: the daily show's BUNDLED house voice (not the user-editable copy
+#   under ~/.config/daily-podcast/voices/). Shared with that show; render keys each
+#   take on the clip's BYTES, so a re-recording there re-renders here.
+# - skeptic: this show's own clip. It is Surface Tension's refs/ethan.wav pitched
+#   down 1.5 semitones at the same tempo (ffmpeg -af
+#   "asetrate=24000*2^(-1.5/12),aresample=24000,atempo=2^(1.5/12)"), chosen from
+#   five variants. The transcript is ethan.txt unchanged, because the words are
+#   the same.
+CAST_CLIPS = {
+    "explainer": render.BUNDLED_HOUSE_AUDIO,
+    "skeptic": REFS_DIR / "skeptic.wav",
+}
 DESCRIPTION_FOOTER = (
     "Show Your Work is written and voiced by Claude, an AI model made by Anthropic. "
     "Anthropic is one of the labs this show covers. Charts are redrawn from numbers "
@@ -94,11 +107,15 @@ BURNED_LINES = tuple(FALLBACK_BUTTONS) + tuple(FALLBACK_FOURTH_WALLS)
 # Guidance to the writer. Only the floor (MIN_SEGMENT_CHARS, the daily show's drop
 # floor) and a runaway ceiling (RUNAWAY_FACTOR x the band's top) refuse.
 
+# Tuned against the first rehearsal (2026-09-26, ~17 chars/s): writers land near a
+# band's floor, and 1500-2400 gave a 7.7-min feature against spec §5's 10-12; a
+# 1775-char casebook ran 106 s against 60-90; a 267-char sign-off ran 16 s against
+# 20-30. Re-measure after any change to the voices or the writers.
 COLD_OPEN_BAND = (400, 800)
-FEATURE_SCENE_BAND = (1500, 2400)
+FEATURE_SCENE_BAND = (2100, 2600)
 BRIEF_BAND = (800, 1300)
-CASEBOOK_BAND = (1100, 1800)
-SIGN_OFF_BAND = (250, 500)
+CASEBOOK_BAND = (1000, 1500)
+SIGN_OFF_BAND = (350, 500)
 RUNAWAY_FACTOR = 1.5
 DIGEST_MAX_CHARS = 4000
 
@@ -633,6 +650,20 @@ def _speak(lines: list[dict]) -> list[dict]:
     return [{"speaker": ln["speaker"], "text": ln["text"]} for ln in lines]
 
 
+def cast() -> dict[str, dict[str, str]]:
+    """The manifest's cast: each role's clip and its transcript (the clip's `.txt`
+    sibling), render's `{ref_audio, ref_text}` shape. A missing half is the
+    ASSEMBLE line, not a render that dies after the model load."""
+    out = {}
+    for role, clip in CAST_CLIPS.items():
+        transcript = clip.with_suffix(".txt")
+        for path in (clip, transcript):
+            if not path.is_file():
+                raise CliError(f"cast clip for {role!r} is missing: {path}")
+        out[role] = {"ref_audio": str(clip), "ref_text": transcript.read_text().strip()}
+    return out
+
+
 def assemble_manifest(
     date_iso: str,
     title: str,
@@ -698,8 +729,8 @@ def assemble_manifest(
         "summary": summary,
         "date": date_iso,
         # Fallback voice for a plain-text segment; every segment here is a scene.
-        "voice": CAST["explainer"],
-        "cast": dict(CAST),
+        "voice": "house",
+        "cast": cast(),
         "ship_mode": "web",
         "show_name": SHOW_NAME,
         "r2_manifest_name": R2_MANIFEST_NAME,

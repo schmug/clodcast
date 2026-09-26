@@ -95,10 +95,14 @@ Beats are written now and drawn by the (separate) video stage. They live in `<wo
   "show_name": "Show Your Work",
   "r2_manifest_name": "manifest-show-your-work.json",
   "r2_key_prefix": "show-your-work/",
-  "slug_prefix": "syw-week-of",
-  "cast": {"explainer": "Ryan", "skeptic": "Chelsie"}
+  "slug_prefix": "syw-week-of"
 }
 ```
+
+The `cast` is recorded clips, each cloned on the base model as `{ref_audio, ref_text}` (the clip and its `.txt` transcript) — never presets, which the production Qwen3 checkpoint does not have (#243):
+
+- `explainer`: `skills/daily-podcast/refs/house_voice.wav`
+- `skeptic`: `skills/show-your-work/refs/skeptic.wav` (Surface Tension's Ethan clip pitched down 1.5 semitones; see `syw_write.CAST_CLIPS`)
 
 ## Unattended weekly run
 
@@ -113,7 +117,7 @@ Let `D` = today (`YYYY-MM-DD`), `S` = this skill's directory (`${CLAUDE_PLUGIN_R
 5. **Write the briefs.** For each index `i` of `plan.briefs`: `python3 S/syw_write.py fill brief --workdir W --index i` → one subagent context → save → `python3 S/syw_write.py accept brief --workdir W --output <file> --index i`. A refused brief is dropped; the episode still ships. A casebook whose `fill` is refused (`FILL refused casebook has no digests` — every incident digest in step 3 was refused) is dropped: skip its subagent.
 6. **Write the frames** in the main context, after step 5 (the instructions list only the briefs that will air):
    - the cold open: `python3 S/syw_write.py fill cold_open --workdir W` prints its instructions — the assigned `intro_mode` and `fourth_wall` angle TEXTS, the episode's titles, the 400–800 band, the disclosure rule (ONE dry sentence: written and voiced by Claude, a model made by Anthropic, one of the labs covered) and the burned lines;
-   - the sign-off: `python3 S/syw_write.py fill sign_off --workdir W` prints its instructions — the assigned `button` TEXT (a thanks and ONE dry joke, worded fresh), the 250–500 band and the burned lines.
+   - the sign-off: `python3 S/syw_write.py fill sign_off --workdir W` prints its instructions — the assigned `button` TEXT (a thanks and ONE dry joke, worded fresh), the 350–500 band and the burned lines.
 
    Follow each block, save the result as `{"ok": true, "lines": [{"speaker": ..., "text": ...}]}` and run `python3 S/syw_write.py accept cold_open|sign_off --workdir W --output <file>`. Rewrite until accepted.
 7. **Assemble.** `python3 S/syw_write.py assemble --workdir W --summary "<one sentence on this week's feature>"` → `W/manifest.json`, `W/beats.json` and `W/aired.json` (the feature URL plus each brief item that went into the manifest — a refused brief, or a casebook incident whose digest was refused, is not in it). It uses a brief's write only if it was accepted for this plan's brief at that index, and refuses (`ASSEMBLE FAILED`) a feature or frame written for another plan. On `ASSEMBLE FAILED already published …`, an earlier run published this episode from `W` and died before step 9: skip step 8 (never re-render — the slug's R2 objects are immutable-cached), run step 9 against the existing `W/render.log`, and report as step 10 does, taking `briefs` from `W/manifest.json` (its segments minus 7). On any other `ASSEMBLE FAILED <reason>`, print `FAILED <reason>` and stop.

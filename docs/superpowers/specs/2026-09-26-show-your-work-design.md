@@ -1,7 +1,7 @@
 # Show Your Work — design spec
 
 **Date:** 2026-09-26
-**Status:** Approved design, pre-implementation. Amended 2026-09-26 during planning (§4.2 `observed.json` + `commit`, §4.3 banks + casebook rule, §4.4 fixed Anthropic reminder + casebook template + inline `basis`, §4.5 band semantics), and again for #236 (§4.3 undated items, §4.8 a crash between render and commit); each amendment is marked *Amended*.
+**Status:** Approved design, pre-implementation. Amended 2026-09-26 during planning (§4.2 `observed.json` + `commit`, §4.3 banks + casebook rule, §4.4 fixed Anthropic reminder + casebook template + inline `basis`, §4.5 band semantics), and again for #236 (§4.3 undated items, §4.8 a crash between render and commit) and #243 (the cast is clip clones); each amendment is marked *Amended*.
 **Decisions locked by Cory:**
 - audience = **public explainer** (newcomers, YouTube-forward)
 - shape = **one feature + short briefs**, weekly
@@ -364,10 +364,10 @@ runaway):
 | Segment | Band |
 | --- | --- |
 | cold open | 400–800 |
-| feature scene | 1500–2400 |
+| feature scene | 2100–2600 (*Amended (rehearsal):* was 1500–2400, which measured a 7.7-min feature) |
 | brief | 800–1300 |
-| casebook brief | 1100–1800 |
-| sign-off | 250–500 |
+| casebook brief | 1000–1500 (*Amended (rehearsal):* was 1100–1800, which measured 106 s) |
+| sign-off | 350–500 (*Amended (rehearsal):* was 250–500, which measured 16 s) |
 
 A brief is an Explainer scene with **at most one** Skeptic line.
 
@@ -433,7 +433,7 @@ extra line keys. Relying on that tolerance would couple this show to an accident
 | `r2_manifest_name` | `"manifest-show-your-work.json"` | never upserts into another show's feed |
 | `r2_key_prefix` | `"show-your-work/"` | a same-day slug can't overwrite another show's mp3 (#142) |
 | `slug_prefix` | `"syw-week-of"` | permalink and `isPermaLink` guid namespace; matches `[a-z0-9]+(-[a-z0-9]+)*` |
-| `cast` | `{explainer: <preset>, skeptic: <preset>}` | two Qwen3 presets on the base model; clip clones later |
+| `cast` | `{explainer: {ref_audio, ref_text}, skeptic: {ref_audio, ref_text}}` | *Amended (#243):* recorded clip clones on the base model, never presets — the production Qwen3 checkpoint has no preset speakers. Explainer = the bundled house voice, skeptic = `refs/skeptic.wav`, Surface Tension's Ethan clip pitched down 1.5 semitones (Cory, by ear, 2026-09-26). |
 | `description_footer_text` | the disclosure + "charts are redrawn from numbers reported in each post" | show notes |
 | `segments[].source_url` | the feature's first scene and each brief; `null` elsewhere | chapter links |
 
@@ -661,7 +661,7 @@ This mirrors the existing suites. Commit tests sized like the neighbours'.
    - Build `syw_script_plan.py`, `syw_write.py` and the prompts.
    - Dry-run an episode (`render.py --dry-run`) and listen to it.
    - Tune the §4.4 bands against measured durations.
-   - Pick the two presets by ear.
+   - Pick the two voices by ear. *Amended (#243):* clip clones, not presets.
 3. **First ship.**
    - Cover art.
    - A sandbox-namespace publish (`tests/data/sandbox_manifest.json` pattern) to prove the new
