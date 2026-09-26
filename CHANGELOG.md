@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 This file is generated from conventional commits by [git-cliff](https://git-cliff.org).
 
+## [0.1.18](https://github.com/schmug/clodcast/compare/v0.1.17...v0.1.18) (2026-09-26)
+
+
+### Features
+
+* **syw:** show cover art ([#247](https://github.com/schmug/clodcast/issues/247)) ([fa9317b](https://github.com/schmug/clodcast/commit/fa9317b2892f109740a32a210a7d92005c80df3e))
+
 ## [0.1.17](https://github.com/schmug/clodcast/compare/v0.1.16...v0.1.17) (2026-09-26)
 
 
