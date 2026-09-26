@@ -669,6 +669,11 @@ def _cmd_fill(a) -> int:
         brief = plan["briefs"][a.index]
         if brief["kind"] == "casebook":
             ds = _digests(wd, [it["url"] for it in brief["items"]])
+            if not ds:
+                # The casebook writer holds no body, only digests: with none it
+                # could only invent. The procedure drops this brief (SKILL.md).
+                print("FILL refused casebook has no digests")
+                return 2
             print(fill_casebook((PROMPTS_DIR / "write_casebook.md").read_text(), ds))
         else:
             print(fill_brief((PROMPTS_DIR / "write_brief.md").read_text(), brief["items"][0]))
@@ -707,6 +712,8 @@ def _cmd_accept(a) -> int:
     elif a.what == "brief":
         brief = plan["briefs"][a.index]
         casebook = brief["kind"] == "casebook"
+        if casebook and not _digests(wd, [it["url"] for it in brief["items"]]):
+            return _refused("casebook has no digests")
         text = " ".join(fetch_post_text(it["url"]) for it in brief["items"])
         v = validate_brief(obj, casebook, text, seen_terms)
         if not v["ok"]:

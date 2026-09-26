@@ -567,3 +567,33 @@ def test_assemble_writes_aired_json_listing_only_what_aired(tmp_path):
         "feature": PLAN["feature"]["url"],
         "briefs": [X1, c1],
     }
+
+
+# --- I5: a casebook with no accepted digests has nothing to be written from ------
+
+CASEBOOK_PLAN = {
+    **PLAN,
+    "briefs": [
+        {
+            "kind": "casebook",
+            "items": [_lead("https://alignment.openai.com/r/c1", "incident")],
+        }
+    ],
+}
+
+
+def test_fill_refuses_a_casebook_with_no_digests(tmp_path, capsys):
+    wd = _workdir(tmp_path, CASEBOOK_PLAN)
+    assert w.main(["fill", "brief", "--workdir", str(wd), "--index", "0"]) == 2
+    assert capsys.readouterr().out.strip() == "FILL refused casebook has no digests"
+
+
+def test_accept_refuses_a_casebook_with_no_digests(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(w, "fetch_post_text", lambda url: POST)
+    wd = _workdir(tmp_path, CASEBOOK_PLAN)
+    out = tmp_path / "o.txt"
+    out.write_text(json.dumps({"ok": True, "lines": [L("explainer", LONG * 2)], "beats": []}))
+    argv = ["accept", "brief", "--workdir", str(wd), "--output", str(out), "--index", "0"]
+    assert w.main(argv) == 2
+    assert capsys.readouterr().out.strip() == "ACCEPT refused casebook has no digests"
+    assert not (wd / "writes" / "brief_00.json").exists()
