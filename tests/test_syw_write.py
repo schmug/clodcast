@@ -657,3 +657,35 @@ def test_a_refused_write_is_logged_to_dropped_jsonl(tmp_path):
     [row] = [json.loads(ln) for ln in syw_gather.dropped_log_path().read_text().splitlines()]
     assert (row["stage"], row["what"]) == ("accept", "feature")
     assert "job ad" in row["reason"]
+
+
+# --- I4: the frame writer is handed the angle TEXTS, not just the rotation keys ---
+
+
+def test_fill_cold_open_carries_the_assigned_angle_texts(tmp_path, capsys):
+    x2 = "https://deepmindsafetyresearch.medium.com/x2"
+    plan = {
+        **PLAN,
+        "briefs": [
+            {"kind": "single", "items": [_lead(X1)]},
+            {"kind": "single", "items": [_lead(x2)]},  # refused: never aired
+        ],
+    }
+    wd = _workdir(tmp_path, plan)
+    _put(wd, "brief_00.json", _brief_write([X1]))
+    assert w.main(["fill", "cold_open", "--workdir", str(wd)]) == 0
+    out = capsys.readouterr().out
+    rot = PLAN["rotation"]
+    assert sp.INTRO_MODES[rot["intro_mode"]] in out
+    assert sp.FOURTH_WALL_ANGLES[rot["fourth_wall"]] in out
+    assert PLAN["feature"]["title"] in out and "X1" in out and "X2" not in out
+    assert "Claude" in out and "Anthropic" in out
+    assert '{"ok": true, "lines": [' in out
+
+
+def test_fill_sign_off_carries_the_button_and_every_burned_line(tmp_path, capsys):
+    wd = _workdir(tmp_path, PLAN)
+    assert w.main(["fill", "sign_off", "--workdir", str(wd)]) == 0
+    out = capsys.readouterr().out
+    assert sp.SIGNOFF_BUTTONS[PLAN["rotation"]["button"]] in out
+    assert all(line in out for line in w.BURNED_LINES)

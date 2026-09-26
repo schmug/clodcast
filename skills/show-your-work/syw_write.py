@@ -50,7 +50,10 @@ from orchestrate import (  # noqa: E402
 from syw_script_plan import (  # noqa: E402
     ARC,
     ARC_JOBS,
+    FOURTH_WALL_ANGLES,
+    INTRO_MODES,
     OPENING_MOVES,
+    SIGNOFF_BUTTONS,
     SLOT_TITLES,
     SPEAKERS,
 )
@@ -257,6 +260,73 @@ def fill_casebook(template: str, digests: list[dict]) -> str:
         .replace("<<MAX_CHARS>>", str(CASEBOOK_BAND[1]))
         .replace("<<BEATS>>", beats_contract())
     )
+
+
+FRAME_OUTPUT = (
+    '{"ok": true, "lines": [{"speaker": "explainer", "text": "..."}, '
+    '{"speaker": "skeptic", "text": "..."}]}'
+)
+
+
+def fill_frame(plan: dict, which: str, briefs: list[tuple[dict, list[dict]]]) -> str:
+    """The instruction block for the cold open or the sign-off (I4). The frames are
+    written in the main context, which otherwise sees only the rotation KEYS; the
+    angle TEXTS are what make the assigned variety reach the words. `briefs` is
+    (plan brief, the items that aired) for each brief that will air, so a dropped
+    brief is never teased."""
+    rot = plan["rotation"]
+    feature = plan["feature"]
+    cold = which == "cold_open"
+    band = COLD_OPEN_BAND if cold else SIGN_OFF_BAND
+    out = [
+        f"# Write the {'cold open' if cold else 'sign-off'} for {SHOW_NAME}",
+        "",
+        f"Two voices, `explainer` and `skeptic`; {band[0]}-{band[1]} characters of spoken text.",
+        "",
+        "## This episode",
+        f"- Feature: {feature['title']} ({feature['lab']})",
+    ]
+    for brief, items in briefs:
+        if brief["kind"] == "casebook":
+            out.append(f"- Brief: {CASEBOOK_TITLE}: " + "; ".join(it["title"] for it in items))
+        else:
+            out.append(f"- Brief: {items[0]['title']}")
+    if not briefs:
+        out.append("- No briefs this week.")
+    if cold:
+        pool = 1 + sum(len(b["items"]) for b in plan["briefs"]) + len(plan.get("leftover", []))
+        out += [
+            f"- New lab posts this week: {pool}",
+            "",
+            "## Assigned",
+            f"- Opening mode `{rot['intro_mode']}`: {INTRO_MODES[rot['intro_mode']]}",
+            f"- Disclosure angle `{rot['fourth_wall']}`: {FOURTH_WALL_ANGLES[rot['fourth_wall']]}",
+            "",
+            "## Rules",
+            "- ONE dry sentence, in the disclosure angle, says the show is written and voiced "
+            "by Claude, a model made by Anthropic, and that Anthropic is one of the labs it "
+            "covers. The cold open must name both Claude and Anthropic or it is refused.",
+            "- That sentence is dry, not a joke: the sign-off carries the joke.",
+        ]
+    else:
+        out += [
+            "",
+            "## Assigned",
+            f"- Button `{rot['button']}`: {SIGNOFF_BUTTONS[rot['button']]}",
+            "",
+            "## Rules",
+            "- A thanks, then ONE dry joke in the button's angle, worded fresh.",
+        ]
+    out += [
+        "- Never point the listener at a link or the show notes.",
+        "- These lines are burned (the daily show uses them); a frame containing one is refused:",
+        *(f"  - {line}" for line in BURNED_LINES),
+        "",
+        "## Output",
+        "One JSON object, nothing after it:",
+        FRAME_OUTPUT,
+    ]
+    return "\n".join(out)
 
 
 # --- normalization for the verbatim guards --------------------------------------
@@ -693,6 +763,9 @@ def _cmd_fill(a) -> int:
     elif a.what == "feature":
         checks = _digests(wd, [c["url"] for c in plan["checks"]])
         print(fill_feature((PROMPTS_DIR / "write_feature.md").read_text(), plan, checks))
+    elif a.what in ("cold_open", "sign_off"):
+        briefs = [(b, aired_items(wd, b)) for b, _ in accepted_briefs(wd, plan)]
+        print(fill_frame(plan, a.what, briefs))
     else:
         brief = plan["briefs"][a.index]
         if brief["kind"] == "casebook":
@@ -799,6 +872,14 @@ def accepted_briefs(wd: Path, plan: dict) -> list[tuple[dict, dict]]:
     return out
 
 
+def aired_items(wd: Path, brief: dict) -> list[dict]:
+    """The items of an accepted brief that reach the listener: a single brief's one
+    post, or each casebook incident whose digest reached the casebook writer."""
+    if brief["kind"] != "casebook":
+        return brief["items"][:1]
+    return [it for it in brief["items"] if digest_path(wd, it["url"]).is_file()]
+
+
 def _cmd_assemble(a) -> int:
     wd = Path(a.workdir)
     plan = _read(wd / "plan.json")
@@ -822,13 +903,7 @@ def _cmd_assemble(a) -> int:
         allow_missing_cover=a.allow_missing_cover,
     )
     # What `syw_gather commit` marks seen: exactly what went into the manifest (I1).
-    # A casebook incident aired only if its digest reached the casebook writer.
-    aired = []
-    for brief, _ in briefs:
-        if brief["kind"] == "casebook":
-            aired += [it["url"] for it in brief["items"] if digest_path(wd, it["url"]).is_file()]
-        else:
-            aired.append(brief["items"][0]["url"])
+    aired = [it["url"] for brief, _ in briefs for it in aired_items(wd, brief)]
     _write(wd / "manifest.json", manifest)
     _write(wd / "beats.json", beats)
     _write(wd / "aired.json", {"feature": plan["feature"]["url"], "briefs": aired})
@@ -841,7 +916,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="syw_write.py")
     sub = ap.add_subparsers(dest="cmd", required=True)
     f = sub.add_parser("fill")
-    f.add_argument("what", choices=("digest", "feature", "brief"))
+    f.add_argument("what", choices=("digest", "feature", "brief", "cold_open", "sign_off"))
     f.add_argument("--workdir", required=True)
     f.add_argument("--url")
     f.add_argument("--index", type=int)
