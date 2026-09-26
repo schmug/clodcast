@@ -263,3 +263,30 @@ def test_cli_failures_print_one_plan_failed_line(tmp_path, capsys, candidates, e
     assert sp.main(args + extra) == 1
     assert capsys.readouterr().out.strip().startswith("PLAN FAILED ")
     assert not (tmp_path / "p.json").exists()
+
+
+def test_a_notice_cannot_be_forced_into_the_feature_slot():
+    """M9: spec §4.3 — notices are never features, --feature included."""
+    lead = [item("https://a.test/n", kind="notice", date="2026-09-26")]
+    with pytest.raises(ValueError, match="notice"):
+        sp.build_plan(
+            {"lead": lead, "check": []}, [], CONFIG, TODAY, feature_override="https://a.test/n"
+        )
+
+
+def test_cli_reuse_skips_a_plan_whose_feature_already_shipped(tmp_path, capsys):
+    """M11: a re-run after commit must not re-publish an immutable-cached slug."""
+    syw_gather.config_path().parent.mkdir(parents=True, exist_ok=True)
+    syw_gather.config_path().write_text("{}")
+    cands = tmp_path / "candidates.json"
+    cands.write_text(
+        json.dumps({"lead": [item("https://a.test/a", date="2026-09-26")], "check": []})
+    )
+    args = ["plan", "--date", TODAY, "--candidates", str(cands), "--out", str(tmp_path / "p.json")]
+    assert sp.main(args) == 0
+    capsys.readouterr()
+    syw_gather.seen_path().write_text(
+        json.dumps({"https://a.test/a": {"date": TODAY, "role": "feature"}})
+    )
+    assert sp.main(args) == 0
+    assert capsys.readouterr().out.strip() == "PLAN skip already shipped"

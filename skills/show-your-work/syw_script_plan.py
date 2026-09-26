@@ -183,6 +183,12 @@ def build_plan(
         )
         if feature is None:
             raise ValueError(f"--feature {feature_override} is not a gathered lead item")
+        if feature["kind"] not in FEATURE_KINDS:
+            # Spec §4.3: a notice is a placeholder for a report that has not landed.
+            raise ValueError(
+                f"--feature {feature_override} is a {feature['kind']}; "
+                f"only {' or '.join(FEATURE_KINDS)} items can be features"
+            )
     else:
         eligible = ranked([it for it in pool if it["kind"] in FEATURE_KINDS])
         feature = eligible[0] if eligible else None
@@ -268,6 +274,12 @@ def _plan_cli(a) -> int:
     out = Path(a.out)
     previous = json.loads(out.read_text()) if out.is_file() else None
     if previous is not None and not a.feature and not a.exclude:
+        # A re-run after commit (M11): re-rendering would re-publish the same slug,
+        # and R2 objects are immutable-cached, so the edge keeps the old bytes.
+        feature = previous.get("feature") or {}
+        if syw_gather.load_seen().get(feature.get("url"), {}).get("role") == "feature":
+            print("PLAN skip already shipped")
+            return 0
         print(_line(previous, "reused"))
         return 0
     candidates = json.loads(Path(a.candidates).read_text())
