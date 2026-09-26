@@ -66,7 +66,26 @@ def test_the_unattended_procedure_names_every_cli_step():
         "syw_write.py accept", "syw_write.py assemble", "render.py", "syw_gather.py commit",
     ):  # fmt: skip
         assert step in proc, f"the procedure lost {step!r}"
-    assert "--dry-run" in proc  # the "never pass --dry-run" line
+    assert "Never pass `--dry-run`" in proc
+
+
+def _step(n: int) -> str:
+    proc = _section("## Unattended weekly run")
+    return next(ln for ln in proc.splitlines() if ln.startswith(f"{n}. "))
+
+
+def test_commit_waits_for_the_render_to_exit_and_rerunning_it_is_the_recovery():
+    """M3: a commit run while render.py is still going parses no final JSON and is
+    refused; after a successful publish the episode is live, so re-running commit
+    (never re-rendering) is the recovery."""
+    step = _step(9)
+    assert "syw_gather.py commit" in step and "**exited**" in step
+    assert "re-run `commit`" in step
+
+
+def test_the_report_line_matches_the_spec_and_surfaces_gather_errors():
+    # M4: spec §4.8's line, plus the count of failed gather adapters.
+    assert "`SHIPPED <mp3_url> feature=<url> briefs=<n> gather_errors=<n> r2=ok`" in _step(10)
 
 
 def test_weekly_prompt_stays_a_stub():
