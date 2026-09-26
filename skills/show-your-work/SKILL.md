@@ -102,7 +102,7 @@ Beats are written now and drawn by the (separate) video stage. They live in `<wo
 The `cast` is recorded clips, each cloned on the base model as `{ref_audio, ref_text}` (the clip and its `.txt` transcript) — never presets, which the production Qwen3 checkpoint does not have (#243):
 
 - `explainer`: `skills/daily-podcast/refs/house_voice.wav`
-- `skeptic`: `skills/surface-tension/refs/chelsie.wav`
+- `skeptic`: `skills/show-your-work/refs/skeptic.wav` (Surface Tension's Ethan clip pitched down 1.5 semitones; see `syw_write.CAST_CLIPS`)
 
 ## Unattended weekly run
 

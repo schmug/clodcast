@@ -433,7 +433,7 @@ extra line keys. Relying on that tolerance would couple this show to an accident
 | `r2_manifest_name` | `"manifest-show-your-work.json"` | never upserts into another show's feed |
 | `r2_key_prefix` | `"show-your-work/"` | a same-day slug can't overwrite another show's mp3 (#142) |
 | `slug_prefix` | `"syw-week-of"` | permalink and `isPermaLink` guid namespace; matches `[a-z0-9]+(-[a-z0-9]+)*` |
-| `cast` | `{explainer: {ref_audio, ref_text}, skeptic: {ref_audio, ref_text}}` | *Amended (#243):* recorded clip clones on the base model, never presets — the production Qwen3 checkpoint has no preset speakers. Explainer = the bundled house voice, skeptic = Surface Tension's Chelsie clip (Cory, 2026-09-26). |
+| `cast` | `{explainer: {ref_audio, ref_text}, skeptic: {ref_audio, ref_text}}` | *Amended (#243):* recorded clip clones on the base model, never presets — the production Qwen3 checkpoint has no preset speakers. Explainer = the bundled house voice, skeptic = `refs/skeptic.wav`, Surface Tension's Ethan clip pitched down 1.5 semitones (Cory, by ear, 2026-09-26). |
 | `description_footer_text` | the disclosure + "charts are redrawn from numbers reported in each post" | show notes |
 | `segments[].source_url` | the feature's first scene and each brief; `null` elsewhere | chapter links |
 

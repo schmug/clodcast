@@ -71,14 +71,18 @@ PROMPTS_DIR = _HERE / "prompts"
 # Recorded clips, cloned on the base model (one load) — never presets: the
 # production Qwen3 Base checkpoint has no preset speakers, so mlx-audio <=0.5.0
 # silently rendered an unconditioned voice for "Ryan" and 0.5.1 dies on the first
-# take (#243). Cory's pick at the rehearsal gate (2026-09-26): the explainer is the
-# daily show's BUNDLED house voice (not the user-editable copy under
-# ~/.config/daily-podcast/voices/), the skeptic Surface Tension's Chelsie clip. Both
-# are shared with those shows; render keys each take on the clip's BYTES, so a
-# re-recording there re-renders here and never replays a stale take.
+# take (#243). Cory's picks by ear at the rehearsal gate (2026-09-26):
+# - explainer: the daily show's BUNDLED house voice (not the user-editable copy
+#   under ~/.config/daily-podcast/voices/). Shared with that show; render keys each
+#   take on the clip's BYTES, so a re-recording there re-renders here.
+# - skeptic: this show's own clip. It is Surface Tension's refs/ethan.wav pitched
+#   down 1.5 semitones at the same tempo (ffmpeg -af
+#   "asetrate=24000*2^(-1.5/12),aresample=24000,atempo=2^(1.5/12)"), chosen from
+#   five variants. The transcript is ethan.txt unchanged, because the words are
+#   the same.
 CAST_CLIPS = {
     "explainer": render.BUNDLED_HOUSE_AUDIO,
-    "skeptic": _HERE.parent / "surface-tension" / "refs" / "chelsie.wav",
+    "skeptic": REFS_DIR / "skeptic.wav",
 }
 DESCRIPTION_FOOTER = (
     "Show Your Work is written and voiced by Claude, an AI model made by Anthropic. "
