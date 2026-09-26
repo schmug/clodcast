@@ -15,6 +15,9 @@ Two editorial rules are mechanical here rather than aspirational (spec §6):
 
 from __future__ import annotations
 
+import argparse
+import datetime as dt
+import hashlib
 import html
 import json
 import re
@@ -47,6 +50,7 @@ from syw_script_plan import (  # noqa: E402
     ARC,
     ARC_JOBS,
     OPENING_MOVES,
+    SLOT_TITLES,
     SPEAKERS,
 )
 
@@ -504,3 +508,265 @@ def validate_frame(lines, which: str) -> list[str]:
         probs.append("cold_open must disclose Claude and Anthropic (spec §1)")
     probs += [f"{which} uses a burned line: {b!r}" for b in _burned(text)]
     return probs
+
+
+# --- assembly ---------------------------------------------------------------------
+
+_MONTHS = (
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)  # fmt: skip  (literal, not strftime("%B"), which is LC_TIME-dependent)
+
+
+def episode_title(plan: dict) -> str:
+    """Display text only — the slug is keyed on the date (#128), so the title is
+    free to carry the feature's name."""
+    d = dt.date.fromisoformat(plan["date"])
+    return f"{plan['feature']['title']} - week of {_MONTHS[d.month - 1]} {d.day}, {d.year}"
+
+
+def _speak(lines: list[dict]) -> list[dict]:
+    """What render.py sees: speaker and text only. `basis` and beats stay out of
+    the manifest even though _validate_scene tolerates extra keys today — relying
+    on that would couple this show to an accident of the renderer."""
+    return [{"speaker": ln["speaker"], "text": ln["text"]} for ln in lines]
+
+
+def assemble_manifest(
+    date_iso: str,
+    title: str,
+    summary: str,
+    plan: dict,
+    cold_open: list[dict],
+    feature_scenes: list[dict],
+    briefs: list[dict],
+    sign_off: list[dict],
+    allow_missing_cover: bool = False,
+) -> tuple[dict, dict]:
+    """(manifest, beats) for one episode.
+
+    `feature_scenes` is validate_feature's `scenes`; each of `briefs` is
+    {"kind": "single"|"casebook", "item": <lead item or None>, "lines", "beats"}.
+    Beat `line` indices in the sidecar are relative to each segment's FINAL lines,
+    i.e. after the Anthropic reminder is prepended."""
+    for which, lines in (("cold_open", cold_open), ("sign_off", sign_off)):
+        probs = validate_frame(lines, which)
+        if probs:
+            die("; ".join(probs))
+    if not COVER_IMAGE.is_file() and not allow_missing_cover:
+        die(f"cover art missing: {COVER_IMAGE} (a live ship needs the show's own art)")
+
+    feature = plan["feature"]
+    segments: list[dict] = [
+        {"title": "Cold open", "role": "intro", "source_url": None, "lines": _speak(cold_open)}
+    ]
+    beats: dict[str, list[dict]] = {}
+    for scene in feature_scenes:
+        lines = _speak(scene["lines"])
+        shift = 0
+        if scene["slot"] == "hook" and feature.get("lab") == "anthropic":
+            lines = [{"speaker": "explainer", "text": ANTHROPIC_REMINDER}, *lines]
+            shift = 1
+        hook = scene["slot"] == "hook"
+        if scene["beats"]:
+            beats[str(len(segments))] = [{**b, "line": b["line"] + shift} for b in scene["beats"]]
+        segments.append(
+            {
+                "title": (feature["title"] if hook else SLOT_TITLES[scene["slot"]])[:120],
+                "source_url": feature["url"] if hook else None,
+                "lines": lines,
+            }
+        )
+    for brief in briefs:
+        casebook = brief["kind"] == "casebook"
+        if brief["beats"]:
+            beats[str(len(segments))] = brief["beats"]
+        segments.append(
+            {
+                "title": (CASEBOOK_TITLE if casebook else brief["item"]["title"])[:120],
+                "source_url": CASEBOOK_URL if casebook else brief["item"]["url"],
+                "lines": _speak(brief["lines"]),
+            }
+        )
+    segments.append(
+        {"title": "Sign-off", "role": "outro", "source_url": None, "lines": _speak(sign_off)}
+    )
+    manifest = {
+        # Display-only: `date` is what keys the slug and the guid (#128).
+        "title": title,
+        "summary": summary,
+        "date": date_iso,
+        # Fallback voice for a plain-text segment; every segment here is a scene.
+        "voice": CAST["explainer"],
+        "cast": dict(CAST),
+        "ship_mode": "web",
+        "show_name": SHOW_NAME,
+        "r2_manifest_name": R2_MANIFEST_NAME,
+        "r2_key_prefix": R2_KEY_PREFIX,
+        "slug_prefix": SLUG_PREFIX,
+        "description_footer_text": DESCRIPTION_FOOTER,
+        "segments": segments,
+    }
+    if COVER_IMAGE.is_file():
+        manifest["cover_image"] = str(COVER_IMAGE)
+    return manifest, {"version": 1, "segments": beats}
+
+
+# --- workdir CLI --------------------------------------------------------------------
+
+
+def _read(p: Path):
+    return json.loads(p.read_text())
+
+
+def _write(p: Path, obj) -> None:
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(obj, indent=2, ensure_ascii=False))
+
+
+def digest_path(workdir: Path, url: str) -> Path:
+    return workdir / "digests" / f"{hashlib.sha1(url.encode()).hexdigest()[:12]}.json"
+
+
+def _digests(workdir: Path, urls: list[str]) -> list[dict]:
+    return [_read(p) for u in urls if (p := digest_path(workdir, u)).is_file()]
+
+
+def _find_item(plan: dict, url: str) -> dict:
+    pool = [plan["feature"], *plan.get("checks", [])]
+    pool += [it for b in plan.get("briefs", []) for it in b["items"]]
+    for it in pool:
+        if it["url"] == url:
+            return it
+    die(f"{url} is not an item in this plan")
+
+
+def _cmd_fill(a) -> int:
+    wd = Path(a.workdir)
+    plan = _read(wd / "plan.json")
+    if a.what == "digest":
+        print(fill_digest((PROMPTS_DIR / "digest.md").read_text(), _find_item(plan, a.url)))
+    elif a.what == "feature":
+        checks = _digests(wd, [c["url"] for c in plan["checks"]])
+        print(fill_feature((PROMPTS_DIR / "write_feature.md").read_text(), plan, checks))
+    else:
+        brief = plan["briefs"][a.index]
+        if brief["kind"] == "casebook":
+            ds = _digests(wd, [it["url"] for it in brief["items"]])
+            print(fill_casebook((PROMPTS_DIR / "write_casebook.md").read_text(), ds))
+        else:
+            print(fill_brief((PROMPTS_DIR / "write_brief.md").read_text(), brief["items"][0]))
+    return 0
+
+
+def _refused(reason: str) -> int:
+    print(f"ACCEPT refused {reason}"[:400])
+    return 2
+
+
+def _cmd_accept(a) -> int:
+    wd = Path(a.workdir)
+    plan = _read(wd / "plan.json")
+    res = classify_output(Path(a.output).read_text(), "", 0)
+    if res["outcome"] != "OK":
+        return _refused(f"{res['outcome']} {res['detail']}")
+    obj = res["obj"]
+    terms_p = wd / "writes" / "terms.json"
+    seen_terms = set(_read(terms_p)) if terms_p.is_file() else set()
+    dropped: list[dict] = []
+    if a.what == "digest":
+        digest, why = validate_digest(obj, a.url)
+        if digest is None:
+            return _refused(why)
+        _write(digest_path(wd, a.url), digest)
+    elif a.what == "feature":
+        v = validate_feature(obj, plan, fetch_post_text(plan["feature"]["url"]), seen_terms)
+        if not v["ok"]:
+            return _refused("; ".join(v["problems"]))
+        _write(wd / "writes" / "feature.json", {"scenes": v["scenes"]})
+        dropped = v["dropped_beats"]
+    elif a.what == "brief":
+        brief = plan["briefs"][a.index]
+        casebook = brief["kind"] == "casebook"
+        text = " ".join(fetch_post_text(it["url"]) for it in brief["items"])
+        v = validate_brief(obj, casebook, text, seen_terms)
+        if not v["ok"]:
+            return _refused("; ".join(v["problems"]))
+        _write(
+            wd / "writes" / f"brief_{a.index:02d}.json",
+            {
+                "kind": brief["kind"],
+                "item": None if casebook else brief["items"][0],
+                "lines": v["lines"],
+                "beats": v["beats"],
+            },
+        )
+        dropped = v["dropped_beats"]
+    else:
+        probs = validate_frame(obj.get("lines"), a.what)
+        if probs:
+            return _refused("; ".join(probs))
+        _write(wd / "writes" / f"{a.what}.json", {"lines": obj["lines"]})
+    _write(terms_p, sorted(seen_terms))
+    for d in dropped:
+        syw_gather.append_dropped({"stage": "beat", **d})
+    print(f"ACCEPT ok {a.what} dropped_beats={len(dropped)}")
+    return 0
+
+
+def _cmd_assemble(a) -> int:
+    wd = Path(a.workdir)
+    plan = _read(wd / "plan.json")
+    writes = wd / "writes"
+    manifest, beats = assemble_manifest(
+        plan["date"],
+        episode_title(plan),
+        a.summary,
+        plan,
+        _read(writes / "cold_open.json")["lines"],
+        _read(writes / "feature.json")["scenes"],
+        [_read(p) for p in sorted(writes.glob("brief_*.json"))],
+        _read(writes / "sign_off.json")["lines"],
+        allow_missing_cover=a.allow_missing_cover,
+    )
+    _write(wd / "manifest.json", manifest)
+    _write(wd / "beats.json", beats)
+    n_beats = sum(len(v) for v in beats["segments"].values())
+    print(f"ASSEMBLE ok segments={len(manifest['segments'])} beats={n_beats}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="syw_write.py")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    f = sub.add_parser("fill")
+    f.add_argument("what", choices=("digest", "feature", "brief"))
+    f.add_argument("--workdir", required=True)
+    f.add_argument("--url")
+    f.add_argument("--index", type=int)
+    c = sub.add_parser("accept")
+    c.add_argument("what", choices=("digest", "feature", "brief", "cold_open", "sign_off"))
+    c.add_argument("--workdir", required=True)
+    c.add_argument("--output", required=True)
+    c.add_argument("--url")
+    c.add_argument("--index", type=int)
+    s = sub.add_parser("assemble")
+    s.add_argument("--workdir", required=True)
+    s.add_argument("--summary", required=True)
+    s.add_argument("--allow-missing-cover", action="store_true")
+    a = ap.parse_args(argv)
+    return {"fill": _cmd_fill, "accept": _cmd_accept, "assemble": _cmd_assemble}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import re
+
 import pytest
 
 import syw_script_plan as sp
@@ -282,3 +285,180 @@ def test_frames_require_disclosure_and_refuse_burned_lines():
     assert "disclose" in w.validate_frame([L("explainer", "Welcome back.")], "cold_open")[0]
     burned = [L("skeptic", "That's the week. Same weights, different day.")]
     assert "burned" in w.validate_frame(burned, "sign_off")[0]
+
+
+from pathlib import Path  # noqa: E402
+
+import render  # noqa: E402
+import st_write  # noqa: E402
+
+REPO = Path(__file__).resolve().parent.parent
+COLD = [
+    L(
+        "explainer",
+        "This is Show Your Work, written and voiced by Claude, a model made by Anthropic. " + LONG,
+    )
+]
+SIGN = [
+    L("skeptic", "That is the episode. The homework has been shown; partial credit is pending.")
+]
+
+
+def _assemble(plan=PLAN, briefs=(), **kw):
+    scenes = w.validate_feature(_feature(), plan, POST, set())["scenes"]
+    return w.assemble_manifest("2026-09-27", w.episode_title(plan), "One line.", plan, COLD, scenes,
+                               list(briefs), SIGN, allow_missing_cover=True, **kw)  # fmt: skip
+
+
+def test_the_assembled_manifest_is_one_render_accepts():
+    manifest, beats = _assemble()
+    render.validate_manifest(manifest)
+    assert [s.get("role") for s in manifest["segments"]][0::6] == ["intro", "outro"]
+    assert manifest["segments"][1]["title"] == PLAN["feature"]["title"]
+    assert manifest["segments"][1]["source_url"] == PLAN["feature"]["url"]
+    assert all(s["source_url"] is None for s in manifest["segments"][2:6])
+    assert beats == {"version": 1, "segments": {}}
+
+
+def test_manifest_lines_carry_only_speaker_and_text():
+    manifest, _ = _assemble()
+    for seg in manifest["segments"]:
+        assert all(set(ln) == {"speaker", "text"} for ln in seg["lines"])
+
+
+def test_an_anthropic_feature_gets_the_fixed_reminder_and_beats_shift():
+    plan = {**PLAN, "feature": {**PLAN["feature"], "lab": "anthropic"}}
+    scenes = w.validate_feature(_feature(), plan, POST, set())["scenes"]
+    scenes[0]["beats"] = [{"type": "term", "line": 0, "cue": None, "term": "RL", "definition": "d"}]
+    manifest, beats = w.assemble_manifest(
+        "2026-09-27", "t", "s", plan, COLD, scenes, [], SIGN, allow_missing_cover=True
+    )
+    hook = manifest["segments"][1]["lines"]
+    assert hook[0] == {"speaker": "explainer", "text": w.ANTHROPIC_REMINDER}
+    assert beats["segments"]["1"][0]["line"] == 1
+
+
+def test_briefs_and_the_casebook_link_one_source_each():
+    briefs = [
+        {
+            "kind": "single",
+            "item": {"url": "https://a.test/b", "title": "B"},
+            "lines": [L("explainer", LONG)],
+            "beats": [],
+        },
+        {"kind": "casebook", "item": None, "lines": [L("explainer", LONG)], "beats": []},
+    ]
+    manifest, _ = _assemble(briefs=briefs)
+    render.validate_manifest(manifest)
+    assert [(s["title"], s["source_url"]) for s in manifest["segments"][6:8]] == [
+        ("B", "https://a.test/b"),
+        (w.CASEBOOK_TITLE, w.CASEBOOK_URL),
+    ]
+
+
+def test_a_live_assembly_needs_the_cover(monkeypatch, tmp_path):
+    monkeypatch.setattr(w, "COVER_IMAGE", tmp_path / "missing.jpg")
+    scenes = w.validate_feature(_feature(), PLAN, POST, set())["scenes"]
+    with pytest.raises(SystemExit):
+        w.assemble_manifest("2026-09-27", "t", "s", PLAN, COLD, scenes, [], SIGN)
+
+
+def test_episode_title():
+    assert w.episode_title(PLAN) == (
+        "An agent used DNS to reach an external chatbot - week of September 27, 2026"
+    )
+
+
+def _frontier_manifest() -> dict:
+    text = (REPO / "skills" / "frontier-commits" / "SKILL.md").read_text()
+    return json.loads(re.search(r"```json\n(\{.*?\n\})\n```", text, re.S).group(1))
+
+
+def test_the_show_cannot_collide_with_any_other_feed():
+    """The slug is the permalink AND the isPermaLink guid; the manifest object and
+    key prefix hold the feed entry and the mp3/cover. Each must differ from the
+    daily show, Frontier Commits, Surface Tension and the sandbox."""
+    manifest, _ = _assemble()
+    sandbox = json.loads((REPO / "tests" / "data" / "sandbox_manifest.json").read_text())
+    st = {"slug_prefix": st_write.SLUG_PREFIX, "r2_manifest_name": st_write.R2_MANIFEST_NAME,
+          "r2_key_prefix": st_write.R2_KEY_PREFIX}  # fmt: skip
+    others = [_frontier_manifest(), st, sandbox]
+    day = "2026-09-27"
+    mine = render.slug_for_date(day, render.resolve_slug_prefix(manifest))
+    assert mine == "syw-week-of-september-27-2026"
+    slugs = {render.slug_for_date(day, render.DEFAULT_SLUG_PREFIX)}
+    slugs |= {render.slug_for_date(day, render.resolve_slug_prefix(o)) for o in others}
+    assert mine not in slugs
+    assert manifest["r2_manifest_name"] not in {"manifest.json"} | {
+        o["r2_manifest_name"] for o in others
+    }
+    assert render._r2_key_prefix(manifest) not in {render._r2_key_prefix(o) for o in others}
+    assert manifest["ship_mode"] == render.SHIP_MODE_WEB
+
+
+def test_cli_accept_and_assemble_round_trip(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(w, "fetch_post_text", lambda url: POST)
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    plan = {
+        **PLAN,
+        "briefs": [
+            {
+                "kind": "single",
+                "items": [
+                    {"url": "https://a.test/b", "title": "B", "lab": "gdm", "kind": "research"}
+                ],
+            }
+        ],
+    }
+    (wd / "plan.json").write_text(json.dumps(plan))
+
+    def accept(what, obj, *extra):
+        out = tmp_path / f"{what}.out"
+        out.write_text("chatter\n" + json.dumps(obj) + "\n")
+        return w.main(["accept", what, "--workdir", str(wd), "--output", str(out), *extra])
+
+    assert accept("feature", _feature()) == 0
+    assert (
+        accept("brief", {"ok": True, "lines": [L("explainer", LONG)], "beats": []}, "--index", "0")
+        == 0
+    )
+    assert accept("cold_open", {"ok": True, "lines": COLD}) == 0
+    assert accept("sign_off", {"ok": True, "lines": SIGN}) == 0
+    assert (
+        accept(
+            "sign_off", {"ok": True, "lines": [L("skeptic", "Still a robot. See you tomorrow.")]}
+        )
+        == 2
+    )
+    capsys.readouterr()
+    assert (
+        w.main(
+            ["assemble", "--workdir", str(wd), "--summary", "One line.", "--allow-missing-cover"]
+        )
+        == 0
+    )
+    assert capsys.readouterr().out.strip() == "ASSEMBLE ok segments=8 beats=0"
+    render.validate_manifest(json.loads((wd / "manifest.json").read_text()))
+
+
+def test_cli_fill_feature_uses_accepted_digests(tmp_path, capsys):
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    (wd / "plan.json").write_text(json.dumps(PLAN))
+    url = PLAN["checks"][0]["url"]
+    digest = {
+        "url": url,
+        "claims": ["METR says so"],
+        "numbers": [],
+        "limitations": [],
+        "transcript_excerpts": [],
+    }
+    out = tmp_path / "d.out"
+    out.write_text(json.dumps({"ok": True, **digest}))
+    assert (
+        w.main(["accept", "digest", "--workdir", str(wd), "--output", str(out), "--url", url]) == 0
+    )
+    capsys.readouterr()
+    assert w.main(["fill", "feature", "--workdir", str(wd)]) == 0
+    assert "METR says so" in capsys.readouterr().out
