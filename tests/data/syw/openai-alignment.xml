@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Alignment Research Blog</title>
+    <link>https://alignment.openai.com/</link>
+    <description>Informal updates from the OpenAI team.</description>
+    <language>en-us</language>
+
+    <!-- When adding a new post, not only add a new <item> but also update the date here. -->
+    <lastBuildDate>Tue, 21 Jul 2026 08:10:00 -0700</lastBuildDate>
+    <atom:link href="https://alignment.openai.com/rss.xml" rel="self" type="application/rss+xml" />
+
+    <!-- When adding a new post, add a new <item> below please. -->
+
+    <item>
+      <title>Measuring Reward-Seeking by Instilling Contrastive Beliefs</title>
+      <link>https://alignment.openai.com/measuring-reward-seeking/</link>
+      <guid isPermaLink="true">https://alignment.openai.com/measuring-reward-seeking/</guid>
+      <pubDate>Tue, 21 Jul 2026 08:10:00 -0700</pubDate>
+      <dc:creator>Axel Højmark, Jérémy Scheurer, Jenny Nitishinskaya, Felix Hofstätter, Jason Wolfe, Theodore Ehrenborg, Bronson Schoen, Alexander Meinke</dc:creator>
+      <description>A new test for whether models change their behavior based on what they believe a grader rewards.</description>
+    </item>
+
+    <item>
+      <title>Reinforcement learning towards broadly and persistently beneficial models</title>
+      <link>https://alignment.openai.com/beneficial-rl/</link>
+      <guid isPermaLink="true">https://alignment.openai.com/beneficial-rl/</guid>
+      <pubDate>Thu, 18 Jun 2026 11:00:00 -0700</pubDate>
+      <dc:creator>Akshay V. Jagadeesh, Rahul Arora, Mikhail Trofimov, Khaled Saab, Ali Malik, Foivos Tsimpourlas, Karan Singhal</dc:creator>
+      <description>Training targeting beneficial behavior in realistic scenarios produces broad improvements in alignment that generalize across domains and persist under adversarial pressure.</description>
+    </item>
+
+    <item>
+      <title>Can public chat data predict real-world AI misalignments?</title>
+      <link>https://alignment.openai.com/validating-public-evals/</link>
+      <guid isPermaLink="true">https://alignment.openai.com/validating-public-evals/</guid>
+      <pubDate>Tue, 16 Jun 2026 11:00:00 -0700</pubDate>
+      <dc:creator>Hannah Sheahan and Micah Carroll</dc:creator>
+      <description>Bridging private deployment evidence and public AI evaluation</description>
+    </item>
+
+    <item>
+      <title>Investigating the consequences of accidentally grading CoT during RL</title>
+      <link>https://alignment.openai.com/accidental-cot-grading/</link>
+      <guid isPermaLink="true">https://alignment.openai.com/accidental-cot-grading/</guid>
+      <pubDate>Wed, 06 May 2026 16:00:00 -0700</pubDate>
+      <dc:creator>Micah Carroll, Tomek Korbak, Zehao Dou, Bowen Baker, Ian Kivlichan</dc:creator>
+      <description>We found limited accidental CoT grading in some released models, fixed the affected reward pathways, and found no clear evidence that monitorability degraded.</description>
+    </item>
+
+    <item>
+      <title>Auto-review of agent actions without synchronous human oversight</title>
+      <link>https://alignment.openai.com/auto-review/</link>
+      <guid isPermaLink="true">https://alignment.openai.com/auto-review/</guid>
+      <pubDate>Thu, 30 Apr 2026 11:00:00 -0700</pubDate>
+      <dc:creator>Maja Trębacz, Sam Arnesen, Ollie Matthews, Dylan Hurd, Won Park, Owen Lin, Joe Gershenson</dc:creator>
+      <description>Auto-review offers a safer default for deploying coding agents, using a separate agent to approve or deny boundary-crossing actions.</description>
+    </item>
+
+    <item>
+      <title>Open Sourcing Monitorability Evaluations</title>
+      <link>https://alignment.openai.com/monitorability-evals/</link>
+      <guid isPermaLink="true">https://alignment.openai.com/monitorability-evals/</guid>
+      <pubDate>Thu, 23 Apr 2026 15:15:00 -0700</pubDate>
+      <dc:creator>Author list TBD</dc:creator>
+      <description>We open-source datasets and code from our Monitoring Monitorability paper, and share a new filtering strategy for noise-dominated intervention evaluation instances.</description>
+    </item>
+
+    <item>
+      <title>Introducing the OpenAI Safety Fellowship</title>
+      <link>https://alignment.openai.com/safety-fellowship/</link>
+      <guid isPermaLink="true">https://alignment.openai.com/safety-fellowship/</guid>
+      <pubDate>Mon, 06 Apr 2026 00:00:00 -0700</pubDate>
+      <dc:creator>OpenAI</dc:creator>
+      <description>A pilot program to support independent safety and alignment research and develop the next generation of talent</description>
+    </item>
+
+    <item>
+      <title>How far does alignment midtraining generalize?</title>
+      <link>https://alignment.openai.com/how-far-does-alignment-midtraining-generalize/</link>
+      <guid isPermaLink="true">https://alignment.openai.com/how-far-does-alignment-midtraining-generalize/</guid>
+      <pubDate>Fri, 27 Mar 2026 11:00:00 -0700</pubDate>
+      <dc:creator>Tomek Korbak, Cameron Raymond, Micah Carroll, Marcus Williams, Mikita Balesni, Alan Guo, Jason Wolfe, Akshay Jagadeesh, Ian Kivlichan</dc:creator>
+      <description>Preliminary experiments on alignment and misalignment midtraining, reasoning posttraining, and generalization to chat and agentic evals.</description>
+    </item>
+
+    <item>
+      <title>Introducing Model Spec Evals</title>
+      <link>https://alignment.openai.com/model-spec-evals/</link>
+      <guid isPermaLink="true">https://alignment.openai.com/model-spec-evals/</guid>
+      <pubDate>Wed, 25 Mar 2026 10:00:00 -0700</pubDate>
+      <description>A new evaluation suite for measuring how well models follow the OpenAI Model Spec.</description>
+    </item>
+
+    <item>
+      <title>Training agents to self-report misbehavior</title>
+      <link>https://alignment.openai.com/self-incrimination/</link>
+      <guid isPermaLink="true">https://alignment.openai.com/self-incrimination/</guid>
+      <pubDate>Sat, 21 Mar 2026 11:00:00 -0700</pubDate>
+      <dc:creator>Bruce W. Lee, Yueh-Han Chen and Tomek Korbak</dc:creator>
+      <description>We train agents to call a reporting tool when they covertly misbehave, sharply reducing undetected attacks.</description>
+    </item>
+
+    <item>
+      <title>Interpreting Black Box Reward Models</title>
+      <link>https://alignment.openai.com/argo/</link>
+      <guid isPermaLink="true">https://alignment.openai.com/argo/</guid>
+      <pubDate>Wed, 11 Mar 2026 16:36:18 -0700</pubDate>
+      <dc:creator>Paloma Sodhi, Yueheng Li, Jessica Landon, Eric Wallace and Kai Chen</dc:creator>
+      <description>ARGO distills black-box reward models into interpretable rubrics using reinforcement learning.</description>
+    </item>
+
+    <item>
+      <title>Discovering unknown AI misalignments in real-world usage</title>
+      <link>https://alignment.openai.com/ai-discovered-unknowns/</link>
+      <guid isPermaLink="true">https://alignment.openai.com/ai-discovered-unknowns/</guid>
+      <pubDate>Fri, 6 Feb 2026 11:00:00 -0800</pubDate>
+      <dc:creator>Hannah Sheahan</dc:creator>
+      <description>Reasoning models can find and understand unknown misaligned behaviors from how users respond.</description>
+    </item>
+
+    <item>
+      <title>Why we are excited about confessions</title>
+      <link>https://alignment.openai.com/confessions/</link>
+      <guid isPermaLink="true">https://alignment.openai.com/confessions/</guid>
+      <pubDate>Mon, 12 Jan 2026 11:00:00 -0800</pubDate>
+      <dc:creator>Boaz Barak, Gabriel Wu, Jeremy Chen and Manas Joglekar</dc:creator>
+      <description>Deeper analysis of confession training and comparisons to chain-of-thought monitoring.</description>
+    </item>
+
+    <item>
+      <title>CoVal: Learning values-aware rubrics from the crowd</title>
+      <link>https://alignment.openai.com/coval/</link>
+      <guid isPermaLink="true">https://alignment.openai.com/coval/</guid>
+      <pubDate>Wed, 14 Jan 2026 11:00:00 -0800</pubDate>
+      <dc:creator>Zo&#235; Hitzig, Mitchell Gordon, Tyna Eloundou, Adam Kalai and Sandhini Agarwal</dc:creator>
+      <description>An experimental dataset of crowd-written rubrics that surfaces why people prefer one model output over another.</description>
+    </item>
+
+    <item>
+      <title>Helpful assistant features suppress emergent misalignment</title>
+      <link>https://alignment.openai.com/helpful-assistant-features/</link>
+      <guid isPermaLink="true">https://alignment.openai.com/helpful-assistant-features/</guid>
+      <pubDate>Mon, 22 Dec 2025 11:00:00 -0800</pubDate>
+      <dc:creator>Tom Dupre la Tour, in collaboration with the Interpretability team</dc:creator>
+      <description>Emergent misalignment not only activates misaligned personas, but also suppresses helpful assistant personas.</description>
+    </item>
+
+    <item>
+      <title>Sidestepping Evaluation Awareness and Anticipating Misalignment with Production Evaluations</title>
+      <link>https://alignment.openai.com/prod-evals/</link>
+      <guid isPermaLink="true">https://alignment.openai.com/prod-evals/</guid>
+      <pubDate>Thu, 18 Dec 2025 11:00:00 -0800</pubDate>
+      <dc:creator>Marcus Williams, Cameron Raymond and Micah Carroll, in collaboration with the Safety Oversight team</dc:creator>
+      <description>A pipeline to uncover unknown misaligned behavior and scale the creation of realistic evaluations.</description>
+    </item>
+
+    <item>
+      <title>Debugging misaligned completions with sparse-autoencoder latent attribution</title>
+      <link>https://alignment.openai.com/sae-latent-attribution/</link>
+      <guid isPermaLink="true">https://alignment.openai.com/sae-latent-attribution/</guid>
+      <pubDate>Mon, 01 Dec 2025 11:00:00 -0800</pubDate>
+      <dc:creator>Tom Dupre la Tour and Dan Mossing, in collaboration with the Interpretability team</dc:creator>
+      <description>Efficiently finding features that cause behaviors.</description>
+    </item>
+
+    <item>
+      <title>A Practical Approach to Verifying Code at Scale</title>
+      <link>https://alignment.openai.com/scaling-code-verification/</link>
+      <guid isPermaLink="true">https://alignment.openai.com/scaling-code-verification/</guid>
+      <pubDate>Mon, 01 Dec 2025 11:00:00 -0800</pubDate>
+      <dc:creator>Maja Tr&#281;bacz, Sam Arnesen, Albin Cassirer, Max Johnson, Xin Lin, Thibault Sottiaux, in collaboration with the rest of the Codex team</dc:creator>
+      <description>We train and deploy an AI review agent optimised for precision and real-world use, enabling oversight to scale with autonomous code generation.</description>
+    </item>
+
+    <item>
+      <title>Hello World</title>
+      <link>https://alignment.openai.com/hello-world/</link>
+      <guid isPermaLink="true">https://alignment.openai.com/hello-world/</guid>
+      <pubDate>Mon, 01 Dec 2025 14:00:00 -0800</pubDate>
+      <dc:creator>OpenAI</dc:creator>
+      <description>Introducing our blog on alignment research.</description>
+    </item>
+
+  </channel>
+</rss>

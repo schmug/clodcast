@@ -1,0 +1,108 @@
+<?xml version='1.0' encoding='utf-8'?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Transformer Circuits Thread</title>
+  <subtitle>Anthropic's Interpretability Research</subtitle>
+  <link href="https://transformer-circuits.pub/feed.xml" rel="self" />
+  <link href="https://transformer-circuits.pub/" />
+  <id>https://transformer-circuits.pub/</id>
+  <updated>2026-08-21T00:00:00+00:00</updated>
+  <author>
+    <name>Anthropic Interpretability Team</name>
+  </author>
+  <entry>
+    <title>Characterizing interference weights in a tiny language model</title>
+    <link href="https://transformer-circuits.pub/2026/interference_effectiveness_helpfulness/index.html" />
+    <id>https://transformer-circuits.pub/2026/interference_effectiveness_helpfulness/index.html</id>
+    <updated>2026-08-21T00:00:00+00:00</updated>
+    <summary>We identify interference weights in a 1-layer transformer by measuring their effect on model outputs and loss.</summary>
+    <category term="note" />
+  </entry>
+<entry>
+    <title>Verbalizable Representations Form a Global Workspace in Language Models</title>
+    <link href="https://transformer-circuits.pub/2026/workspace/index.html" />
+    <id>https://transformer-circuits.pub/2026/workspace/index.html</id>
+    <updated>2026-07-06T00:00:00+00:00</updated>
+    <summary>We find that Claude maintains a small, privileged set of representations it can report on, control, and reason with, atop a much larger volume of automatic processing.</summary>
+    <category term="paper" />
+  </entry>
+<entry>
+    <title>Circuits Updates — June 2026</title>
+    <link href="https://transformer-circuits.pub/2026/june-update/index.html" />
+    <id>https://transformer-circuits.pub/2026/june-update/index.html</id>
+    <updated>2026-06-30T00:00:00+00:00</updated>
+    <summary>A short update on turn-averaged sparse autoencoders.</summary>
+    <category term="note" />
+  </entry>
+<entry>
+    <title>Circuits Updates — May 2026</title>
+    <link href="https://transformer-circuits.pub/2026/may-update/index.html" />
+    <id>https://transformer-circuits.pub/2026/may-update/index.html</id>
+    <updated>2026-06-01T00:00:00+00:00</updated>
+    <summary>A short update on understanding features through downstream connections.</summary>
+    <category term="note" />
+  </entry>
+<entry>
+    <title>Natural Language Autoencoders Produce Unsupervised Explanations of LLM Activations</title>
+    <link href="https://transformer-circuits.pub/2026/nla/index.html" />
+    <id>https://transformer-circuits.pub/2026/nla/index.html</id>
+    <updated>2026-05-07T00:00:00+00:00</updated>
+    <summary>We train Claude to translate its internal state into natural language.</summary>
+    <category term="paper" />
+  </entry>
+<entry>
+    <title>HeadVis</title>
+    <link href="https://transformer-circuits.pub/2026/headvis/index.html" />
+    <id>https://transformer-circuits.pub/2026/headvis/index.html</id>
+    <updated>2026-05-04T00:00:00+00:00</updated>
+    <summary>We develop an interactive visualization tool to help us understand the behaviors of attention heads in language models.</summary>
+    <category term="note" />
+  </entry>
+<entry>
+    <title>Emotion Concepts and their Function in a Large Language Model</title>
+    <link href="https://transformer-circuits.pub/2026/emotions/index.html" />
+    <id>https://transformer-circuits.pub/2026/emotions/index.html</id>
+    <updated>2026-04-02T00:00:00+00:00</updated>
+    <summary>We find representations of emotion concepts in Claude Sonnet 4.5 and show that they causally influence its outputs.</summary>
+    <category term="paper" />
+  </entry>
+<entry>
+    <title>Circuits Cross-Post — Activation Oracles</title>
+    <link href="https://alignment.anthropic.com/2025/activation-oracles/" />
+    <id>https://alignment.anthropic.com/2025/activation-oracles/</id>
+    <updated>2025-12-19T00:00:00+00:00</updated>
+    <summary>We train language models to answer questions about their own activations in natural language.</summary>
+    <category term="note" />
+  </entry>
+<entry>
+    <title>Circuits Updates — November 2025</title>
+    <link href="https://transformer-circuits.pub/2025/november-update/index.html" />
+    <id>https://transformer-circuits.pub/2025/november-update/index.html</id>
+    <updated>2025-11-26T00:00:00+00:00</updated>
+    <summary>A short update on harm pressure.</summary>
+    <category term="note" />
+  </entry>
+<entry>
+    <title>Emergent Introspective Awareness in Large Language Models</title>
+    <link href="https://transformer-circuits.pub/2025/introspection/index.html" />
+    <id>https://transformer-circuits.pub/2025/introspection/index.html</id>
+    <updated>2025-10-29T00:00:00+00:00</updated>
+    <summary>We find evidence that language models can introspect on their internal states.</summary>
+    <category term="paper" />
+  </entry>
+<entry>
+    <title>Circuits Updates — October 2025</title>
+    <link href="https://transformer-circuits.pub/2025/october-update/index.html" />
+    <id>https://transformer-circuits.pub/2025/october-update/index.html</id>
+    <updated>2025-10-24T00:00:00+00:00</updated>
+    <summary>Small updates on visual features and dictionary initialization.</summary>
+    <category term="note" />
+  </entry>
+<entry>
+    <title>When Models Manipulate Manifolds: The Geometry of a Counting Task</title>
+    <link href="https://transformer-circuits.pub/2025/linebreaks/index.html" />
+    <id>https://transformer-circuits.pub/2025/linebreaks/index.html</id>
+    <updated>2025-10-21T00:00:00+00:00</updated>
+    <summary>We find geometric structure underlying the mechanisms of a fundamental language model behavior.</summary>
+    <category term="paper" />
+  </entry>
+</feed>

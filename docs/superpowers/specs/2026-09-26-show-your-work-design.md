@@ -1,7 +1,7 @@
 # Show Your Work — design spec
 
 **Date:** 2026-09-26
-**Status:** Approved design, pre-implementation
+**Status:** Approved design, pre-implementation. Amended 2026-09-26 during planning (§4.2 `observed.json` + `commit`, §4.3 banks + casebook rule, §4.4 fixed Anthropic reminder + casebook template + inline `basis`, §4.5 band semantics); each amendment is marked *Amended*.
 **Decisions locked by Cory:**
 - audience = **public explainer** (newcomers, YouTube-forward)
 - shape = **one feature + short briefs**, weekly
@@ -172,6 +172,7 @@ Files, all under `skills/show-your-work/`:
 - `syw_video.py`
 - `prompts/write_feature.md`
 - `prompts/write_brief.md`
+- `prompts/write_casebook.md` (*Amended:* the casebook writer holds no body, so it gets its own template with no URL placeholder)
 - `prompts/digest.md`
 - `prompts/weekly.md` (a stub)
 - `video/template.html` (with inline JS/CSS)
@@ -225,11 +226,17 @@ fails.**
 - **GDM keyword filter:** the main blog feed has no categories, so a closed keyword list decides
   which items are safety items (`safety`, `alignment`, `interpretability`, `misuse`, `frontier
   safety`, `evaluation`), matched on title and summary. The list is a module constant with a test.
-- **`--seed`** marks everything currently parsed as seen and ships nothing, so episode one covers
+- **`seed`** marks everything currently parsed as seen and ships nothing, so episode one covers
   only what arrives after installation.
-- **`--commit-seen <plan.json>`** adds the URLs of the plan's feature, briefs and casebook items
-  to `seen.json` (atomic write). It is called **only** after a successful ship (§4.6). Leftover
+- **`commit --plan <plan.json> --render-output <render.log>`** (*Amended:* was `--commit-seen`)
+  adds the URLs of the plan's feature, briefs and casebook items to `seen.json` and appends
+  `features.jsonl`, and refuses unless the renderer's final JSON reports `status: web-ready` **and**
+  `r2_status: published`. The ship gate lives in code, not in the procedure's prose. Leftover
   pool items are deliberately *not* committed, so they compete again next week.
+- *Amended:* **`observed.json`** records the first date each lead URL was parsed. It is written
+  on every gather, because an observation withholds nothing. A month-precision item (the
+  Anthropic index) ages from its first observation. Aged from the first of its month, a
+  late-August post would fall out of a 21-day pool the week it appeared.
 
 ### 4.3 Plan — `syw_script_plan.py`
 
@@ -237,7 +244,9 @@ Deterministic and pure. Persisted to `<wd>/plan.json`, and a re-run reads an exi
 `plan.json` rather than re-planning. Same resume posture as the daily show's date-seeded
 rotations.
 
-**Pool:** lead items not in `seen.json`, whose `date` (or `first_seen`) is within `max_age_days`.
+**Pool:** lead items not in `seen.json`, whose effective date is within `max_age_days`. The
+effective date is `date`, except for month-precision or undated items, which use
+`first_observed` (§4.2).
 
 **Feature score:**
 - recency
@@ -253,8 +262,10 @@ as `feature_override: true`.
 
 **Briefs:**
 - Up to `max_briefs` slots, filled by the same score.
-- Incidents beyond the first fold into **one "From the casebook" brief** of up to `casebook_max`
-  incidents, so a burst of reports (the launch had 6) can't take every slot.
+- *Amended:* **every non-feature incident and notice** goes to **one "From the casebook"
+  brief** of up to `casebook_max` entries, incidents before notices. That way a burst of reports
+  (the launch had 6) can't take every slot. The casebook takes one slot when non-empty, and
+  research items fill the rest.
 - Notices are eligible only as casebook entries.
 
 **Check matching:**
@@ -274,7 +285,12 @@ draw. That is what makes a re-run rebuild the same episode. Assigned:
 
 Bank lengths are chosen so that no two rotations lock into a fixed pairing. The
 `test_fourth_wall_angle_is_not_locked_to_the_intro_mode` lesson applies: a test pins every pair
-of banks to a combined cycle equal to the product of their lengths. Each bank names an *angle*,
+of banks to a combined cycle equal to the product of their lengths.
+
+*Amended:* the lengths are intro modes **3**, fourth-wall angles **4**, opening moves **5** (adds
+`claim`), first speaker **2**, and buttons **7**. These are pairwise coprime except fourth-wall
+× first speaker (4, 2). That pair is exempt because the two never share a scene: one is in the
+cold open, the other in scene 1. Each bank names an *angle*,
 never a phrase, and ships with burned example lines (the `FALLBACK_BUTTONS` pattern).
 
 **Feature arc**, fixed as 5 scenes, each one `lines` segment and one chapter:
@@ -308,23 +324,30 @@ couldn't see its neighbours, so terms would get defined repeatedly and the arc w
 Its output contract is one JSON object:
 
 ```json
-{"scenes": [{"slot": "hook", "lines": [{"speaker": "explainer", "text": "…"}],
+{"ok": true,
+ "scenes": [{"slot": "hook", "lines": [{"speaker": "explainer", "text": "…"}],
              "beats": [{"line": 0, "cue": "…", "type": "number", "…": "…"}]},
-            …],
- "pushback_basis": [{"line": 2, "basis": "post-limitations"}, …]}
+            {"slot": "pushback", "lines": [{"speaker": "skeptic", "text": "…", "basis": "post-limitations"}], …},
+            …]}
 ```
 
-`basis` and `beats` never enter the manifest (§4.6).
+*Amended:* `basis` rides inline on each Skeptic line of the pushback scene. `basis` and `beats`
+never enter the manifest (§4.6).
 
 **Cold open:**
 - It carries the assigned fourth-wall sentence: the show is written and voiced by Claude, an
   Anthropic model, and Anthropic is one of the labs covered. The wording is written fresh, and the
   example lines are burned.
 - The line is dry, not a joke. The sign-off's button carries the machine joke.
-- **An Anthropic feature adds one plain reminder sentence at the start of scene 1.**
+- **An Anthropic feature adds one plain reminder sentence at the start of scene 1.** *Amended:*
+  the reminder is a fixed line, `ANTHROPIC_REMINDER`, that the assembler prepends as an
+  Explainer turn, not a line a writer is asked for. A disclosure is the one line that *should*
+  be identical every time, and a fixed line can be tested.
 
 **Initial length bands** (characters of spoken text; Phase 2 tunes them against measured
-durations):
+durations). *Amended:* a band is guidance to the writer. Validation refuses only below
+`MIN_SEGMENT_CHARS` (500, the daily show's drop floor) or above 1.5× the band's ceiling (a
+runaway):
 
 | Segment | Band |
 | --- | --- |
@@ -353,7 +376,7 @@ verbatim and number guards don't trust the writer's report.
 **Scene-level checks**, where a failure refuses the scene and triggers the §4.4 failure path:
 - speakers are in `{explainer, skeptic}`
 - the slots appear in order
-- each segment is inside its length band
+- each segment is above `MIN_SEGMENT_CHARS` and under 1.5× its band's ceiling
 - the pushback scene has ≥1 Skeptic line
 - **every Skeptic line in `pushback` has a `basis` that is `post-limitations` or a URL in
   `plan.checks`**. Any other value refuses the scene. This makes "never invent an objection"
@@ -416,10 +439,10 @@ Commits, or the sandbox.
 
 **Ship:** `render.py --manifest <wd>/manifest.json --workdir <wd>`, run **in the background** and
 monitored through its log. That's the 10-minute Bash cap memory. Then:
-- If it exits 0 **and** its result reports `r2_status == "published"`:
-  1. `syw_gather.py --commit-seen <wd>/plan.json`
-  2. append `{date, feature_url, lab, kind}` to `features.jsonl`
-- Otherwise neither is written, and every item returns to the pool.
+- Then `syw_gather.py commit --plan <wd>/plan.json --render-output <wd>/render.log` marks the
+  items seen and appends `{date, feature_url, lab, kind}` to `features.jsonl`. It refuses unless
+  the renderer's final JSON reports `status: web-ready` and `r2_status: published`.
+- Otherwise nothing is written, and every item returns to the pool.
 
 **Known cross-show interaction, accepted:**
 - `render.py` writes each non-null `source_url` into the **shared**
@@ -557,7 +580,8 @@ These go in SKILL.md, and where marked they are enforced in code:
 | File | Written by | Contract |
 | --- | --- | --- |
 | `config.json` | human | §4.1; `{}` is valid |
-| `seen.json` | `syw_gather.py --commit-seen` / `--seed` | URL → `{date, role: feature\|brief\|casebook\|seeded}`; atomic write; only after a successful ship (or seed) |
+| `seen.json` | `syw_gather.py commit` / `seed` | URL → `{date, role: feature\|brief\|seeded}`; atomic write; only after a successful ship (or seed) |
+| `observed.json` | `syw_gather.py gather` / `seed` | URL → first date parsed; written every gather; drives month-precision aging (*Amended*) |
 | `features.jsonl` | the unattended procedure, after ship | append-only `{date, feature_url, lab, kind}`; drives the lab and kind penalties |
 | `dropped.jsonl` | gather + write | append-only; observability only |
 
