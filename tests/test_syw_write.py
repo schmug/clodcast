@@ -537,6 +537,15 @@ def test_assemble_skips_writes_left_by_an_earlier_plan(tmp_path, capsys):
     assert urls.count(F2) == 1 and X1 not in urls
 
 
+def test_assemble_never_airs_the_feature_as_a_brief(tmp_path):
+    # build_plan never briefs its feature; a hand-edited or corrupted plan could.
+    plan = {**PLAN, "feature": _lead(F2), "briefs": [{"kind": "single", "items": [_lead(F2)]}]}
+    wd = _workdir(tmp_path, plan)
+    _frames(wd, F2)
+    _put(wd, "brief_00.json", _brief_write([F2]))
+    assert w.accepted_briefs(wd, plan) == []
+
+
 def test_assemble_refuses_a_feature_written_for_another_plan(tmp_path, capsys):
     wd = _workdir(tmp_path, {**PLAN, "feature": _lead(F2)})
     _frames(wd, F1)
