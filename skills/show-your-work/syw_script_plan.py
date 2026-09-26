@@ -232,14 +232,6 @@ def build_plan(
     }
 
 
-def committed_urls(plan: dict) -> list[str]:
-    """What a successful ship marks seen: the feature and every briefed item.
-    Leftovers are NOT committed, so they compete again next week."""
-    if not plan.get("feature"):
-        return []
-    return [plan["feature"]["url"]] + [it["url"] for b in plan["briefs"] for it in b["items"]]
-
-
 def _line(plan: dict, verb: str) -> str:
     if not plan.get("feature"):
         return f"PLAN skip {plan.get('skip', 'no feature')}"

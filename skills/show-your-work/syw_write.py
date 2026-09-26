@@ -767,6 +767,7 @@ def _cmd_assemble(a) -> int:
             f"writes/feature.json was written for {feature.get('url')!r}, not this plan's "
             f"feature {plan['feature']['url']} — re-run fill/accept feature"
         )
+    briefs = accepted_briefs(wd, plan)
     manifest, beats = assemble_manifest(
         plan["date"],
         episode_title(plan),
@@ -774,12 +775,21 @@ def _cmd_assemble(a) -> int:
         plan,
         _read(writes / "cold_open.json")["lines"],
         feature["scenes"],
-        [write for _, write in accepted_briefs(wd, plan)],
+        [write for _, write in briefs],
         _read(writes / "sign_off.json")["lines"],
         allow_missing_cover=a.allow_missing_cover,
     )
+    # What `syw_gather commit` marks seen: exactly what went into the manifest (I1).
+    # A casebook incident aired only if its digest reached the casebook writer.
+    aired = []
+    for brief, _ in briefs:
+        if brief["kind"] == "casebook":
+            aired += [it["url"] for it in brief["items"] if digest_path(wd, it["url"]).is_file()]
+        else:
+            aired.append(brief["items"][0]["url"])
     _write(wd / "manifest.json", manifest)
     _write(wd / "beats.json", beats)
+    _write(wd / "aired.json", {"feature": plan["feature"]["url"], "briefs": aired})
     n_beats = sum(len(v) for v in beats["segments"].values())
     print(f"ASSEMBLE ok segments={len(manifest['segments'])} beats={n_beats}")
     return 0

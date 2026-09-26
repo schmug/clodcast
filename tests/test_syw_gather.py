@@ -370,6 +370,11 @@ PLAN = {
     ],
     "leftover": ["https://a.test/left"],
 }
+# What assemble wrote to aired.json: everything planned aired here.
+AIRED = {
+    "feature": "https://a.test/f",
+    "briefs": ["https://a.test/b", "https://a.test/c1", "https://a.test/c2"],
+}
 
 
 def test_load_config_refuses_missing_and_unknown_keys():
@@ -485,7 +490,7 @@ def test_seed_marks_everything_seen(offline, capsys):
 
 
 def test_commit_parses_pretty_printed_render_output():
-    assert g.commit(PLAN, RENDER_OK) == 4
+    assert g.commit(PLAN, RENDER_OK, AIRED) == 4
     seen = json.loads(g.seen_path().read_text())
     assert set(seen) == {
         "https://a.test/f",
@@ -503,9 +508,26 @@ def test_commit_parses_pretty_printed_render_output():
 
 
 def test_commit_is_idempotent():
-    g.commit(PLAN, RENDER_OK)
-    g.commit(PLAN, RENDER_OK)
+    g.commit(PLAN, RENDER_OK, AIRED)
+    g.commit(PLAN, RENDER_OK, AIRED)
     assert len(g.load_features()) == 1
+
+
+def test_commit_marks_exactly_what_aired():
+    """I1: a planned brief that was refused (c2's digest failed, so it never aired)
+    and a leftover must return to the pool, not be marked covered forever."""
+    aired = {"feature": "https://a.test/f", "briefs": ["https://a.test/b", "https://a.test/c1"]}
+    assert g.commit(PLAN, RENDER_OK, aired) == 3
+    seen = json.loads(g.seen_path().read_text())
+    assert set(seen) == {"https://a.test/f", "https://a.test/b", "https://a.test/c1"}
+    assert "https://a.test/c2" not in seen and "https://a.test/left" not in seen
+    assert seen["https://a.test/b"]["role"] == "brief"
+
+
+def test_commit_refuses_an_aired_feature_that_is_not_the_plans():
+    with pytest.raises(g.CommitRefused, match="aired.json"):
+        g.commit(PLAN, RENDER_OK, {**AIRED, "feature": "https://a.test/other"})
+    assert not g.seen_path().exists()
 
 
 @pytest.mark.parametrize(
@@ -518,7 +540,7 @@ def test_commit_is_idempotent():
 )
 def test_commit_refuses_a_failed_publish(output, why):
     with pytest.raises(g.CommitRefused, match=why):
-        g.commit(PLAN, output)
+        g.commit(PLAN, output, AIRED)
     assert not g.seen_path().exists()
     assert not g.features_path().exists()
 
@@ -547,3 +569,20 @@ def test_commit_cli_reports_a_missing_plan_file_on_its_line(capsys, tmp_path):
     )
     assert rc == 1
     assert capsys.readouterr().out.strip().splitlines()[-1].startswith("COMMIT FAILED")
+
+
+def test_commit_cli_reads_aired_json_beside_the_plan(capsys, tmp_path):
+    (tmp_path / "plan.json").write_text(json.dumps(PLAN))
+    (tmp_path / "render.log").write_text(RENDER_OK)
+    argv = [
+        "commit", "--plan", str(tmp_path / "plan.json"),
+        "--render-output", str(tmp_path / "render.log"),
+    ]  # fmt: skip
+    assert g.main(argv) == 1
+    assert (
+        capsys.readouterr().out.strip().splitlines()[-1].startswith("COMMIT FAILED no aired.json")
+    )
+    assert not g.seen_path().exists()
+    (tmp_path / "aired.json").write_text(json.dumps(AIRED))
+    assert g.main(argv) == 0
+    assert capsys.readouterr().out.strip() == "COMMIT ok urls=4"

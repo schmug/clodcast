@@ -788,11 +788,16 @@ def seed(config: dict, date_iso: str) -> int:
     return len(out["lead"])
 
 
-def commit(plan: dict, render_output: str) -> int:
-    """Mark the plan's feature and briefed items seen and record the feature — ONLY
-    when render.py's final JSON says the episode shipped. render.py prints that JSON
-    pretty-printed after its log lines, and prints one on a failed publish too
-    (r2_status "failed"), so the check is on the values, never on exit code alone."""
+def commit(plan: dict, render_output: str, aired: dict) -> int:
+    """Mark exactly what AIRED seen and record the feature — ONLY when render.py's
+    final JSON says the episode shipped. render.py prints that JSON pretty-printed
+    after its log lines, and prints one on a failed publish too (r2_status
+    "failed"), so the check is on the values, never on exit code alone.
+
+    `aired` is `<workdir>/aired.json`, written by `syw_write assemble`: the feature
+    URL and each brief item that went into the manifest. It is not the plan's
+    briefs (I1) — a refused brief, or a casebook incident whose digest failed, never
+    aired and must return to the pool, as must every leftover."""
     _dp = Path(__file__).resolve().parent.parent / "daily-podcast"
     if str(_dp) not in sys.path:
         sys.path.insert(0, str(_dp))
@@ -808,13 +813,18 @@ def commit(plan: dict, render_output: str) -> int:
     feature = plan.get("feature")
     if not feature:
         raise CommitRefused("the plan has no feature")
+    if aired.get("feature") != feature["url"]:
+        # features.jsonl records the PLAN's feature; a mismatch means aired.json
+        # came from an assemble of another plan.
+        raise CommitRefused(
+            f"aired.json feature {aired.get('feature')!r} is not the plan's {feature['url']}"
+        )
     seen = load_seen()
     seen[feature["url"]] = {"date": plan["date"], "role": "feature"}
     urls = [feature["url"]]
-    for brief in plan.get("briefs", []):
-        for it in brief["items"]:
-            seen.setdefault(it["url"], {"date": plan["date"], "role": "brief"})
-            urls.append(it["url"])
+    for url in aired.get("briefs", []):
+        seen.setdefault(url, {"date": plan["date"], "role": "brief"})
+        urls.append(url)
     _atomic_write(seen_path(), seen)
     history = load_features()
     row = {
@@ -870,7 +880,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"SEED ok marked={seed(load_config(), _date(a.date))}")
         else:
             plan = json.loads(Path(a.plan).read_text())
-            n = commit(plan, Path(a.render_output).read_text())
+            aired_p = Path(a.plan).parent / "aired.json"
+            if not aired_p.is_file():
+                raise ConfigError(
+                    f"no aired.json beside {a.plan} — `syw_write.py assemble` writes it"
+                )
+            aired = json.loads(aired_p.read_text())
+            n = commit(plan, Path(a.render_output).read_text(), aired)
             print(f"COMMIT ok urls={n}")
     except (AdapterFailed, ConfigError, ValueError, OSError) as e:
         prefix = {"gather": "GATHER", "seed": "SEED", "commit": "COMMIT"}[a.cmd]

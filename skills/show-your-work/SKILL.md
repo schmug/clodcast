@@ -116,9 +116,9 @@ Let `D` = today (`YYYY-MM-DD`), `S` = this skill's directory (`${CLAUDE_PLUGIN_R
    - the sign-off (250–500 chars): a thanks and ONE dry joke in the `button` angle, worded fresh.
 
    Save each as `{"ok": true, "lines": [{"speaker": ..., "text": ...}]}` and run `python3 S/syw_write.py accept cold_open|sign_off --workdir W --output <file>`. Rewrite until accepted.
-7. **Assemble.** `python3 S/syw_write.py assemble --workdir W --summary "<one sentence on this week's feature>"` → `W/manifest.json` and `W/beats.json`. It uses a brief's write only if it was accepted for this plan's brief at that index, and refuses (`ASSEMBLE FAILED`) a feature written for another plan.
+7. **Assemble.** `python3 S/syw_write.py assemble --workdir W --summary "<one sentence on this week's feature>"` → `W/manifest.json`, `W/beats.json` and `W/aired.json` (the feature URL plus each brief item that went into the manifest — a refused brief, or a casebook incident whose digest was refused, is not in it). It uses a brief's write only if it was accepted for this plan's brief at that index, and refuses (`ASSEMBLE FAILED`) a feature written for another plan.
 8. **Render in the background.** `python3 <root>/skills/daily-podcast/render.py --manifest W/manifest.json --workdir W > W/render.log 2>&1` with `run_in_background`, and monitor `W/render.log` — the 10-minute foreground Bash cap kills a long render. Never pass `--dry-run` (this is a real episode) and never pass `--skip-preflight`.
-9. **Commit.** `python3 S/syw_gather.py commit --plan W/plan.json --render-output W/render.log`. It marks the stories covered only if the render's final JSON says `web-ready` and `published`; `COMMIT refused` means the episode did not ship — report `FAILED <reason>`.
+9. **Commit.** `python3 S/syw_gather.py commit --plan W/plan.json --render-output W/render.log`. It reads `W/aired.json` (beside the plan) and marks exactly those stories covered — never the whole plan, so a dropped brief and every leftover return to the pool — and only if the render's final JSON says `web-ready` and `published`; `COMMIT refused` means the episode did not ship — report `FAILED <reason>`.
 10. **Report once.** `SHIPPED <mp3_url> - <title> - <n> chapters - <dur>s - r2=ok` with every value from the renderer's final JSON; `SKIPPED <reason>`; or `FAILED <reason>`.
 
 ## Setup
@@ -132,7 +132,7 @@ Let `D` = today (`YYYY-MM-DD`), `S` = this skill's directory (`${CLAUDE_PLUGIN_R
 | File | Written by | Contract |
 | --- | --- | --- |
 | `config.json` | human | `{}` is valid; unknown keys refuse |
-| `seen.json` | `seed`, `commit` | URL → `{date, role}`; only after a verified ship (or seed); corrupt refuses |
+| `seen.json` | `seed`, `commit` | URL → `{date, role}`; only after a verified ship (or seed), and only what `aired.json` lists; corrupt refuses |
 | `observed.json` | `gather`, `seed` | URL → first date parsed; month-precision items age from it |
 | `features.jsonl` | `commit` | one row per shipped feature; drives the lab and kind penalties |
 | `dropped.jsonl` | gather, accept | failed adapters and dropped beats; observability only |

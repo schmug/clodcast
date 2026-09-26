@@ -539,3 +539,31 @@ def test_assemble_refuses_a_feature_written_for_another_plan(tmp_path, capsys):
     last = capsys.readouterr().out.strip().splitlines()[-1]
     assert last.startswith("ASSEMBLE FAILED") and F1 in last
     assert not (wd / "manifest.json").exists()
+
+
+# --- I1: aired.json names exactly what went into the manifest -------------------
+
+
+def test_assemble_writes_aired_json_listing_only_what_aired(tmp_path):
+    c1, c2 = "https://alignment.openai.com/r/c1", "https://alignment.openai.com/r/c2"
+    x2 = "https://deepmindsafetyresearch.medium.com/x2"
+    plan = {
+        **PLAN,
+        "briefs": [
+            {"kind": "single", "items": [_lead(X1)]},
+            {"kind": "single", "items": [_lead(x2)]},  # refused: no write
+            {"kind": "casebook", "items": [_lead(c1, "incident"), _lead(c2, "incident")]},
+        ],
+    }
+    wd = _workdir(tmp_path, plan)
+    _frames(wd, PLAN["feature"]["url"])
+    _put(wd, "brief_00.json", _brief_write([X1]))
+    _put(wd, "brief_02.json", {**_brief_write([c1, c2]), "kind": "casebook", "item": None})
+    # c2's digest was refused, so the casebook was written without it.
+    w.digest_path(wd, c1).parent.mkdir(parents=True)
+    w.digest_path(wd, c1).write_text("{}")
+    assert _assemble_cli(wd) == 0
+    assert json.loads((wd / "aired.json").read_text()) == {
+        "feature": PLAN["feature"]["url"],
+        "briefs": [X1, c1],
+    }

@@ -191,14 +191,6 @@ def test_feature_override_and_exclude():
         )
 
 
-def test_committed_urls_exclude_leftovers():
-    lead = [item(f"https://a.test/{i}", date=f"2026-09-2{i}") for i in range(7)]
-    p = plan(lead)
-    assert len(sp.committed_urls(p)) == 5
-    assert set(sp.committed_urls(p)).isdisjoint(p["leftover"])
-    assert sp.committed_urls({"feature": None}) == []
-
-
 def test_cli_reuses_an_existing_plan(tmp_path, capsys):
     syw_gather.config_path().parent.mkdir(parents=True, exist_ok=True)
     syw_gather.config_path().write_text("{}")
