@@ -31,7 +31,7 @@ SNAPSHOT_RE = r"(\d{4}-\d{2}-\d{2})\.json"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "show_name": "Frontier Commits",
-    "host_name": "Cory",
+    "host_name": "Schmug",
     "orgs": [
         {"name": "anthropics", "filter": "none"},
         {"name": "openai", "filter": "none"},

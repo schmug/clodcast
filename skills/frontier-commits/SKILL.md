@@ -354,7 +354,7 @@ One-time, in order.
 // ~/.config/frontier-commits/config.json
 {
   "show_name": "Frontier Commits",
-  "host_name": "Cory",              // narration only; NOT spoken in the sign-off,
+  "host_name": "Schmug",            // narration only; NOT spoken in the sign-off,
                                     //   which closes on a button (see "The button")
   "orgs": [                             // each entry {"name", "filter"}; names must match
     {"name": "anthropics", "filter": "none"},        //   [A-Za-z0-9-]+ (they land in gh api
