@@ -1,0 +1,200 @@
+"""Show Your Work plan layer (spec §4.3)."""
+
+from __future__ import annotations
+
+import datetime as dt
+import itertools
+import json
+
+import pytest
+
+import syw_gather
+import syw_script_plan as sp
+
+CONFIG = dict(syw_gather.DEFAULT_CONFIG)
+TODAY = "2026-09-27"
+
+
+def item(url, lab="openai", kind="research", date="2026-09-20", **kw):
+    return {
+        "url": url, "source": "s", "lab": lab, "kind": kind, "title": url.rsplit("/", 1)[-1],
+        "summary": "", "date": date, "date_precision": kw.pop("precision", "day"),
+        "role": "lead", "mentions": [], "seen": kw.pop("seen", False),
+        "first_observed": kw.pop("first_observed", date), **kw,
+    }  # fmt: skip
+
+
+def plan(lead, check=(), history=(), **cfg):
+    return sp.build_plan(
+        {"lead": list(lead), "check": list(check)}, list(history), {**CONFIG, **cfg}, TODAY
+    )
+
+
+def test_rotations_do_not_lock():
+    """Every pair of banks except the exempt one covers its full product cycle over
+    consecutive weeks — no rotation is a function of another (the daily show's
+    fourth-wall/intro-mode lesson)."""
+    start = dt.date(2026, 9, 28)
+    for a, b in itertools.combinations(sp.ROTATION_BANKS, 2):
+        if {a, b} == set(sp.EXEMPT_PAIR):
+            continue
+        n = len(sp.ROTATION_BANKS[a]) * len(sp.ROTATION_BANKS[b])
+        pairs = {
+            (r[a], r[b])
+            for r in (sp.rotation((start + dt.timedelta(weeks=i)).isoformat()) for i in range(n))
+        }
+        assert len(pairs) == n, f"{a} x {b} locks: {len(pairs)} of {n} combinations"
+
+
+def test_rotation_is_a_pure_function_of_the_date():
+    assert sp.rotation("2026-09-27") == sp.rotation("2026-09-27")
+    assert set(sp.rotation("2026-09-27")) == set(sp.ROTATION_BANKS)
+
+
+def test_month_precision_items_age_from_first_observation():
+    late_august = item(
+        "https://a.test/aug", lab="anthropic", date="2026-08-01", precision="month",
+        first_observed="2026-09-10",
+    )  # fmt: skip
+    # Aged from its month it would be 57 days old on 2026-09-27; from first sight, 17.
+    assert sp.age_days(late_august, dt.date(2026, 9, 27)) == 17
+    p = plan([late_august], max_age_days=21)
+    assert p["feature"]["url"] == "https://a.test/aug"
+
+
+def test_seen_and_stale_items_are_not_in_the_pool():
+    p = plan(
+        [item("https://a.test/seen", seen=True), item("https://a.test/old", date="2026-08-01")]
+    )
+    assert p["feature"] is None and p["skip"] == "no new lab items"
+
+
+def test_newest_wins_without_penalties():
+    p = plan(
+        [
+            item("https://a.test/old", date="2026-09-15"),
+            item("https://a.test/new", date="2026-09-25"),
+        ]
+    )
+    assert p["feature"]["url"] == "https://a.test/new"
+
+
+def test_lab_penalty_hands_the_slot_to_another_lab():
+    history = [{"date": "2026-09-20", "feature_url": "x", "lab": "anthropic", "kind": "research"}]
+    p = plan(
+        [
+            item("https://a.test/anthropic", lab="anthropic", date="2026-09-26"),
+            item("https://a.test/openai", lab="openai", date="2026-09-10"),
+        ],
+        history=history,
+    )
+    assert p["feature"]["url"] == "https://a.test/openai"
+
+
+def test_kind_penalty_breaks_a_near_tie():
+    history = [{"date": "2026-09-20", "feature_url": "x", "lab": "gdm", "kind": "incident"}]
+    p = plan(
+        [
+            item("https://a.test/inc", kind="incident", date="2026-09-26"),
+            item("https://a.test/res", kind="research", date="2026-09-20"),
+        ],
+        history=history,
+        lab_penalty_weeks=0,
+    )
+    assert p["feature"]["url"] == "https://a.test/res"
+
+
+def test_notices_are_never_features():
+    p = plan([item("https://a.test/n", kind="notice", date="2026-09-26")])
+    assert p["feature"] is None
+
+
+def test_casebook_folds_incidents_before_notices_and_takes_one_slot():
+    lead = [item("https://a.test/feature", kind="research", date="2026-09-26")]
+    lead += [
+        item(f"https://a.test/inc{i}", kind="incident", date="2026-09-2" + str(i)) for i in range(4)
+    ]
+    lead += [item("https://a.test/notice", kind="notice", date="2026-09-25")]
+    lead += [
+        item(f"https://a.test/res{i}", kind="research", date="2026-09-1" + str(i)) for i in range(5)
+    ]
+    p = plan(lead, lab_penalty_weeks=0)
+    kinds = [b["kind"] for b in p["briefs"]]
+    assert kinds == ["single", "single", "single", "casebook"]
+    casebook = p["briefs"][-1]["items"]
+    assert len(casebook) == 3 and all(it["kind"] == "incident" for it in casebook)
+    assert "https://a.test/notice" in p["leftover"]
+
+
+def test_checks_attach_by_mention_within_the_lookback_and_cap():
+    feature = item("https://a.test/f", date="2026-09-26")
+    checks = [
+        {
+            **item(f"https://metr.test/{i}", date=f"2026-09-{10 + i}"),
+            "role": "check",
+            "mentions": ["https://a.test/f"],
+        }
+        for i in range(5)
+    ]
+    checks.append(
+        {
+            **item("https://metr.test/old", date="2026-06-01"),
+            "role": "check",
+            "mentions": ["https://a.test/f"],
+        }
+    )
+    checks.append(
+        {**item("https://metr.test/other", date="2026-09-20"), "role": "check", "mentions": []}
+    )
+    p = plan([feature], check=checks)
+    assert [c["url"] for c in p["checks"]] == [
+        "https://metr.test/4", "https://metr.test/3", "https://metr.test/2",
+    ]  # fmt: skip
+
+
+def test_feature_override_and_exclude():
+    lead = [
+        item("https://a.test/new", date="2026-09-26"),
+        item("https://a.test/old", date="2026-09-20"),
+    ]
+    over = sp.build_plan(
+        {"lead": lead, "check": []}, [], CONFIG, TODAY, feature_override="https://a.test/old"
+    )
+    assert over["feature"]["url"] == "https://a.test/old" and over["feature"]["override"] is True
+    ex = sp.build_plan(
+        {"lead": lead, "check": []}, [], CONFIG, TODAY, exclude=("https://a.test/new",)
+    )
+    assert ex["feature"]["url"] == "https://a.test/old" and ex["excluded"] == ["https://a.test/new"]
+    with pytest.raises(ValueError):
+        sp.build_plan(
+            {"lead": lead, "check": []}, [], CONFIG, TODAY, feature_override="https://a.test/nope"
+        )
+
+
+def test_committed_urls_exclude_leftovers():
+    lead = [item(f"https://a.test/{i}", date=f"2026-09-2{i}") for i in range(7)]
+    p = plan(lead)
+    assert len(sp.committed_urls(p)) == 5
+    assert set(sp.committed_urls(p)).isdisjoint(p["leftover"])
+    assert sp.committed_urls({"feature": None}) == []
+
+
+def test_cli_reuses_an_existing_plan(tmp_path, capsys):
+    syw_gather.config_path().parent.mkdir(parents=True, exist_ok=True)
+    syw_gather.config_path().write_text("{}")
+    cands = tmp_path / "candidates.json"
+    cands.write_text(
+        json.dumps({"lead": [item("https://a.test/a", date="2026-09-26")], "check": []})
+    )
+    out = tmp_path / "plan.json"
+    args = ["plan", "--date", TODAY, "--candidates", str(cands), "--out", str(out)]
+    assert sp.main(args) == 0
+    assert capsys.readouterr().out.strip() == "PLAN ok feature=https://a.test/a briefs=0 checks=0"
+    cands.write_text(
+        json.dumps({"lead": [item("https://a.test/b", date="2026-09-26")], "check": []})
+    )
+    assert sp.main(args) == 0
+    assert capsys.readouterr().out.strip().startswith("PLAN reused feature=https://a.test/a")
+    # --exclude re-plans and accumulates.
+    assert sp.main(args + ["--exclude", "https://a.test/a"]) == 0
+    assert json.loads(out.read_text())["feature"]["url"] == "https://a.test/b"
