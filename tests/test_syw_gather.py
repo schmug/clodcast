@@ -195,3 +195,96 @@ def test_gdm_keeps_medium_and_keyword_matched_blog_posts_only():
     urls = {i.url for i in g.parse_gdm(pages)}
     assert "https://deepmind.google/blog/fsf" in urls
     assert "https://deepmind.google/blog/pancakes" not in urls
+
+
+def _lead_items() -> list:
+    pages = _pages(
+        (g.ANTHROPIC_ALIGNMENT_URL, "anthropic-alignment.html"),
+        (g.ANTHROPIC_RESEARCH_URLS[0], "anthropic-research-alignment.html"),
+        (g.ANTHROPIC_RESEARCH_URLS[1], "anthropic-research-interpretability.html"),
+        (g.TRANSFORMER_CIRCUITS_URL, "transformer-circuits.xml"),
+        (g.OPENAI_ALIGNMENT_RSS, "openai-alignment.xml"),
+        (g.OPENAI_ALIGNMENT_INDEX, "openai-alignment.html"),
+    )
+    return (
+        g.parse_anthropic_alignment(pages)
+        + g.parse_anthropic_research(pages)
+        + g.parse_transformer_circuits(pages)
+        + g.parse_openai_alignment(pages)
+    )
+
+
+def test_metr_translations_are_not_separate_checks():
+    pairs = g.parse_check_feed((DATA / "metr.xml").read_text(), "metr")
+    urls = [item.url for item, _ in pairs]
+    assert len(urls) == 4
+    assert not any("/zh-Hans/" in u or "/es/" in u for u in urls)
+    assert all(item.role == "check" and item.lab == "metr" for item, _ in pairs)
+
+
+def test_mentions_come_from_links_in_the_check_content():
+    pairs = g.parse_check_feed((DATA / "redwood.xml").read_text(), "redwood")
+    pairs += g.parse_check_feed((DATA / "alignment-forum.xml").read_text(), "alignment-forum")
+    checks = {c.title[:30]: c for c in g.attach_mentions(pairs, _lead_items())}
+    redwood = next(c for t, c in checks.items() if t.startswith("Latent reasoning"))
+    assert (
+        "https://www.anthropic.com/research/alignment-assessment-cybersecurity-incidents"
+        in redwood.mentions
+    )
+    af = next(c for t, c in checks.items() if t.startswith("Four LLM loss"))
+    assert af.mentions == ["https://alignment.anthropic.com/2026/psm"]
+
+
+def test_mentions_match_a_verbatim_title_without_a_link():
+    lead = [
+        g.Item(
+            "https://lab.test/p",
+            "s",
+            "anthropic",
+            "research",
+            "Training a Misaligned Reward Seeker",
+            "",
+            "",
+            "day",
+            "lead",
+        ),
+        g.Item(
+            "https://lab.test/q",
+            "s",
+            "anthropic",
+            "research",
+            "Teaching Claude Why",
+            "",
+            "",
+            "day",
+            "lead",
+        ),
+    ]
+    check = g.Item(
+        "https://metr.org/x", "metr", "metr", "research", "t", "", "2026-09-20", "day", "check"
+    )
+    content = (
+        "<p>Anthropic's <em>Training a misaligned reward-seeker</em> post "
+        "and teaching Claude why.</p>"
+    )
+    [out] = g.attach_mentions([(check, content)], lead)
+    # 5 words: matched despite case and punctuation. 3 words: too short to trust.
+    assert out.mentions == ["https://lab.test/p"]
+
+
+def test_check_items_do_not_carry_their_content():
+    pairs = g.parse_check_feed((DATA / "redwood.xml").read_text(), "redwood")
+    [first_check, *_] = g.attach_mentions(pairs, [])
+    assert set(first_check.to_dict()) == {
+        "url", "source", "lab", "kind", "title", "summary",
+        "date", "date_precision", "role", "mentions",
+    }  # fmt: skip
+    assert len(first_check.summary) <= g.SUMMARY_MAX_CHARS
+
+
+def test_registry_has_six_lead_and_four_check_adapters():
+    roles = [a.role for a in g.ADAPTERS]
+    assert roles.count("lead") == 6 and roles.count("check") == 4
+    assert len({a.name for a in g.ADAPTERS}) == 10
+    assert all(a.parse is not None for a in g.ADAPTERS if a.role == "lead")
+    assert all(a.check_source for a in g.ADAPTERS if a.role == "check")

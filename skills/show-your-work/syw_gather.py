@@ -27,7 +27,7 @@ import os
 import re
 import sys
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
@@ -510,3 +510,103 @@ def parse_gdm(pages: dict[str, str]) -> list[Item]:
     items = feed_items(pages[GDM_MEDIUM_URL], "gdm-safety", "gdm", "research", LEAD)
     blog = feed_items(pages[GDM_BLOG_URL], "gdm-safety", "gdm", "research", LEAD)
     return items + [it for it in blog if _GDM_KW_RE.search(f"{it.title} {it.summary}")]
+
+
+# --------------------------------------------------------------------------
+# Check parsers — [(Item, content_html)]; the content is dropped in attach_mentions
+# --------------------------------------------------------------------------
+
+CHECK_FEEDS = {
+    "metr": "https://metr.org/feed.xml",
+    "redwood": "https://blog.redwoodresearch.org/feed",
+    "goodfire": "https://www.goodfire.com/research/rss.xml",
+    "alignment-forum": "https://www.alignmentforum.org/feed.xml?view=curated-rss",
+}
+
+# METR republishes posts in translation under /zh-Hans/ and /es/ with the same
+# links, so a translation would attach as a second and third "independent" check.
+_TRANSLATION_PATH_RE = re.compile(r"^/[a-z]{2}(?:-[A-Za-z]+)?/")
+
+
+def parse_check_feed(text: str, source: str) -> list[tuple[Item, str]]:
+    import feedparser
+
+    out = []
+    for e in feedparser.parse(text).entries:
+        if not e.get("link") or not e.get("title"):
+            continue
+        if _TRANSLATION_PATH_RE.match(urlsplit(e.link).path):
+            continue
+        content = " ".join(c.get("value", "") for c in e.get("content", [])) or e.get("summary", "")
+        item = Item(
+            url=normalize_url(e.link),
+            source=source,
+            lab=source,
+            kind="research",
+            title=clean_text(e.title),
+            summary=cap_summary(e.get("summary", "")),
+            date=struct_date(e),
+            date_precision="day",
+            role=CHECK,
+        )
+        out.append((item, content))
+    return out
+
+
+def normalize_title(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", clean_text(s).casefold()).strip()
+
+
+MIN_TITLE_MATCH_WORDS = 4
+
+
+def attach_mentions(pairs: list[tuple[Item, str]], lead: list[Item]) -> list[Item]:
+    """A check item MENTIONS a lead item when its content links the lead URL or
+    contains the lead title (normalized, at least MIN_TITLE_MATCH_WORDS words, so a
+    generic three-word title never matches by accident). The content is read here
+    and nowhere else; the returned items do not carry it."""
+    by_url = {it.url for it in lead}
+    titled = [
+        (t, it.url)
+        for it in lead
+        if len((t := normalize_title(it.title)).split()) >= MIN_TITLE_MATCH_WORDS
+    ]
+    out = []
+    for item, content in pairs:
+        links = hrefs(content, item.url) if content else set()
+        text = f" {normalize_title(page_text(content))} " if content else ""
+        hits = {u for u in links if u in by_url}
+        hits |= {u for t, u in titled if f" {t} " in text}
+        item.mentions = sorted(hits)
+        out.append(item)
+    return out
+
+
+# --------------------------------------------------------------------------
+# Registry
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Adapter:
+    name: str
+    role: str
+    urls: tuple[str, ...]
+    parse: Callable[[dict[str, str]], list[Item]] | None  # lead adapters
+    check_source: str | None = None  # check adapters
+
+
+ADAPTERS: tuple[Adapter, ...] = (
+    Adapter("anthropic-alignment", LEAD, (ANTHROPIC_ALIGNMENT_URL,), parse_anthropic_alignment),
+    Adapter("anthropic-research", LEAD, ANTHROPIC_RESEARCH_URLS, parse_anthropic_research),
+    Adapter("transformer-circuits", LEAD, (TRANSFORMER_CIRCUITS_URL,), parse_transformer_circuits),
+    Adapter(
+        "openai-alignment",
+        LEAD,
+        (OPENAI_ALIGNMENT_RSS, OPENAI_ALIGNMENT_INDEX),
+        parse_openai_alignment,
+    ),
+    Adapter("openai-misalignment", LEAD, (OPENAI_MISALIGNMENT_URL,), parse_openai_misalignment),
+    Adapter("gdm-safety", LEAD, (GDM_MEDIUM_URL, GDM_BLOG_URL), parse_gdm),
+    *(Adapter(name, CHECK, (url,), None, check_source=name) for name, url in CHECK_FEEDS.items()),
+)
