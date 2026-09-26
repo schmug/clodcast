@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -276,6 +277,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(plan, indent=2, ensure_ascii=False))
+    # A NEW plan invalidates every accepted write (terms.json included): a brief
+    # accepted under the old plan must not reach this one's episode. Digests are
+    # keyed by URL and stay valid. The reuse path above returns before this.
+    shutil.rmtree(out.parent / "writes", ignore_errors=True)
     print(_line(plan, "ok"))
     return 0
 

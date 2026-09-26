@@ -218,3 +218,35 @@ def test_cli_reuses_an_existing_plan(tmp_path, capsys):
     # --exclude re-plans and accumulates.
     assert sp.main(args + ["--exclude", "https://a.test/a"]) == 0
     assert json.loads(out.read_text())["feature"]["url"] == "https://a.test/b"
+
+
+def test_cli_a_new_plan_clears_the_old_plans_writes(tmp_path, capsys):
+    """I2: an accepted brief from plan 1 must not be assembled into plan 2. Digests
+    are keyed by URL and stay valid, so they survive."""
+    syw_gather.config_path().parent.mkdir(parents=True, exist_ok=True)
+    syw_gather.config_path().write_text("{}")
+    cands = tmp_path / "candidates.json"
+    lead = [
+        item("https://a.test/a", date="2026-09-26"),
+        item("https://a.test/b", date="2026-09-25"),
+    ]
+    cands.write_text(json.dumps({"lead": lead, "check": []}))
+    out = tmp_path / "plan.json"
+    args = ["plan", "--date", TODAY, "--candidates", str(cands), "--out", str(out)]
+
+    def stale_writes():
+        (tmp_path / "writes").mkdir(exist_ok=True)
+        (tmp_path / "writes" / "brief_00.json").write_text("{}")
+        (tmp_path / "writes" / "terms.json").write_text("[]")
+
+    (tmp_path / "digests").mkdir()
+    (tmp_path / "digests" / "abc.json").write_text("{}")
+    stale_writes()
+    assert sp.main(args) == 0  # a NEW plan
+    assert not (tmp_path / "writes").exists()
+    assert (tmp_path / "digests" / "abc.json").is_file()
+    stale_writes()
+    assert sp.main(args) == 0  # the reuse path keeps this plan's writes
+    assert (tmp_path / "writes" / "brief_00.json").is_file()
+    assert sp.main(args + ["--exclude", "https://a.test/a"]) == 0  # a re-plan
+    assert not (tmp_path / "writes").exists()

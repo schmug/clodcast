@@ -462,3 +462,80 @@ def test_cli_fill_feature_uses_accepted_digests(tmp_path, capsys):
     capsys.readouterr()
     assert w.main(["fill", "feature", "--workdir", str(wd)]) == 0
     assert "METR says so" in capsys.readouterr().out
+
+
+# --- I2: a write is used only for the plan it was accepted under ----------------
+
+F1 = "https://alignment.openai.com/f1"
+F2 = "https://alignment.openai.com/f2"
+X1 = "https://deepmindsafetyresearch.medium.com/x1"
+
+
+def _lead(url, kind="research", lab="openai"):
+    return {"url": url, "title": url.rsplit("/", 1)[-1].upper(), "lab": lab, "kind": kind,
+            "summary": "s"}  # fmt: skip
+
+
+def _workdir(tmp_path, plan) -> Path:
+    wd = tmp_path / "wd"
+    (wd / "writes").mkdir(parents=True)
+    (wd / "plan.json").write_text(json.dumps(plan))
+    return wd
+
+
+def _put(wd, name, obj):
+    (wd / "writes" / name).write_text(json.dumps(obj))
+
+
+def _brief_write(urls, lab="openai"):
+    return {"kind": "single", "item": _lead(urls[0], lab=lab), "urls": urls,
+            "lines": [L("explainer", LONG)], "beats": []}  # fmt: skip
+
+
+def _frames(wd, feature_url):
+    scenes = w.validate_feature(_feature(), PLAN, POST, set())["scenes"]
+    _put(wd, "feature.json", {"url": feature_url, "scenes": scenes})
+    _put(wd, "cold_open.json", {"lines": COLD})
+    _put(wd, "sign_off.json", {"lines": SIGN})
+
+
+def _assemble_cli(wd):
+    return w.main(["assemble", "--workdir", str(wd), "--summary", "s", "--allow-missing-cover"])
+
+
+def test_accept_records_what_each_write_is_for(tmp_path, monkeypatch):
+    monkeypatch.setattr(w, "fetch_post_text", lambda url: POST)
+    plan = {**PLAN, "briefs": [{"kind": "single", "items": [_lead(X1)]}]}
+    wd = _workdir(tmp_path, plan)
+    out = tmp_path / "o.txt"
+    out.write_text(json.dumps(_feature()))
+    assert w.main(["accept", "feature", "--workdir", str(wd), "--output", str(out)]) == 0
+    assert json.loads((wd / "writes" / "feature.json").read_text())["url"] == PLAN["feature"]["url"]
+    out.write_text(json.dumps({"ok": True, "lines": [L("explainer", LONG)], "beats": []}))
+    argv = ["accept", "brief", "--workdir", str(wd), "--output", str(out), "--index", "0"]
+    assert w.main(argv) == 0
+    assert json.loads((wd / "writes" / "brief_00.json").read_text())["urls"] == [X1]
+
+
+def test_assemble_skips_writes_left_by_an_earlier_plan(tmp_path, capsys):
+    """The review's probe: plan 1 = feature F1, briefs [F2, X1], both accepted;
+    `plan --exclude F1` makes plan 2 = feature F2, briefs [X1]; plan 2's brief 0 is
+    refused. The episode must not carry F2 as the feature AND as a brief."""
+    plan2 = {**PLAN, "feature": _lead(F2), "briefs": [{"kind": "single", "items": [_lead(X1)]}]}
+    wd = _workdir(tmp_path, plan2)
+    _frames(wd, F2)
+    _put(wd, "brief_00.json", _brief_write([F2]))  # plan 1's brief 0
+    _put(wd, "brief_01.json", _brief_write([X1]))  # plan 1's brief 1: no such index now
+    assert _assemble_cli(wd) == 0
+    assert capsys.readouterr().out.strip() == "ASSEMBLE ok segments=7 beats=0"
+    urls = [s["source_url"] for s in json.loads((wd / "manifest.json").read_text())["segments"]]
+    assert urls.count(F2) == 1 and X1 not in urls
+
+
+def test_assemble_refuses_a_feature_written_for_another_plan(tmp_path, capsys):
+    wd = _workdir(tmp_path, {**PLAN, "feature": _lead(F2)})
+    _frames(wd, F1)
+    assert _assemble_cli(wd) == 1
+    last = capsys.readouterr().out.strip().splitlines()[-1]
+    assert last.startswith("ASSEMBLE FAILED") and F1 in last
+    assert not (wd / "manifest.json").exists()

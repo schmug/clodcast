@@ -136,6 +136,12 @@ def die(msg: str, code: int = 1) -> NoReturn:
     raise SystemExit(code)
 
 
+class CliError(RuntimeError):
+    """A workdir CLI step cannot proceed. `main` prints it on the command's one
+    line (`FILL FAILED` / `ACCEPT refused` / `ASSEMBLE FAILED`), never as a
+    traceback — the procedure in SKILL.md branches on that line."""
+
+
 # --- outcomes ---------------------------------------------------------------------
 
 
@@ -693,7 +699,10 @@ def _cmd_accept(a) -> int:
         v = validate_feature(obj, plan, fetch_post_text(plan["feature"]["url"]), seen_terms)
         if not v["ok"]:
             return _refused("; ".join(v["problems"]))
-        _write(wd / "writes" / "feature.json", {"scenes": v["scenes"]})
+        # `url` names the plan this was written for; assemble refuses a mismatch.
+        _write(
+            wd / "writes" / "feature.json", {"url": plan["feature"]["url"], "scenes": v["scenes"]}
+        )
         dropped = v["dropped_beats"]
     elif a.what == "brief":
         brief = plan["briefs"][a.index]
@@ -707,6 +716,9 @@ def _cmd_accept(a) -> int:
             {
                 "kind": brief["kind"],
                 "item": None if casebook else brief["items"][0],
+                # What this brief was written for; assemble uses it only if the
+                # plan's brief at this index still has exactly these items.
+                "urls": [it["url"] for it in brief["items"]],
                 "lines": v["lines"],
                 "beats": v["beats"],
             },
@@ -724,18 +736,45 @@ def _cmd_accept(a) -> int:
     return 0
 
 
+def accepted_briefs(wd: Path, plan: dict) -> list[tuple[dict, dict]]:
+    """(plan brief, its accepted write) for each brief that will air, in plan order.
+
+    Iterates the PLAN, never a glob of writes/: a write left by an earlier plan
+    (a re-plan after `--exclude`) is used only if its `urls` equal this plan's
+    brief at that index. The review's probe: plan 1's accepted brief for F2 sat at
+    brief_00 when plan 2 made F2 the feature, and shipped it twice."""
+    feature_url = plan["feature"]["url"]
+    out = []
+    for i, brief in enumerate(plan.get("briefs", [])):
+        p = wd / "writes" / f"brief_{i:02d}.json"
+        if not p.is_file():
+            continue  # refused or never written: the brief is dropped
+        write = _read(p)
+        urls = [it["url"] for it in brief["items"]]
+        if write.get("urls") != urls or feature_url in urls:
+            continue
+        out.append((brief, write))
+    return out
+
+
 def _cmd_assemble(a) -> int:
     wd = Path(a.workdir)
     plan = _read(wd / "plan.json")
     writes = wd / "writes"
+    feature = _read(writes / "feature.json")
+    if feature.get("url") != plan["feature"]["url"]:
+        raise CliError(
+            f"writes/feature.json was written for {feature.get('url')!r}, not this plan's "
+            f"feature {plan['feature']['url']} — re-run fill/accept feature"
+        )
     manifest, beats = assemble_manifest(
         plan["date"],
         episode_title(plan),
         a.summary,
         plan,
         _read(writes / "cold_open.json")["lines"],
-        _read(writes / "feature.json")["scenes"],
-        [_read(p) for p in sorted(writes.glob("brief_*.json"))],
+        feature["scenes"],
+        [write for _, write in accepted_briefs(wd, plan)],
         _read(writes / "sign_off.json")["lines"],
         allow_missing_cover=a.allow_missing_cover,
     )
@@ -765,7 +804,13 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--summary", required=True)
     s.add_argument("--allow-missing-cover", action="store_true")
     a = ap.parse_args(argv)
-    return {"fill": _cmd_fill, "accept": _cmd_accept, "assemble": _cmd_assemble}[a.cmd](a)
+    try:
+        return {"fill": _cmd_fill, "accept": _cmd_accept, "assemble": _cmd_assemble}[a.cmd](a)
+    except CliError as e:
+        if a.cmd == "accept":
+            return _refused(str(e))
+        print(f"{a.cmd.upper()} FAILED {e}"[:400])
+        return 1
 
 
 if __name__ == "__main__":
