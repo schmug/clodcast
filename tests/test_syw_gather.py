@@ -288,3 +288,175 @@ def test_registry_has_six_lead_and_four_check_adapters():
     assert len({a.name for a in g.ADAPTERS}) == 10
     assert all(a.parse is not None for a in g.ADAPTERS if a.role == "lead")
     assert all(a.check_source for a in g.ADAPTERS if a.role == "check")
+
+
+import json  # noqa: E402
+
+import pytest  # noqa: E402
+
+FIXTURE_FOR_URL = {
+    g.ANTHROPIC_ALIGNMENT_URL: "anthropic-alignment.html",
+    g.ANTHROPIC_RESEARCH_URLS[0]: "anthropic-research-alignment.html",
+    g.ANTHROPIC_RESEARCH_URLS[1]: "anthropic-research-interpretability.html",
+    g.TRANSFORMER_CIRCUITS_URL: "transformer-circuits.xml",
+    g.OPENAI_ALIGNMENT_RSS: "openai-alignment.xml",
+    g.OPENAI_ALIGNMENT_INDEX: "openai-alignment.html",
+    g.OPENAI_MISALIGNMENT_URL: "openai-misalignment.html",
+    g.GDM_MEDIUM_URL: "gdm-medium.xml",
+    g.GDM_BLOG_URL: "gdm-blog.xml",
+    g.CHECK_FEEDS["metr"]: "metr.xml",
+    g.CHECK_FEEDS["redwood"]: "redwood.xml",
+    g.CHECK_FEEDS["goodfire"]: "goodfire.xml",
+    g.CHECK_FEEDS["alignment-forum"]: "alignment-forum.xml",
+}
+
+
+@pytest.fixture
+def offline(monkeypatch):
+    """Serve every source from its fixture; `broken` names URLs that raise."""
+    broken: set[str] = set()
+
+    def fake_fetch(url: str) -> str:
+        if url in broken:
+            raise OSError(f"boom {url}")
+        return (DATA / FIXTURE_FOR_URL[url]).read_text()
+
+    monkeypatch.setattr(g, "fetch_text", fake_fetch)
+    g.config_path().parent.mkdir(parents=True, exist_ok=True)
+    g.config_path().write_text("{}")
+    return broken
+
+
+RENDER_OK = """[render] publishing…
+{
+  "status": "web-ready",
+  "mp3_url": "https://clodcast.cortech.online/show-your-work/syw-week-of-september-27-2026.mp3",
+  "loudnorm": {"input_i": -24.1},
+  "r2_status": "published",
+  "resumed": false
+}
+"""
+PLAN = {
+    "date": "2026-09-27",
+    "feature": {"url": "https://a.test/f", "lab": "openai", "kind": "incident"},
+    "briefs": [
+        {"kind": "single", "items": [{"url": "https://a.test/b"}]},
+        {"kind": "casebook", "items": [{"url": "https://a.test/c1"}, {"url": "https://a.test/c2"}]},
+    ],
+    "leftover": ["https://a.test/left"],
+}
+
+
+def test_load_config_refuses_missing_and_unknown_keys():
+    with pytest.raises(g.ConfigError, match="missing"):
+        g.load_config()
+    g.config_path().parent.mkdir(parents=True, exist_ok=True)
+    g.config_path().write_text('{"max_brief": 3}')
+    with pytest.raises(g.ConfigError, match="unknown"):
+        g.load_config()
+    g.config_path().write_text('{"max_briefs": 3}')
+    assert g.load_config()["max_briefs"] == 3
+
+
+def test_gather_marks_new_items_and_records_first_observation(offline):
+    out = g.gather(g.load_config(), "2026-09-26")
+    assert out["errors"] == []
+    # 149 parsed; alignment.anthropic.com/2025/activation-oracles is listed by both
+    # anthropic-alignment and transformer-circuits, and gather dedupes by URL.
+    assert len(out["lead"]) == 148
+    assert not any(it["seen"] for it in out["lead"])
+    assert {it["first_observed"] for it in out["lead"]} == {"2026-09-26"}
+    # A later gather never moves a first observation forward.
+    out2 = g.gather(g.load_config(), "2026-10-03")
+    assert {it["first_observed"] for it in out2["lead"]} == {"2026-09-26"}
+    assert any(c["mentions"] for c in out["check"])
+
+
+def test_a_failing_adapter_is_isolated_and_logged(offline):
+    offline.add(g.OPENAI_MISALIGNMENT_URL)
+    out = g.gather(g.load_config(), "2026-09-26")
+    assert [e["adapter"] for e in out["errors"]] == ["openai-misalignment"]
+    assert not any(it["source"] == "openai-misalignment" for it in out["lead"])
+    rows = [json.loads(ln) for ln in g.dropped_log_path().read_text().splitlines()]
+    assert rows[-1]["adapter"] == "openai-misalignment"
+
+
+def test_an_adapter_that_parses_zero_items_has_failed(monkeypatch, offline):
+    real = g.fetch_text
+
+    def changed_markup(url):
+        return (
+            "<html><body><p>redesigned</p></body></html>"
+            if url == g.ANTHROPIC_ALIGNMENT_URL
+            else real(url)
+        )
+
+    monkeypatch.setattr(g, "fetch_text", changed_markup)
+    out = g.gather(g.load_config(), "2026-09-26")
+    [err] = out["errors"]
+    assert err["adapter"] == "anthropic-alignment" and "zero items" in err["error"]
+
+
+def test_gather_fails_when_every_lead_adapter_fails(offline, capsys, tmp_path):
+    offline.update(u for u in FIXTURE_FOR_URL if u not in g.CHECK_FEEDS.values())
+    rc = g.main(["gather", "--date", "2026-09-26", "--out", str(tmp_path / "c.json")])
+    assert rc == 1
+    assert capsys.readouterr().out.strip().splitlines()[-1].startswith("GATHER FAILED every lead")
+
+
+def test_gather_cli_reports_a_missing_config_on_its_line(capsys, tmp_path):
+    rc = g.main(["gather", "--date", "2026-09-26", "--out", str(tmp_path / "c.json")])
+    assert rc == 1
+    assert capsys.readouterr().out.strip().splitlines()[-1].startswith("GATHER FAILED")
+
+
+def test_seed_marks_everything_seen(offline, capsys):
+    assert g.main(["seed", "--date", "2026-09-26"]) == 0
+    assert capsys.readouterr().out.strip().splitlines()[-1] == "SEED ok marked=148"
+    out = g.gather(g.load_config(), "2026-09-26")
+    assert all(it["seen"] for it in out["lead"])
+
+
+def test_commit_parses_pretty_printed_render_output():
+    assert g.commit(PLAN, RENDER_OK) == 4
+    seen = json.loads(g.seen_path().read_text())
+    assert set(seen) == {
+        "https://a.test/f",
+        "https://a.test/b",
+        "https://a.test/c1",
+        "https://a.test/c2",
+    }
+    assert seen["https://a.test/f"] == {"date": "2026-09-27", "role": "feature"}
+    [row] = g.load_features()
+    assert (row["feature_url"], row["lab"], row["kind"]) == (
+        "https://a.test/f",
+        "openai",
+        "incident",
+    )
+
+
+def test_commit_is_idempotent():
+    g.commit(PLAN, RENDER_OK)
+    g.commit(PLAN, RENDER_OK)
+    assert len(g.load_features()) == 1
+
+
+@pytest.mark.parametrize(
+    "output, why",
+    [
+        (RENDER_OK.replace('"published"', '"failed"'), "r2_status"),
+        (RENDER_OK.replace('"web-ready"', '"dry-run"'), "status"),
+        ("[render] error: TTS died\n", "no JSON"),
+    ],
+)
+def test_commit_refuses_a_failed_publish(output, why):
+    with pytest.raises(g.CommitRefused, match=why):
+        g.commit(PLAN, output)
+    assert not g.seen_path().exists()
+    assert not g.features_path().exists()
+
+
+def test_a_corrupt_seen_ledger_refuses_rather_than_resetting(offline):
+    g.seen_path().write_text("{not json")
+    with pytest.raises(g.ConfigError, match="seen.json"):
+        g.load_seen()

@@ -20,9 +20,11 @@ and nothing else, so bs4 is not available.
 
 from __future__ import annotations
 
+import argparse
 import datetime as dt
 import gzip
 import html
+import json
 import os
 import re
 import sys
@@ -610,3 +612,248 @@ ADAPTERS: tuple[Adapter, ...] = (
     Adapter("gdm-safety", LEAD, (GDM_MEDIUM_URL, GDM_BLOG_URL), parse_gdm),
     *(Adapter(name, CHECK, (url,), None, check_source=name) for name, url in CHECK_FEEDS.items()),
 )
+
+
+# --------------------------------------------------------------------------
+# State
+# --------------------------------------------------------------------------
+
+_DATE_ONLY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def load_config() -> dict:
+    p = config_path()
+    if not p.is_file():
+        raise ConfigError(f"missing {p}; create it ({{}} is valid) — see SKILL.md Setup")
+    try:
+        user = json.loads(p.read_text())
+    except json.JSONDecodeError as e:
+        raise ConfigError(f"{p} is not valid JSON: {e}") from e
+    if not isinstance(user, dict):
+        raise ConfigError(f"{p} must hold a JSON object")
+    unknown = set(user) - set(DEFAULT_CONFIG)
+    if unknown:
+        raise ConfigError(f"{p} has unknown key(s) {sorted(unknown)}")
+    return {**DEFAULT_CONFIG, **user}
+
+
+def _atomic_write(path: Path, obj: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, indent=2, sort_keys=True, ensure_ascii=False))
+    os.replace(tmp, path)
+
+
+def load_seen() -> dict:
+    """The coverage ledger. A corrupt file REFUSES rather than reading as empty:
+    empty would re-feature every story the show has ever covered."""
+    p = seen_path()
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text())
+    except json.JSONDecodeError as e:
+        raise ConfigError(f"{p} (seen.json) is corrupt: {e}") from e
+    if not isinstance(data, dict):
+        raise ConfigError(f"{p} (seen.json) must hold a JSON object")
+    return data
+
+
+def load_observed() -> dict:
+    """First-observation dates. Corrupt reads as empty: the worst case is that a
+    month-precision item ages from today, which withholds nothing."""
+    try:
+        data = json.loads(observed_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_features() -> list[dict]:
+    try:
+        lines = features_path().read_text().splitlines()
+    except OSError:
+        return []
+    out = []
+    for ln in lines:
+        try:
+            out.append(json.loads(ln))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def append_dropped(record: dict) -> None:
+    """Observability only; never fails the caller."""
+    try:
+        dropped_log_path().parent.mkdir(parents=True, exist_ok=True)
+        stamped = {"timestamp": dt.datetime.now(dt.timezone.utc).isoformat(), **record}
+        with dropped_log_path().open("a") as f:
+            f.write(json.dumps(stamped, ensure_ascii=False) + "\n")
+    except OSError as e:
+        log(f"warn: could not write dropped.jsonl: {e}")
+
+
+# --------------------------------------------------------------------------
+# Gather / seed / commit
+# --------------------------------------------------------------------------
+
+
+def run_adapter(adapter: Adapter) -> list:
+    try:
+        # fetch_text is looked up at call time, so a test's monkeypatch applies.
+        pages = {u: fetch_text(u) for u in adapter.urls}
+    except Exception as e:  # noqa: BLE001 - any fetch failure isolates this adapter
+        raise AdapterFailed(f"{adapter.name}: fetch failed: {e}") from e
+    try:
+        if adapter.parse is not None:
+            out = adapter.parse(pages)
+        else:
+            out = parse_check_feed(pages[adapter.urls[0]], adapter.check_source or adapter.name)
+    except Exception as e:  # noqa: BLE001 - a parser crash is this adapter's failure
+        raise AdapterFailed(f"{adapter.name}: parse failed: {e}") from e
+    if not out:
+        raise AdapterFailed(f"{adapter.name}: parsed zero items — the markup or feed changed")
+    return out
+
+
+def gather(config: dict, date_iso: str) -> dict:
+    wanted = config.get("adapters")
+    adapters = [a for a in ADAPTERS if wanted is None or a.name in wanted]
+    lead: list[Item] = []
+    pairs: list[tuple[Item, str]] = []
+    errors: list[dict] = []
+    for a in adapters:
+        try:
+            out = run_adapter(a)
+        except AdapterFailed as e:
+            errors.append({"adapter": a.name, "role": a.role, "error": str(e)})
+            append_dropped({"stage": "gather", "adapter": a.name, "reason": str(e)})
+            log(f"warn: {e}")
+            continue
+        (lead if a.role == LEAD else pairs).extend(out)
+    lead_names = {a.name for a in adapters if a.role == LEAD}
+    failed = {e["adapter"] for e in errors}
+    if lead_names and lead_names <= failed:
+        raise AdapterFailed("every lead adapter failed: " + "; ".join(e["error"] for e in errors))
+    uniq: dict[str, Item] = {}
+    for it in lead:
+        uniq.setdefault(it.url, it)
+    checks = attach_mentions(pairs, list(uniq.values()))
+    seen = load_seen()
+    observed = load_observed()
+    for url in uniq:
+        observed.setdefault(url, date_iso)
+    _atomic_write(observed_path(), observed)
+    return {
+        "date": date_iso,
+        "lead": [
+            {**it.to_dict(), "seen": url in seen, "first_observed": observed[url]}
+            for url, it in uniq.items()
+        ],
+        "check": [c.to_dict() for c in checks],
+        "errors": errors,
+    }
+
+
+def seed(config: dict, date_iso: str) -> int:
+    """Mark everything currently on every index as seen, so episode one is not a
+    two-year back catalogue. Ships nothing."""
+    out = gather(config, date_iso)
+    seen = load_seen()
+    for it in out["lead"]:
+        seen.setdefault(it["url"], {"date": date_iso, "role": "seeded"})
+    _atomic_write(seen_path(), seen)
+    return len(out["lead"])
+
+
+def commit(plan: dict, render_output: str) -> int:
+    """Mark the plan's feature and briefed items seen and record the feature — ONLY
+    when render.py's final JSON says the episode shipped. render.py prints that JSON
+    pretty-printed after its log lines, and prints one on a failed publish too
+    (r2_status "failed"), so the check is on the values, never on exit code alone."""
+    _dp = Path(__file__).resolve().parent.parent / "daily-podcast"
+    if str(_dp) not in sys.path:
+        sys.path.insert(0, str(_dp))
+    from orchestrate import extract_last_json
+
+    result = extract_last_json(render_output)
+    if not isinstance(result, dict):
+        raise CommitRefused("no JSON result in the render output")
+    if result.get("status") != "web-ready":
+        raise CommitRefused(f"render status {result.get('status')!r} is not 'web-ready'")
+    if result.get("r2_status") != "published":
+        raise CommitRefused(f"r2_status {result.get('r2_status')!r} is not 'published'")
+    feature = plan.get("feature")
+    if not feature:
+        raise CommitRefused("the plan has no feature")
+    seen = load_seen()
+    seen[feature["url"]] = {"date": plan["date"], "role": "feature"}
+    urls = [feature["url"]]
+    for brief in plan.get("briefs", []):
+        for it in brief["items"]:
+            seen.setdefault(it["url"], {"date": plan["date"], "role": "brief"})
+            urls.append(it["url"])
+    _atomic_write(seen_path(), seen)
+    history = load_features()
+    row = {
+        "date": plan["date"],
+        "feature_url": feature["url"],
+        "lab": feature["lab"],
+        "kind": feature["kind"],
+        "mp3_url": result.get("mp3_url"),
+    }
+    last = history[-1] if history else {}
+    if (last.get("date"), last.get("feature_url")) != (row["date"], row["feature_url"]):
+        features_path().parent.mkdir(parents=True, exist_ok=True)
+        with features_path().open("a") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return len(urls)
+
+
+def _date(s: str) -> str:
+    if not _DATE_ONLY_RE.fullmatch(s):
+        raise ConfigError(f"--date must be YYYY-MM-DD (got {s!r})")
+    dt.date.fromisoformat(s)
+    return s
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="syw_gather.py")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    g_ = sub.add_parser("gather")
+    g_.add_argument("--date", required=True)
+    g_.add_argument("--out", required=True)
+    s_ = sub.add_parser("seed")
+    s_.add_argument("--date", required=True)
+    c_ = sub.add_parser("commit")
+    c_.add_argument("--plan", required=True)
+    c_.add_argument("--render-output", required=True)
+    a = ap.parse_args(argv)
+    try:
+        if a.cmd == "gather":
+            out = gather(load_config(), _date(a.date))
+            Path(a.out).parent.mkdir(parents=True, exist_ok=True)
+            Path(a.out).write_text(json.dumps(out, indent=2, ensure_ascii=False))
+            new = sum(1 for it in out["lead"] if not it["seen"])
+            print(
+                f"GATHER ok lead={len(out['lead'])} new={new} "
+                f"check={len(out['check'])} errors={len(out['errors'])}"
+            )
+        elif a.cmd == "seed":
+            print(f"SEED ok marked={seed(load_config(), _date(a.date))}")
+        else:
+            plan = json.loads(Path(a.plan).read_text())
+            n = commit(plan, Path(a.render_output).read_text())
+            print(f"COMMIT ok urls={n}")
+    except (AdapterFailed, ConfigError) as e:
+        print(f"{'GATHER' if a.cmd != 'commit' else 'COMMIT'} FAILED {e}")
+        return 1
+    except CommitRefused as e:
+        print(f"COMMIT refused {e}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
