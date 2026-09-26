@@ -56,7 +56,15 @@ def test_manifest_block_matches_the_assembler():
     m = json.loads(block.group(1))
     assert (m["ship_mode"], m["show_name"], m["slug_prefix"]) == ("web", w.SHOW_NAME, w.SLUG_PREFIX)
     assert (m["r2_manifest_name"], m["r2_key_prefix"]) == (w.R2_MANIFEST_NAME, w.R2_KEY_PREFIX)
-    assert m["cast"] == w.CAST
+    # The cast is recorded clips (#243) whose paths are absolute on the host, so the
+    # block leaves it out and the line below it names each clip instead.
+    assert "cast" not in m
+
+
+def test_skill_md_names_each_cast_clip():
+    text = _text()
+    for role, clip in w.CAST_CLIPS.items():
+        assert f"`{role}`: `{clip.relative_to(SYW_DIR.parent.parent)}`" in text
 
 
 def test_the_unattended_procedure_names_every_cli_step():

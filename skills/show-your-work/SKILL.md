@@ -95,10 +95,14 @@ Beats are written now and drawn by the (separate) video stage. They live in `<wo
   "show_name": "Show Your Work",
   "r2_manifest_name": "manifest-show-your-work.json",
   "r2_key_prefix": "show-your-work/",
-  "slug_prefix": "syw-week-of",
-  "cast": {"explainer": "Ryan", "skeptic": "Chelsie"}
+  "slug_prefix": "syw-week-of"
 }
 ```
+
+The `cast` is recorded clips, each cloned on the base model as `{ref_audio, ref_text}` (the clip and its `.txt` transcript) — never presets, which the production Qwen3 checkpoint does not have (#243):
+
+- `explainer`: `skills/daily-podcast/refs/house_voice.wav`
+- `skeptic`: `skills/surface-tension/refs/chelsie.wav`
 
 ## Unattended weekly run
 

@@ -68,9 +68,18 @@ SLUG_PREFIX = "syw-week-of"
 REFS_DIR = _HERE / "refs"
 COVER_IMAGE = REFS_DIR / "cover.jpg"
 PROMPTS_DIR = _HERE / "prompts"
-# Two Qwen3 presets on the base model (one load). Phase 2 confirms the pairing by
-# ear; changing a value re-renders every take and nothing else.
-CAST = {"explainer": "Ryan", "skeptic": "Chelsie"}
+# Recorded clips, cloned on the base model (one load) — never presets: the
+# production Qwen3 Base checkpoint has no preset speakers, so mlx-audio <=0.5.0
+# silently rendered an unconditioned voice for "Ryan" and 0.5.1 dies on the first
+# take (#243). Cory's pick at the rehearsal gate (2026-09-26): the explainer is the
+# daily show's BUNDLED house voice (not the user-editable copy under
+# ~/.config/daily-podcast/voices/), the skeptic Surface Tension's Chelsie clip. Both
+# are shared with those shows; render keys each take on the clip's BYTES, so a
+# re-recording there re-renders here and never replays a stale take.
+CAST_CLIPS = {
+    "explainer": render.BUNDLED_HOUSE_AUDIO,
+    "skeptic": _HERE.parent / "surface-tension" / "refs" / "chelsie.wav",
+}
 DESCRIPTION_FOOTER = (
     "Show Your Work is written and voiced by Claude, an AI model made by Anthropic. "
     "Anthropic is one of the labs this show covers. Charts are redrawn from numbers "
@@ -633,6 +642,20 @@ def _speak(lines: list[dict]) -> list[dict]:
     return [{"speaker": ln["speaker"], "text": ln["text"]} for ln in lines]
 
 
+def cast() -> dict[str, dict[str, str]]:
+    """The manifest's cast: each role's clip and its transcript (the clip's `.txt`
+    sibling), render's `{ref_audio, ref_text}` shape. A missing half is the
+    ASSEMBLE line, not a render that dies after the model load."""
+    out = {}
+    for role, clip in CAST_CLIPS.items():
+        transcript = clip.with_suffix(".txt")
+        for path in (clip, transcript):
+            if not path.is_file():
+                raise CliError(f"cast clip for {role!r} is missing: {path}")
+        out[role] = {"ref_audio": str(clip), "ref_text": transcript.read_text().strip()}
+    return out
+
+
 def assemble_manifest(
     date_iso: str,
     title: str,
@@ -698,8 +721,8 @@ def assemble_manifest(
         "summary": summary,
         "date": date_iso,
         # Fallback voice for a plain-text segment; every segment here is a scene.
-        "voice": CAST["explainer"],
-        "cast": dict(CAST),
+        "voice": "house",
+        "cast": cast(),
         "ship_mode": "web",
         "show_name": SHOW_NAME,
         "r2_manifest_name": R2_MANIFEST_NAME,
