@@ -551,10 +551,16 @@ def test_a_corrupt_seen_ledger_refuses_rather_than_resetting(offline):
         g.load_seen()
 
 
-def test_gather_cli_reports_a_calendar_invalid_date_on_its_line(capsys, tmp_path):
-    rc = g.main(["gather", "--date", "2026-13-45", "--out", str(tmp_path / "c.json")])
+def test_gather_cli_reports_a_calendar_invalid_date_on_its_line(offline, capsys, tmp_path):
+    """#236 item 8: config and seen.json exist, so the refusal can only come from
+    _date() — without them the old test passed on the missing config. An invalid
+    date that got through would be written into observed.json for every URL."""
+    g.seen_path().write_text("{}")
+    out = tmp_path / "c.json"
+    rc = g.main(["gather", "--date", "2026-13-45", "--out", str(out)])
     assert rc == 1
     assert capsys.readouterr().out.strip().splitlines()[-1].startswith("GATHER FAILED")
+    assert not out.exists() and not g.observed_path().exists()
 
 
 def test_commit_cli_reports_a_missing_plan_file_on_its_line(capsys, tmp_path):
@@ -586,3 +592,21 @@ def test_commit_cli_reads_aired_json_beside_the_plan(capsys, tmp_path):
     (tmp_path / "aired.json").write_text(json.dumps(AIRED))
     assert g.main(argv) == 0
     assert capsys.readouterr().out.strip() == "COMMIT ok urls=4"
+
+
+@pytest.mark.parametrize("name", ["aired.json", "plan.json"])
+def test_commit_cli_reports_a_non_object_json_file_on_its_line(capsys, tmp_path, name):
+    """#236 item 3: a hand-edited aired.json (or plan.json) holding a list must be
+    the COMMIT line, not an AttributeError traceback."""
+    (tmp_path / "plan.json").write_text(json.dumps(PLAN))
+    (tmp_path / "aired.json").write_text(json.dumps(AIRED))
+    (tmp_path / name).write_text('["not", "an", "object"]')
+    (tmp_path / "render.log").write_text(RENDER_OK)
+    argv = [
+        "commit", "--plan", str(tmp_path / "plan.json"),
+        "--render-output", str(tmp_path / "render.log"),
+    ]  # fmt: skip
+    assert g.main(argv) == 1
+    last = capsys.readouterr().out.strip().splitlines()[-1]
+    assert last.startswith("COMMIT FAILED") and name in last
+    assert not g.seen_path().exists()

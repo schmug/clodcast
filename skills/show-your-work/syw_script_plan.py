@@ -97,6 +97,10 @@ EXEMPT_PAIR = ("fourth_wall", "first_speaker")
 LAB_PENALTY_DAYS = 30
 KIND_PENALTY_DAYS = 10
 
+# The cold open's ledger count ("the week's count", INTRO_MODES["ledger"]) covers
+# this many days, not the whole max_age_days pool, which also holds leftovers.
+WEEK_DAYS = 7
+
 FEATURE_KINDS = ("research", "incident")
 CASEBOOK_KINDS = ("incident", "notice")
 
@@ -165,7 +169,11 @@ def build_plan(
     pool = [
         it
         for it in candidates.get("lead", [])
-        if not it.get("seen")
+        # An undated item aged from first observation has no bound at all: a lost
+        # date on a never-seen 2024 post reads as brand new (#236, the C1 class).
+        # No date is no evidence the post is new, so it never airs.
+        if it.get("date")
+        and not it.get("seen")
         and it["url"] not in exclude
         and 0 <= age_days(it, today) <= int(config["max_age_days"])
         and month_is_plausibly_new(it, today, int(config["max_age_days"]))
@@ -226,6 +234,7 @@ def build_plan(
     )[: int(config["max_checks"])]
 
     used = {feature["url"]} | {it["url"] for b in briefs for it in b["items"]}
+    week = [it for it in pool if age_days(it, today) < WEEK_DAYS]
     return {
         "date": date_iso,
         "week": week_index(date_iso),
@@ -235,6 +244,7 @@ def build_plan(
         "checks": checks,
         "rotation": rotation(date_iso),
         "leftover": [it["url"] for it in rest if it["url"] not in used],
+        "this_week": {"count": len(week), "labs": sorted({it["lab"] for it in week})},
     }
 
 
@@ -273,6 +283,8 @@ def _plan_cli(a) -> int:
 
     out = Path(a.out)
     previous = json.loads(out.read_text()) if out.is_file() else None
+    if previous is not None and not isinstance(previous, dict):
+        raise ValueError(f"{out} must hold a JSON object")
     if previous is not None and not a.feature and not a.exclude:
         # A re-run after commit (M11): re-rendering would re-publish the same slug,
         # and R2 objects are immutable-cached, so the edge keeps the old bytes.

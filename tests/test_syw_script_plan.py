@@ -290,3 +290,47 @@ def test_cli_reuse_skips_a_plan_whose_feature_already_shipped(tmp_path, capsys):
     )
     assert sp.main(args) == 0
     assert capsys.readouterr().out.strip() == "PLAN skip already shipped"
+
+
+# --- #236: undated items never reach an episode; the weekly count is weekly ----
+
+
+def test_an_undated_lead_item_is_not_in_the_pool():
+    """#236 item 6: an item with no date aged from first observation has no bound —
+    a never-seen 2024 post whose date the parser lost reads as brand new (the C1
+    class). With no date there is no evidence it is new, so it never airs."""
+    undated = item("https://a.test/undated", date="", first_observed=TODAY)
+    p = plan([undated])
+    assert p["feature"] is None and p["skip"] == "no new lab items"
+    dated = item("https://a.test/dated", date="2026-09-26")
+    p = plan([undated, dated])
+    assert p["feature"]["url"] == "https://a.test/dated"
+    assert p["briefs"] == [] and p["leftover"] == []
+
+
+def test_this_week_counts_only_pool_items_from_the_last_seven_days():
+    """#236 item 1: the cold open's ledger count is the week's, not the 21-day pool's."""
+    p = plan(
+        [
+            item("https://a.test/new", lab="openai", date="2026-09-24"),
+            item("https://a.test/new2", lab="google-deepmind", date="2026-09-21"),
+            item("https://a.test/week-old", lab="anthropic", date="2026-09-20"),
+            item("https://a.test/seen", lab="anthropic", date="2026-09-25", seen=True),
+        ]
+    )
+    assert p["this_week"] == {"count": 2, "labs": ["google-deepmind", "openai"]}
+
+
+def test_cli_reports_a_non_object_existing_plan_on_its_line(tmp_path, capsys):
+    """#236 acceptance: the reuse path read a previous plan.json holding a list
+    and raised AttributeError instead of printing PLAN FAILED."""
+    syw_gather.config_path().parent.mkdir(parents=True, exist_ok=True)
+    syw_gather.config_path().write_text("{}")
+    cands = tmp_path / "candidates.json"
+    cands.write_text(json.dumps({"lead": [], "check": []}))
+    out = tmp_path / "plan.json"
+    out.write_text('["not", "a", "plan"]')
+    args = ["plan", "--date", TODAY, "--candidates", str(cands), "--out", str(out)]
+    assert sp.main(args) == 1
+    last = capsys.readouterr().out.strip()
+    assert last.startswith("PLAN FAILED") and "must hold a JSON object" in last

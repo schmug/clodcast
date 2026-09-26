@@ -22,6 +22,7 @@ PLAN = {
     "briefs": [],
     "checks": [{"url": "https://metr.org/blog/x", "title": "METR on it"}],
     "rotation": sp.rotation("2026-09-27"),
+    "this_week": {"count": 3, "labs": ["google-deepmind", "openai"]},
 }
 
 
@@ -359,7 +360,7 @@ def test_briefs_and_the_casebook_link_one_source_each():
 def test_a_live_assembly_needs_the_cover(monkeypatch, tmp_path):
     monkeypatch.setattr(w, "COVER_IMAGE", tmp_path / "missing.jpg")
     scenes = w.validate_feature(_feature(), PLAN, POST, set())["scenes"]
-    with pytest.raises(SystemExit):
+    with pytest.raises(w.CliError, match="cover art missing"):
         w.assemble_manifest("2026-09-27", "t", "s", PLAN, COLD, scenes, [], SIGN)
 
 
@@ -500,8 +501,8 @@ def _brief_write(urls, lab="openai"):
 def _frames(wd, feature_url):
     scenes = w.validate_feature(_feature(), PLAN, POST, set())["scenes"]
     _put(wd, "feature.json", {"url": feature_url, "scenes": scenes})
-    _put(wd, "cold_open.json", {"lines": COLD})
-    _put(wd, "sign_off.json", {"lines": SIGN})
+    _put(wd, "cold_open.json", {"url": feature_url, "lines": COLD})
+    _put(wd, "sign_off.json", {"url": feature_url, "lines": SIGN})
 
 
 def _assemble_cli(wd):
@@ -731,3 +732,133 @@ def test_cli_reports_a_missing_plan_on_its_line(tmp_path, capsys):
     assert w.main(["fill", "feature", "--workdir", str(tmp_path)]) == 1
     last = capsys.readouterr().out.strip()
     assert last.startswith("FILL FAILED missing ") and "plan.json" in last
+
+
+# --- #236: unattended edges -----------------------------------------------------
+
+
+def test_fill_cold_open_counts_the_week_not_the_pool(tmp_path, capsys):
+    """Item 1: the pool spans max_age_days (21) and holds leftovers; the ledger
+    opener says "the week's count", so the frame gets the plan's weekly count."""
+    plan = {**PLAN, "leftover": [f"https://a.test/left{i}" for i in range(9)]}
+    wd = _workdir(tmp_path, plan)
+    assert w.main(["fill", "cold_open", "--workdir", str(wd)]) == 0
+    out = capsys.readouterr().out
+    assert "- Lab posts from the last 7 days: 3 (google-deepmind, openai)" in out
+    assert "New lab posts this week" not in out
+    # A feature older than a week, nothing new since: say so, no empty parentheses.
+    (wd / "plan.json").write_text(json.dumps({**plan, "this_week": {"count": 0, "labs": []}}))
+    assert w.main(["fill", "cold_open", "--workdir", str(wd)]) == 0
+    assert "- Lab posts from the last 7 days: none\n" in capsys.readouterr().out
+
+
+def test_a_truncated_gzip_post_drops_only_the_text_guarded_beats(tmp_path, monkeypatch, capsys):
+    """Item 2: gzip.decompress raises EOFError on a truncated body; accept must log
+    it like any failed fetch instead of tracebacking."""
+    import gzip
+
+    truncated = gzip.compress(b"<p>" + POST.encode() + b"</p>")[:-8]
+    monkeypatch.setattr(syw_gather, "fetch_text", lambda url: syw_gather.decode_body(truncated))
+    beats = [{"type": "number", "line": 0, "cue": None, "value": "12", "unit": "%", "label": "x"}]
+    wd = _workdir(tmp_path, PLAN)
+    out = tmp_path / "o.txt"
+    out.write_text(json.dumps(_feature(hook={"beats": beats})))
+    assert w.main(["accept", "feature", "--workdir", str(wd), "--output", str(out)]) == 0
+    assert capsys.readouterr().out.strip() == "ACCEPT ok feature dropped_beats=1"
+    rows = [json.loads(ln) for ln in syw_gather.dropped_log_path().read_text().splitlines()]
+    assert rows[0]["stage"] == "fetch"
+
+
+def test_accept_stamps_each_frame_with_the_plans_feature(tmp_path):
+    """Item 4: a frame names the plan it was written for, as feature.json does."""
+    wd = _workdir(tmp_path, PLAN)
+    for which, lines in (("cold_open", COLD), ("sign_off", SIGN)):
+        out = tmp_path / f"{which}.txt"
+        out.write_text(json.dumps({"ok": True, "lines": lines}))
+        assert w.main(["accept", which, "--workdir", str(wd), "--output", str(out)]) == 0
+        assert (
+            json.loads((wd / "writes" / f"{which}.json").read_text())["url"]
+            == (PLAN["feature"]["url"])
+        )
+
+
+@pytest.mark.parametrize(
+    "frame", [{"url": F1, "lines": SIGN}, {"lines": SIGN}], ids=["other-plan", "unstamped"]
+)
+def test_assemble_refuses_a_frame_written_for_another_plan(tmp_path, capsys, frame):
+    """Item 4: a new plan's rmtree of writes/ can fail silently; a frame left by
+    the old plan must not reach this plan's episode."""
+    wd = _workdir(tmp_path, {**PLAN, "feature": _lead(F2)})
+    _frames(wd, F2)
+    _put(wd, "sign_off.json", frame)
+    assert _assemble_cli(wd) == 1
+    last = capsys.readouterr().out.strip().splitlines()[-1]
+    assert last.startswith("ASSEMBLE FAILED writes/sign_off.json")
+    assert not (wd / "manifest.json").exists()
+
+
+@pytest.mark.parametrize(
+    "cold, cover, line",
+    [
+        (COLD, False, "ASSEMBLE FAILED cover art missing"),
+        ([L("explainer", LONG)], True, "ASSEMBLE FAILED cold_open must disclose"),
+    ],
+    ids=["missing-cover", "bad-frame"],
+)
+def test_assemble_reports_a_cover_or_frame_problem_on_its_line(
+    tmp_path, capsys, monkeypatch, cold, cover, line
+):
+    """Item 5: SKILL.md step 7 branches on the ASSEMBLE line; a die() printed
+    ERROR on stderr and the procedure never saw it."""
+    monkeypatch.setattr(w, "COVER_IMAGE", tmp_path / "missing.jpg")
+    wd = _workdir(tmp_path, PLAN)
+    _frames(wd, PLAN["feature"]["url"])
+    _put(wd, "cold_open.json", {"url": PLAN["feature"]["url"], "lines": cold})
+    argv = ["assemble", "--workdir", str(wd), "--summary", "s"]
+    assert w.main(argv + (["--allow-missing-cover"] if cover else [])) == 1
+    assert capsys.readouterr().out.strip().startswith(line)
+
+
+RENDER_PUBLISHED = """[render] publishing
+{
+  "status": "web-ready",
+  "mp3_url": "https://clodcast.cortech.online/show-your-work/syw-week-of-september-27-2026.mp3",
+  "r2_status": "published"
+}
+"""
+
+
+def test_assemble_refuses_once_the_workdir_has_published(tmp_path, capsys):
+    """Item 7: a session that died after render.py published but before commit
+    re-runs the same day onto the same plan. Re-rendering would re-publish an
+    immutable-cached slug; the recovery is commit, never a second render."""
+    wd = _workdir(tmp_path, PLAN)
+    _frames(wd, PLAN["feature"]["url"])
+    (wd / "render.log").write_text(RENDER_PUBLISHED)
+    assert _assemble_cli(wd) == 1
+    assert capsys.readouterr().out.strip().startswith("ASSEMBLE FAILED already published")
+    assert not (wd / "manifest.json").exists()
+    # A render that did NOT publish leaves nothing live: re-assembling is the retry.
+    (wd / "render.log").write_text(RENDER_PUBLISHED.replace('"published"', '"failed"'))
+    assert _assemble_cli(wd) == 0
+
+
+@pytest.mark.parametrize(
+    "argv, line",
+    [
+        (["fill", "feature"], "FILL FAILED"),
+        (["accept", "feature", "--output", "OUT"], "ACCEPT refused"),
+        (["assemble", "--summary", "s"], "ASSEMBLE FAILED"),
+    ],
+)
+def test_a_non_object_plan_is_the_commands_line(tmp_path, capsys, argv, line):
+    """#236 acceptance: every subcommand failure is its one line. A plan.json
+    holding a list was a TypeError traceback (item 3's class)."""
+    wd = _workdir(tmp_path, ["not", "a", "plan"])
+    _frames(wd, PLAN["feature"]["url"])
+    out = tmp_path / "o.txt"
+    out.write_text(json.dumps(_feature()))
+    argv = [str(out) if x == "OUT" else x for x in argv] + ["--workdir", str(wd)]
+    assert w.main(argv) in (1, 2)
+    last = capsys.readouterr().out.strip().splitlines()[-1]
+    assert last.startswith(line) and "plan.json must hold a JSON object" in last

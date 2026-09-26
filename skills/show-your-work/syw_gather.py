@@ -849,6 +849,15 @@ def _date(s: str) -> str:
     return s
 
 
+def _json_object(p: Path) -> dict:
+    """A hand-edited plan.json or aired.json holding a list would otherwise be an
+    AttributeError traceback, not the COMMIT line (#236)."""
+    obj = json.loads(p.read_text())
+    if not isinstance(obj, dict):
+        raise ConfigError(f"{p} must hold a JSON object")
+    return obj
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="syw_gather.py")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -879,13 +888,13 @@ def main(argv: list[str] | None = None) -> int:
         elif a.cmd == "seed":
             print(f"SEED ok marked={seed(load_config(), _date(a.date))}")
         else:
-            plan = json.loads(Path(a.plan).read_text())
+            plan = _json_object(Path(a.plan))
             aired_p = Path(a.plan).parent / "aired.json"
             if not aired_p.is_file():
                 raise ConfigError(
                     f"no aired.json beside {a.plan} — `syw_write.py assemble` writes it"
                 )
-            aired = json.loads(aired_p.read_text())
+            aired = _json_object(aired_p)
             n = commit(plan, Path(a.render_output).read_text(), aired)
             print(f"COMMIT ok urls={n}")
     except (AdapterFailed, ConfigError, ValueError, OSError) as e:
