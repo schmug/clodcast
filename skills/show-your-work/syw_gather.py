@@ -296,3 +296,217 @@ def hrefs(raw_html: str, base: str) -> set[str]:
         for a in find_all(root, "a")
         if a.attrs.get("href")
     }
+
+
+# --------------------------------------------------------------------------
+# Lead parsers — pure: {url: page text} -> [Item]
+# --------------------------------------------------------------------------
+
+ANTHROPIC_ALIGNMENT_URL = "https://alignment.anthropic.com/"
+ANTHROPIC_RESEARCH_URLS = (
+    "https://www.anthropic.com/research/team/alignment",
+    "https://www.anthropic.com/research/team/interpretability",
+)
+TRANSFORMER_CIRCUITS_URL = "https://transformer-circuits.pub/feed.xml"
+OPENAI_ALIGNMENT_RSS = "https://alignment.openai.com/rss.xml"
+OPENAI_ALIGNMENT_INDEX = "https://alignment.openai.com/"
+OPENAI_MISALIGNMENT_URL = "https://alignment.openai.com/misalignment-reports/"
+GDM_MEDIUM_URL = "https://deepmindsafetyresearch.medium.com/feed"
+GDM_BLOG_URL = "https://deepmind.google/blog/rss.xml"
+
+
+def parse_anthropic_alignment(pages: dict[str, str]) -> list[Item]:
+    """alignment.anthropic.com: `div.toc` holds `div.date` month headers, each
+    followed by `a.paper` / `a.note` cards (h3 title, div.description). Dates are
+    MONTH-level only, which is why the plan ages these items from first
+    observation rather than from the date (spec §4.2)."""
+    root = parse_html(pages[ANTHROPIC_ALIGNMENT_URL])
+    toc = first(root, "div", "toc")
+    items: list[Item] = []
+    month = ""
+    for child in toc.children if toc else []:
+        if not isinstance(child, Node):
+            continue
+        if child.tag == "div" and "date" in child.classes():
+            month = parse_month(text_of(child))
+        elif child.tag == "a" and child.attrs.get("href"):
+            title = text_of(first(child, "h3"))
+            if not title:
+                continue
+            items.append(
+                Item(
+                    url=normalize_url(urljoin(ANTHROPIC_ALIGNMENT_URL, child.attrs["href"])),
+                    source="anthropic-alignment",
+                    lab="anthropic",
+                    kind="research",
+                    title=title,
+                    summary=cap_summary(text_of(first(child, "div", "description"))),
+                    date=month,
+                    date_precision="month",
+                    role=LEAD,
+                )
+            )
+    return items
+
+
+def parse_anthropic_research(pages: dict[str, str]) -> list[Item]:
+    """anthropic.com/research/team/*: Next.js cards. CSS-module class names are
+    hashed, so match on STRUCTURE — an <a href="/research/<slug>"> holding a
+    heading, a <time> and a <p> — never on a class. The image link repeats each
+    href without a heading; those are skipped, and hrefs dedupe across pages."""
+    items: dict[str, Item] = {}
+    for page_url in ANTHROPIC_RESEARCH_URLS:
+        root = parse_html(pages[page_url])
+        for a in find_all(root, "a"):
+            href = a.attrs.get("href", "")
+            if not href.startswith("/research/") or href.startswith("/research/team/"):
+                continue
+            heading = next((n for n in iter_nodes(a) if n.tag in ("h2", "h3", "h4")), None)
+            title = text_of(heading)
+            if not title:
+                continue
+            url = normalize_url(urljoin(page_url, href))
+            items.setdefault(
+                url,
+                Item(
+                    url=url,
+                    source="anthropic-research",
+                    lab="anthropic",
+                    kind="research",
+                    title=title,
+                    summary=cap_summary(text_of(first(a, "p"))),
+                    date=parse_human_date(text_of(first(a, "time"))),
+                    date_precision="day",
+                    role=LEAD,
+                ),
+            )
+    return list(items.values())
+
+
+def feed_items(text: str, source: str, lab: str, kind: str, role: str) -> list[Item]:
+    import feedparser  # function-local, the render.py posture
+
+    out = []
+    for e in feedparser.parse(text).entries:
+        if not e.get("link") or not e.get("title"):
+            continue
+        out.append(
+            Item(
+                url=normalize_url(e.link),
+                source=source,
+                lab=lab,
+                kind=kind,
+                title=clean_text(e.title),
+                summary=cap_summary(e.get("summary", "")),
+                date=struct_date(e),
+                date_precision="day",
+                role=role,
+            )
+        )
+    return out
+
+
+def parse_transformer_circuits(pages: dict[str, str]) -> list[Item]:
+    return feed_items(
+        pages[TRANSFORMER_CIRCUITS_URL], "transformer-circuits", "anthropic", "research", LEAD
+    )
+
+
+def parse_openai_alignment(pages: dict[str, str]) -> list[Item]:
+    """rss.xml UNION the index page. The RSS omits openai.com cross-posts (the ↗
+    rows) and the Metagaming post, so the index is authoritative for coverage; the
+    RSS still contributes anything the index has scrolled past. Index rows win."""
+    root = parse_html(pages[OPENAI_ALIGNMENT_INDEX])
+    merged: dict[str, Item] = {}
+    for art in find_all(root, "article", "ap-post"):
+        a = first(first(art, "h2"), "a")
+        if a is None or not a.attrs.get("href"):
+            continue
+        url = normalize_url(urljoin(OPENAI_ALIGNMENT_INDEX, a.attrs["href"]))
+        time = first(art, "time")
+        merged[url] = Item(
+            url=url,
+            source="openai-alignment",
+            lab="openai",
+            kind="research",
+            title=text_of(a).rstrip("↗").strip(),
+            summary=cap_summary(text_of(first(art, "p"))),
+            date=(time.attrs.get("datetime", "") if time else "")[:10],
+            date_precision="day",
+            role=LEAD,
+        )
+    rss = feed_items(pages[OPENAI_ALIGNMENT_RSS], "openai-alignment", "openai", "research", LEAD)
+    for it in rss:
+        merged.setdefault(it.url, it)
+    return list(merged.values())
+
+
+def parse_openai_misalignment(pages: dict[str, str]) -> list[Item]:
+    """The casebook: `details.cb-entry` rows. A REPORT carries data-date /
+    data-title and an `a.cb-link` to its own page. A NOTICE (`cb-notice`) has no
+    page of its own — all three link anchors on ONE openai.com update page — so its
+    identity is the casebook URL plus the entry's id. Normalizing a notice's link
+    would collapse every notice into one URL and dedupe all but the first away."""
+    root = parse_html(pages[OPENAI_MISALIGNMENT_URL])
+    items: list[Item] = []
+    for d in find_all(root, "details", "cb-entry"):
+        copy = cap_summary(text_of(first(d, "p", "cb-copy")))
+        if "cb-notice" in d.classes():
+            ident = d.attrs.get("id", "")
+            if not ident:
+                continue
+            time = first(first(d, "p", "cb-meta"), "time")
+            items.append(
+                Item(
+                    url=normalize_url(OPENAI_MISALIGNMENT_URL) + "#" + ident,
+                    source="openai-misalignment",
+                    lab="openai",
+                    kind="notice",
+                    title=text_of(first(d, "h3")),
+                    summary=copy,
+                    date=(time.attrs.get("datetime", "") if time else "")[:10],
+                    date_precision="day",
+                    role=LEAD,
+                )
+            )
+            continue
+        link = first(d, "a", "cb-link")
+        if link is None or not link.attrs.get("href"):
+            continue
+        items.append(
+            Item(
+                url=normalize_url(urljoin(OPENAI_MISALIGNMENT_URL, link.attrs["href"])),
+                source="openai-misalignment",
+                lab="openai",
+                kind="incident",
+                title=d.attrs.get("data-title") or text_of(first(d, "h3")),
+                summary=copy,
+                date=d.attrs.get("data-date", "")[:10],
+                date_precision="day",
+                role=LEAD,
+            )
+        )
+    return items
+
+
+# The GDM blog feed has no categories and no summaries (recon §2.1), so safety
+# posts are picked by a closed keyword list matched as whole words on the title
+# and summary. The Medium safety blog is taken whole.
+GDM_SAFETY_KEYWORDS = (
+    "safety",
+    "alignment",
+    "aligned",
+    "interpretability",
+    "misuse",
+    "scheming",
+    "deceptive",
+    "oversight",
+    "responsibility",
+)
+_GDM_KW_RE = re.compile(r"\b(" + "|".join(map(re.escape, GDM_SAFETY_KEYWORDS)) + r")\b", re.I)
+
+
+def parse_gdm(pages: dict[str, str]) -> list[Item]:
+    items = feed_items(pages[GDM_MEDIUM_URL], "gdm-safety", "gdm", "research", LEAD)
+    blog = feed_items(pages[GDM_BLOG_URL], "gdm-safety", "gdm", "research", LEAD)
+    return items + [it for it in blog if _GDM_KW_RE.search(f"{it.title} {it.summary}")]

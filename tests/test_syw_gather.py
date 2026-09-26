@@ -63,3 +63,135 @@ def test_the_config_dir_is_redirected_away_from_real_state():
     real = Path.home() / ".config" / "show-your-work"
     assert g.CONFIG_DIR != real and real not in g.CONFIG_DIR.parents
     assert g.seen_path().parent == g.CONFIG_DIR
+
+
+def _pages(*pairs: tuple[str, str]) -> dict[str, str]:
+    return {url: (DATA / name).read_text() for url, name in pairs}
+
+
+def test_anthropic_alignment_index_reads_month_groups():
+    items = g.parse_anthropic_alignment(
+        _pages((g.ANTHROPIC_ALIGNMENT_URL, "anthropic-alignment.html"))
+    )
+    assert len(items) == 84
+    top = items[0]
+    assert top.url == "https://alignment.anthropic.com/2026/reward-seeker"
+    assert top.title == "Training a Misaligned Reward Seeker"
+    assert (top.date, top.date_precision, top.kind, top.lab, top.role) == (
+        "2026-08-01",
+        "month",
+        "research",
+        "anthropic",
+        "lead",
+    )
+    assert all(len(i.summary) <= g.SUMMARY_MAX_CHARS for i in items)
+
+
+def test_anthropic_research_matches_structure_not_hashed_classes():
+    items = g.parse_anthropic_research(
+        _pages(
+            (g.ANTHROPIC_RESEARCH_URLS[0], "anthropic-research-alignment.html"),
+            (g.ANTHROPIC_RESEARCH_URLS[1], "anthropic-research-interpretability.html"),
+        )
+    )
+    # Each page lists 5 cards; each card's href also appears on an image link with
+    # no heading, which must not produce a second, untitled item.
+    assert len(items) == 10 == len({i.url for i in items})
+    assert (items[0].url, items[0].date, items[0].date_precision) == (
+        "https://www.anthropic.com/research/alignment-assessment-cybersecurity-incidents",
+        "2026-09-09",
+        "day",
+    )
+    assert all(i.title for i in items)
+
+
+def test_transformer_circuits_feed():
+    items = g.parse_transformer_circuits(
+        _pages((g.TRANSFORMER_CIRCUITS_URL, "transformer-circuits.xml"))
+    )
+    assert len(items) == 12
+    assert items[0].url == (
+        "https://transformer-circuits.pub/2026/interference_effectiveness_helpfulness/index.html"
+    )
+    assert items[0].date == "2026-08-21" and items[0].lab == "anthropic"
+
+
+def test_openai_alignment_unions_rss_with_the_index():
+    pages = _pages(
+        (g.OPENAI_ALIGNMENT_RSS, "openai-alignment.xml"),
+        (g.OPENAI_ALIGNMENT_INDEX, "openai-alignment.html"),
+    )
+    urls = {i.url for i in g.parse_openai_alignment(pages)}
+    assert len(urls) == 27
+    # openai.com cross-posts are on the index only (the RSS omits them) …
+    assert "https://openai.com/index/an-alien-mind" in urls
+    # … and so is the on-site Metagaming post (recon §2.1).
+    assert "https://alignment.openai.com/metagaming" in urls
+
+
+def test_openai_alignment_keeps_an_rss_only_post():
+    pages = _pages(
+        (g.OPENAI_ALIGNMENT_RSS, "openai-alignment.xml"),
+        (g.OPENAI_ALIGNMENT_INDEX, "openai-alignment.html"),
+    )
+    extra = (
+        "<item><title>RSS only</title><link>https://alignment.openai.com/rss-only/</link>"
+        "<pubDate>Mon, 21 Sep 2026 08:00:00 -0700</pubDate></item>"
+    )
+    # Insert before </channel>: the captured feed has a literal "<item>" inside an XML
+    # comment near the top, so splicing at the first "<item>" would land in the comment.
+    full_extra = extra + "</channel>"
+    pages[g.OPENAI_ALIGNMENT_RSS] = pages[g.OPENAI_ALIGNMENT_RSS].replace(
+        "</channel>", full_extra, 1
+    )
+    urls = {i.url for i in g.parse_openai_alignment(pages)}
+    assert "https://alignment.openai.com/rss-only" in urls and len(urls) == 28
+
+
+def test_openai_misalignment_reports_and_notices():
+    items = g.parse_openai_misalignment(
+        _pages((g.OPENAI_MISALIGNMENT_URL, "openai-misalignment.html"))
+    )
+    kinds = [i.kind for i in items]
+    assert kinds.count("incident") == 9 and kinds.count("notice") == 3
+    top = items[0]
+    assert top.url == (
+        "https://alignment.openai.com/misalignment-reports/self-replicating-prompt-injections-exist"
+    )
+    assert (top.date, top.title) == ("2026-09-25", "Self-replicating prompt injections exist")
+
+
+def test_notices_keep_distinct_fragment_identities():
+    items = g.parse_openai_misalignment(
+        _pages((g.OPENAI_MISALIGNMENT_URL, "openai-misalignment.html"))
+    )
+    notices = {i.url: i for i in items if i.kind == "notice"}
+    assert set(notices) == {
+        "https://alignment.openai.com/misalignment-reports#notice-rubygems",
+        "https://alignment.openai.com/misalignment-reports#notice-dsewiki",
+        "https://alignment.openai.com/misalignment-reports#notice-hugging-face",
+    }
+    assert notices["https://alignment.openai.com/misalignment-reports#notice-rubygems"].date == (
+        "2026-09-11"
+    )
+
+
+def test_gdm_keeps_medium_and_keyword_matched_blog_posts_only():
+    pages = _pages((g.GDM_MEDIUM_URL, "gdm-medium.xml"), (g.GDM_BLOG_URL, "gdm-blog.xml"))
+    items = g.parse_gdm(pages)
+    # The captured 25 blog posts are all product/science posts; none is a safety post.
+    assert len(items) == 4
+    assert all(i.url.startswith("https://deepmindsafetyresearch.medium.com/") for i in items)
+    assert all("?" not in i.url for i in items)
+    feed = (
+        '<?xml version="1.0"?><rss version="2.0"><channel><title>b</title>'
+        "<item><title>Strengthening our Frontier Safety Framework</title>"
+        "<link>https://deepmind.google/blog/fsf/</link></item>"
+        "<item><title>Gemini makes better pancakes</title>"
+        "<link>https://deepmind.google/blog/pancakes/</link></item>"
+        "</channel></rss>"
+    )
+    pages[g.GDM_BLOG_URL] = feed
+    urls = {i.url for i in g.parse_gdm(pages)}
+    assert "https://deepmind.google/blog/fsf" in urls
+    assert "https://deepmind.google/blog/pancakes" not in urls
