@@ -34,11 +34,13 @@ _DP_SKILL_DIR = _HERE.parent / "daily-podcast"
 if str(_DP_SKILL_DIR) not in sys.path:
     sys.path.insert(0, str(_DP_SKILL_DIR))
 
-# orchestrate owns the outcome taxonomy, the regexes that carry fixes (AUTH_RE is
-# auth-only so a rate limit stays ERROR), and MIN_SEGMENT_CHARS, the daily show's
-# drop floor reused as the scene/brief/frame floor here; FALLBACK_* are the daily
-# show's example lines, burned here by identity. Imported, never copied. (Both
-# blocks must follow the sys.path insert above.)
+# render owns the month table (its heavy deps are function-local, so the import is
+# cheap). orchestrate owns the outcome taxonomy, the regexes that carry fixes
+# (AUTH_RE is auth-only so a rate limit stays ERROR), and MIN_SEGMENT_CHARS, the
+# daily show's drop floor reused as the scene/brief/frame floor here; FALLBACK_* are
+# the daily show's example lines, burned here by identity. Imported, never copied.
+# (All three imports must follow the sys.path insert above.)
+import render  # noqa: E402
 from orchestrate import (  # noqa: E402
     AUTH_RE,
     FALLBACK_BUTTONS,
@@ -616,27 +618,16 @@ def validate_frame(lines, which: str) -> list[str]:
 
 # --- assembly ---------------------------------------------------------------------
 
-_MONTHS = (
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-)  # fmt: skip  (literal, not strftime("%B"), which is LC_TIME-dependent)
+# render's literal table, not strftime("%B"), which is LC_TIME-dependent. Imported,
+# never copied (the retitle.py precedent).
+MONTHS = render._LEGACY_TITLE_MONTHS
 
 
 def episode_title(plan: dict) -> str:
     """Display text only — the slug is keyed on the date (#128), so the title is
     free to carry the feature's name."""
     d = dt.date.fromisoformat(plan["date"])
-    return f"{plan['feature']['title']} - week of {_MONTHS[d.month - 1]} {d.day}, {d.year}"
+    return f"{plan['feature']['title']} - week of {MONTHS[d.month - 1]} {d.day}, {d.year}"
 
 
 def _speak(lines: list[dict]) -> list[dict]:

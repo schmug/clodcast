@@ -369,6 +369,11 @@ def test_episode_title():
     )
 
 
+def test_the_month_table_is_renders_not_a_copy():
+    # M5, the retitle.py precedent: one LC_TIME-proof table, imported.
+    assert w.MONTHS is render._LEGACY_TITLE_MONTHS
+
+
 def _frontier_manifest() -> dict:
     text = (REPO / "skills" / "frontier-commits" / "SKILL.md").read_text()
     return json.loads(re.search(r"```json\n(\{.*?\n\})\n```", text, re.S).group(1))
