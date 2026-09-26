@@ -85,5 +85,6 @@ known-first-party = [
     "st_gather",
     "st_script_plan",
     "st_write",
+    "syw_gather", "syw_script_plan", "syw_write",
     "bench",
 ]

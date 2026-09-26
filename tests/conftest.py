@@ -32,6 +32,13 @@ sys.path.insert(0, str(ST_SKILL_DIR))
 
 import st_gather  # noqa: E402  (must follow the sys.path insert above)
 
+# Show Your Work is a fifth flat skill directory. Its modules import each other and
+# fc_script_plan / orchestrate by path, exactly as Surface Tension's do.
+SYW_SKILL_DIR = Path(__file__).resolve().parent.parent / "skills" / "show-your-work"
+sys.path.insert(0, str(SYW_SKILL_DIR))
+
+import syw_gather  # noqa: E402  (must follow the sys.path insert above)
+
 # The TTS eval bench (#200) is a fourth flat skill directory; bench.py imports
 # render the way bloopers.py does, and this insert is what lets the tests import
 # it from the repo root.
@@ -94,6 +101,11 @@ def _isolate_user_state(tmp_path_factory, monkeypatch):
     # from whichever show ran second) — so it needs its own redirection too.
     st_sandbox = tmp_path_factory.mktemp("surface-tension-state")
     monkeypatch.setattr(st_gather, "CONFIG_DIR", st_sandbox)
+    # Show Your Work owns ~/.config/show-your-work (seen/observed ledgers, feature
+    # history); a test that ran gather or commit unredirected would mark real
+    # stories covered.
+    syw_sandbox = tmp_path_factory.mktemp("show-your-work-state")
+    monkeypatch.setattr(syw_gather, "CONFIG_DIR", syw_sandbox)
     yield sandbox
 
 
@@ -104,6 +116,7 @@ def pytest_configure(config):
     config._daily_podcast_real_state_dir = real
     config._frontier_real_state_dir = Path.home() / ".config" / "frontier-commits"
     config._st_real_state_dir = Path.home() / ".config" / "surface-tension"
+    config._syw_real_state_dir = Path.home() / ".config" / "show-your-work"
 
 
 @pytest.fixture(autouse=True)
@@ -150,4 +163,9 @@ def _assert_no_real_state_writes(request, _isolate_user_state):
     assert real_st not in st_value.parents and st_value != real_st, (
         f"test left st_gather.CONFIG_DIR pointing at the real state dir ({st_value}); "
         "patch it to a tmp path"
+    )
+    syw_value = Path(syw_gather.CONFIG_DIR)
+    real_syw = request.config._syw_real_state_dir
+    assert real_syw not in syw_value.parents and syw_value != real_syw, (
+        f"test left syw_gather.CONFIG_DIR pointing at the real state dir ({syw_value})"
     )
