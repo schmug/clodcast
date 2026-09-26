@@ -729,8 +729,19 @@ def assemble_manifest(
 # --- workdir CLI --------------------------------------------------------------------
 
 
+def _read_text(p: Path) -> str:
+    try:
+        return p.read_text()
+    except FileNotFoundError:
+        raise CliError(f"missing {p}") from None
+
+
 def _read(p: Path):
-    return json.loads(p.read_text())
+    """A workdir JSON file; a missing or garbled one is the command's failure line."""
+    try:
+        return json.loads(_read_text(p))
+    except json.JSONDecodeError as e:
+        raise CliError(f"{p} is not valid JSON: {e}") from None
 
 
 def _write(p: Path, obj) -> None:
@@ -752,12 +763,26 @@ def _find_item(plan: dict, url: str) -> dict:
     for it in pool:
         if it["url"] == url:
             return it
-    die(f"{url} is not an item in this plan")
+    raise CliError(f"{url} is not an item in this plan")
+
+
+def _check_args(a, plan: dict) -> None:
+    """The per-target arguments argparse cannot require: --url for a digest, an
+    in-range --index for a brief (a negative one would silently wrap)."""
+    if a.what == "digest" and not a.url:
+        raise CliError("--url is required for digest")
+    if a.what == "brief":
+        n = len(plan.get("briefs", []))
+        if a.index is None:
+            raise CliError("--index is required for brief")
+        if not 0 <= a.index < n:
+            raise CliError(f"--index {a.index} is out of range: the plan has {n} brief(s)")
 
 
 def _cmd_fill(a) -> int:
     wd = Path(a.workdir)
     plan = _read(wd / "plan.json")
+    _check_args(a, plan)
     if a.what == "digest":
         print(fill_digest((PROMPTS_DIR / "digest.md").read_text(), _find_item(plan, a.url)))
     elif a.what == "feature":
@@ -796,7 +821,8 @@ def _refused(a, reason: str) -> int:
 def _cmd_accept(a) -> int:
     wd = Path(a.workdir)
     plan = _read(wd / "plan.json")
-    res = classify_output(Path(a.output).read_text(), "", 0)
+    _check_args(a, plan)
+    res = classify_output(_read_text(Path(a.output)), "", 0)
     if res["outcome"] != "OK":
         return _refused(a, f"{res['outcome']} {res['detail']}")
     obj = res["obj"]

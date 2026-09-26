@@ -242,3 +242,24 @@ def test_cli_a_new_plan_clears_the_old_plans_writes(tmp_path, capsys):
     assert (tmp_path / "writes" / "brief_00.json").is_file()
     assert sp.main(args + ["--exclude", "https://a.test/a"]) == 0  # a re-plan
     assert not (tmp_path / "writes").exists()
+
+
+@pytest.mark.parametrize(
+    "candidates, extra",
+    [
+        (None, []),  # missing file
+        ("{not json", []),
+        ('["a", "list"]', []),
+        (json.dumps({"lead": [item("https://a.test/a")], "check": []}), ["--feature", "https://x"]),
+    ],
+)
+def test_cli_failures_print_one_plan_failed_line(tmp_path, capsys, candidates, extra):
+    syw_gather.config_path().parent.mkdir(parents=True, exist_ok=True)
+    syw_gather.config_path().write_text("{}")
+    cands = tmp_path / "candidates.json"
+    if candidates is not None:
+        cands.write_text(candidates)
+    args = ["plan", "--date", TODAY, "--candidates", str(cands), "--out", str(tmp_path / "p.json")]
+    assert sp.main(args + extra) == 1
+    assert capsys.readouterr().out.strip().startswith("PLAN FAILED ")
+    assert not (tmp_path / "p.json").exists()

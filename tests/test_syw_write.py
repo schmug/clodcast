@@ -689,3 +689,31 @@ def test_fill_sign_off_carries_the_button_and_every_burned_line(tmp_path, capsys
     out = capsys.readouterr().out
     assert sp.SIGNOFF_BUTTONS[PLAN["rotation"]["button"]] in out
     assert all(line in out for line in w.BURNED_LINES)
+
+
+# --- M2: every CLI failure is the command's one line, never a traceback ---------
+
+
+@pytest.mark.parametrize(
+    "argv, rc, line",
+    [
+        (["fill", "brief", "--index", "0"], 1, "FILL FAILED --index 0 is out of range"),
+        (["fill", "brief"], 1, "FILL FAILED --index is required"),
+        (["accept", "digest", "--output", "OUT"], 2, "ACCEPT refused --url is required"),
+        (["assemble", "--summary", "s"], 1, "ASSEMBLE FAILED missing "),
+    ],
+)
+def test_cli_failures_print_one_line(tmp_path, capsys, argv, rc, line):
+    wd = _workdir(tmp_path, PLAN)  # no briefs, no writes
+    out = tmp_path / "o.txt"
+    out.write_text("{}")
+    argv = [*argv, "--workdir", str(wd)]
+    argv = [str(out) if x == "OUT" else x for x in argv]
+    assert w.main(argv) == rc
+    assert capsys.readouterr().out.strip().startswith(line)
+
+
+def test_cli_reports_a_missing_plan_on_its_line(tmp_path, capsys):
+    assert w.main(["fill", "feature", "--workdir", str(tmp_path)]) == 1
+    last = capsys.readouterr().out.strip()
+    assert last.startswith("FILL FAILED missing ") and "plan.json" in last

@@ -251,16 +251,31 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--feature")
     p.add_argument("--exclude", action="append", default=[])
     a = ap.parse_args(argv)
+    import syw_gather  # CLI-only: the pure layer above never touches state
+
+    try:
+        return _plan_cli(a)
+    except (syw_gather.ConfigError, ValueError, OSError) as e:
+        # One line, the gather CLI's contract: a missing or garbled candidates file
+        # (JSONDecodeError is a ValueError), a bad --feature or --date, a bad config.
+        print(f"PLAN FAILED {e}")
+        return 1
+
+
+def _plan_cli(a) -> int:
+    import syw_gather
+
     out = Path(a.out)
     previous = json.loads(out.read_text()) if out.is_file() else None
     if previous is not None and not a.feature and not a.exclude:
         print(_line(previous, "reused"))
         return 0
-    import syw_gather  # CLI-only: the pure layer above never touches state
-
+    candidates = json.loads(Path(a.candidates).read_text())
+    if not isinstance(candidates, dict):
+        raise ValueError(f"{a.candidates} must hold a JSON object")
     exclude = tuple(sorted(set((previous or {}).get("excluded", [])) | set(a.exclude)))
     plan = build_plan(
-        json.loads(Path(a.candidates).read_text()),
+        candidates,
         syw_gather.load_features(),
         syw_gather.load_config(),
         a.date,
