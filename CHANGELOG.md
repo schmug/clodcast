@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 This file is generated from conventional commits by [git-cliff](https://git-cliff.org).
 
+## [0.1.17](https://github.com/schmug/clodcast/compare/v0.1.16...v0.1.17) (2026-09-26)
+
+
+### Features
+
+* **syw:** Show Your Work — a frontier-lab alignment explainer show (audio) ([#239](https://github.com/schmug/clodcast/issues/239)) ([40182e6](https://github.com/schmug/clodcast/commit/40182e637746d31f3e8d10c1dcdc9ed11bbcd4c8))
+* **video:** render published episodes as YouTube videos ([#233](https://github.com/schmug/clodcast/issues/233)) ([552bf75](https://github.com/schmug/clodcast/commit/552bf756728efedaf02799712e8b11b9305f4988))
+
+
+### Bug Fixes
+
+* **fc:** credit the frontier-commits host as Schmug ([#242](https://github.com/schmug/clodcast/issues/242)) ([de70b76](https://github.com/schmug/clodcast/commit/de70b76c8a8e273f575265785b7e0cf9bbefce08))
+* **syw:** clip-clone cast and tuned bands from the first rehearsal ([#244](https://github.com/schmug/clodcast/issues/244)) ([805ba23](https://github.com/schmug/clodcast/commit/805ba2307027cd7789afcfb6878e5d2785e7387e))
+* **syw:** harden the unattended weekly run's edges ([#236](https://github.com/schmug/clodcast/issues/236)) ([#240](https://github.com/schmug/clodcast/issues/240)) ([9f3db01](https://github.com/schmug/clodcast/commit/9f3db01876c575b96887d48c01e98fa21ef099ab))
+
 ## [0.1.16](https://github.com/schmug/clodcast/compare/v0.1.15...v0.1.16) (2026-09-14)
 
 
