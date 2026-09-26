@@ -103,13 +103,24 @@ def test_skill_md_burns_the_button_examples_it_shows():
 
 def test_skill_md_keeps_the_hosts_name_out_of_the_sign_off():
     """`host_name` is a real config key on this show. The prose has to say it is not
-    spoken in the sign-off, or a writer reads the key and closes on "I'm Cory"."""
+    spoken in the sign-off, or a writer reads the key and closes on "I'm Schmug"."""
     skill = _skill_text()
     section = skill.split("### The button", 1)
     assert len(section) == 2, "SKILL.md lost the button section"
     assert "`host_name`" in section[1].split("### TTS rules", 1)[0], (
         "the button section never says where the host name may and may not appear"
     )
+
+
+def test_host_credit_matches_the_public_show():
+    """The public show credits `Schmug` (schmug/cortech.online#187, settled in #188),
+    and the daily show's SKILL.md already does (test_reliability's host-credit test).
+    The default and the documented example must agree with it. `host_name` is a
+    display string only - nothing derives a slug, filename or id from it."""
+    assert fc_common.DEFAULT_CONFIG["host_name"] == "Schmug"
+    skill = _skill_text()
+    assert '"host_name": "Schmug"' in skill, "SKILL.md's config block credits a stale host"
+    assert '"host_name": "Cory"' not in skill
 
 
 def test_skill_md_story_type_table_matches_the_code():

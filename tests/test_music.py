@@ -85,7 +85,7 @@ def test_resolve_preserves_unknown_keys_so_validation_can_reject_them():
 
 
 def test_defaults_are_the_reference_mix():
-    """The audition Cory heard is 78 BPM: a one-bar lead and a two-bar tail."""
+    """The audition Schmug heard is 78 BPM: a one-bar lead and a two-bar tail."""
     bar = 240 / 78
     assert render.MUSIC_DEFAULTS["lead_seconds"] == pytest.approx(bar)
     assert render.MUSIC_DEFAULTS["tail_seconds"] == pytest.approx(2 * bar)
