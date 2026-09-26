@@ -880,3 +880,11 @@ def test_the_cast_is_recorded_clips_never_presets():
     assert Path(cast["explainer"]["ref_audio"]) == render.BUNDLED_HOUSE_AUDIO
     assert Path(cast["skeptic"]["ref_audio"]) == w.REFS_DIR / "skeptic.wav"
     assert manifest["voice"] == "house"
+
+
+def test_the_cover_passes_renders_cover_gate():
+    """Plan Task 11: a live assemble refuses without the show's own art, and
+    render.py's pre-flight checks it (readable, square, 1400-3000 px). Pin the
+    committed cover to that same gate, not a copy of its rules."""
+    got = render.check_cover_image(w.COVER_IMAGE)
+    assert got["ok"], got["detail"]
