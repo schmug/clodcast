@@ -8,9 +8,9 @@ write). Everything above the ship is already covered by a rehearsal.
 
 That makes it the most dangerous file in the repo to let drift. It is edited by
 whoever is spiking, it points at the real bucket, and its whole safety property is
-that four keys hold it away from two live feeds. This module is what keeps that
+that four keys hold it away from three live feeds. This module is what keeps that
 true: it re-derives the live shows' namespaces from their own sources and asserts
-the sandbox collides with neither. An edit that would have a spike overwrite a
+the sandbox collides with none of them. An edit that would have a spike overwrite a
 published episode fails here instead of in production.
 """
 
@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 import render
+import st_write
 
 FIXTURE = Path(__file__).resolve().parent / "data" / "sandbox_manifest.json"
 REPO = Path(__file__).resolve().parent.parent
@@ -49,6 +50,16 @@ def _frontier_manifest() -> dict:
     return json.loads(block.group(1))
 
 
+def _surface_tension_manifest() -> dict:
+    """Surface Tension's manifest, built by its own assembler with no items.
+
+    Built rather than copied for the reason _frontier_manifest reads SKILL.md: the
+    namespace keys come from st_write's constants through the same function that
+    writes every real episode, so a change to that show moves these checks with
+    it. An empty running order is enough; the namespace keys do not depend on it."""
+    return st_write.assemble_manifest(dt.date.today().isoformat(), "T", "S", [])
+
+
 # --- the fixture is a manifest the renderer will actually accept -------------
 
 
@@ -70,7 +81,7 @@ def test_every_isolation_key_is_present():
     assert not missing, f"the sandbox lost its isolation key(s): {missing}"
 
 
-# --- ...and cannot collide with either live show -----------------------------
+# --- ...and cannot collide with any live show --------------------------------
 
 
 def test_the_sandbox_slug_cannot_collide_with_a_live_show():
@@ -82,10 +93,12 @@ def test_the_sandbox_slug_cannot_collide_with_a_live_show():
     sandbox = render.slug_for_date(today, render.resolve_slug_prefix(m))
     daily = render.slug_for_date(today, render.DEFAULT_SLUG_PREFIX)
     frontier = render.slug_for_date(today, render.resolve_slug_prefix(_frontier_manifest()))
+    surface = render.slug_for_date(today, render.resolve_slug_prefix(_surface_tension_manifest()))
 
     assert sandbox != daily
     assert sandbox != frontier
-    assert len({sandbox, daily, frontier}) == 3
+    assert sandbox != surface
+    assert len({sandbox, daily, frontier, surface}) == 4
 
 
 def test_the_sandbox_writes_its_feed_entry_to_its_own_object():
@@ -94,6 +107,7 @@ def test_the_sandbox_writes_its_feed_entry_to_its_own_object():
     m = _fixture()
     assert m["r2_manifest_name"] != "manifest.json"
     assert m["r2_manifest_name"] != _frontier_manifest()["r2_manifest_name"]
+    assert m["r2_manifest_name"] != _surface_tension_manifest()["r2_manifest_name"]
 
 
 def test_the_sandbox_namespaces_its_audio_and_cover_objects():
@@ -104,11 +118,12 @@ def test_the_sandbox_namespaces_its_audio_and_cover_objects():
     prefix = render._r2_key_prefix(m)
     assert prefix, "the sandbox lost its r2_key_prefix"
     assert prefix != render._r2_key_prefix(_frontier_manifest())
+    assert prefix != render._r2_key_prefix(_surface_tension_manifest())
     assert prefix != render._r2_key_prefix({})  # the daily show's (empty) default
 
 
 def test_the_sandbox_never_marks_a_real_story_as_covered():
-    """covered.json is SHARED with both live shows. A sandbox segment carrying a
+    """covered.json is SHARED with every live show. A sandbox segment carrying a
     source_url would withhold that URL from the show that actually wanted it."""
     m = _fixture()
     assert render._segment_urls(m["segments"]) == []
@@ -143,7 +158,7 @@ def test_the_sandbox_carries_the_bookend_roles_music_requires():
     assert roles[-1] == render.SEGMENT_ROLE_OUTRO
 
 
-@pytest.mark.parametrize("show", ["daily", "frontier"])
+@pytest.mark.parametrize("show", ["daily", "frontier", "surface-tension"])
 def test_the_live_shows_still_look_the_way_these_checks_assume(show):
     """A guard on the guards: if a live show's namespace moves and this file's
     derivation stops finding it, the collision checks above would pass vacuously."""
@@ -151,6 +166,6 @@ def test_the_live_shows_still_look_the_way_these_checks_assume(show):
         assert render.DEFAULT_SLUG_PREFIX == "daily-digest"
         assert render._r2_key_prefix({}) == ""
     else:
-        fc = _frontier_manifest()
-        assert fc["slug_prefix"] and fc["r2_manifest_name"] and fc["r2_key_prefix"]
-        assert fc["ship_mode"] == render.SHIP_MODE_WEB
+        live = _frontier_manifest() if show == "frontier" else _surface_tension_manifest()
+        assert live["slug_prefix"] and live["r2_manifest_name"] and live["r2_key_prefix"]
+        assert live["ship_mode"] == render.SHIP_MODE_WEB
