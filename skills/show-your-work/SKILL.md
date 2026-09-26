@@ -135,6 +135,6 @@ Let `D` = today (`YYYY-MM-DD`), `S` = this skill's directory (`${CLAUDE_PLUGIN_R
 | `seen.json` | `seed`, `commit` | URL → `{date, role}`; only after a verified ship (or seed), and only what `aired.json` lists; corrupt refuses |
 | `observed.json` | `gather`, `seed` | URL → first date parsed; month-precision items age from it |
 | `features.jsonl` | `commit` | one row per shipped feature; drives the lab and kind penalties |
-| `dropped.jsonl` | gather, accept | failed adapters, failed validator fetches and dropped beats; observability only |
+| `dropped.jsonl` | gather, accept | failed adapters, refused writes and digests, failed validator fetches and dropped beats; observability only |
 
 `render.py` also writes the shared `~/.config/daily-podcast/covered.json` for every chapter's `source_url`, so the daily show will skip a lab post this show already covered. Accepted; this show reads only `seen.json`.

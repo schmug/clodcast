@@ -708,7 +708,14 @@ def _cmd_fill(a) -> int:
     return 0
 
 
-def _refused(reason: str) -> int:
+def _refused(a, reason: str) -> int:
+    """Every refusal is logged (spec §4.4/§7): a dropped writer or digest is the
+    one outcome the run report never names."""
+    record = {"stage": "accept", "what": a.what, "reason": reason}
+    for key in ("url", "index"):
+        if getattr(a, key, None) is not None:
+            record[key] = getattr(a, key)
+    syw_gather.append_dropped(record)
     print(f"ACCEPT refused {reason}"[:400])
     return 2
 
@@ -718,7 +725,7 @@ def _cmd_accept(a) -> int:
     plan = _read(wd / "plan.json")
     res = classify_output(Path(a.output).read_text(), "", 0)
     if res["outcome"] != "OK":
-        return _refused(f"{res['outcome']} {res['detail']}")
+        return _refused(a, f"{res['outcome']} {res['detail']}")
     obj = res["obj"]
     terms_p = wd / "writes" / "terms.json"
     seen_terms = set(_read(terms_p)) if terms_p.is_file() else set()
@@ -726,12 +733,12 @@ def _cmd_accept(a) -> int:
     if a.what == "digest":
         digest, why = validate_digest(obj, a.url)
         if digest is None:
-            return _refused(why)
+            return _refused(a, why)
         _write(digest_path(wd, a.url), digest)
     elif a.what == "feature":
         v = validate_feature(obj, plan, post_text([plan["feature"]["url"]], "feature"), seen_terms)
         if not v["ok"]:
-            return _refused("; ".join(v["problems"]))
+            return _refused(a, "; ".join(v["problems"]))
         # `url` names the plan this was written for; assemble refuses a mismatch.
         _write(
             wd / "writes" / "feature.json", {"url": plan["feature"]["url"], "scenes": v["scenes"]}
@@ -741,11 +748,11 @@ def _cmd_accept(a) -> int:
         brief = plan["briefs"][a.index]
         casebook = brief["kind"] == "casebook"
         if casebook and not _digests(wd, [it["url"] for it in brief["items"]]):
-            return _refused("casebook has no digests")
+            return _refused(a, "casebook has no digests")
         text = post_text([it["url"] for it in brief["items"]], f"brief {a.index}")
         v = validate_brief(obj, casebook, text, seen_terms)
         if not v["ok"]:
-            return _refused("; ".join(v["problems"]))
+            return _refused(a, "; ".join(v["problems"]))
         _write(
             wd / "writes" / f"brief_{a.index:02d}.json",
             {
@@ -762,7 +769,7 @@ def _cmd_accept(a) -> int:
     else:
         probs = validate_frame(obj.get("lines"), a.what)
         if probs:
-            return _refused("; ".join(probs))
+            return _refused(a, "; ".join(probs))
         _write(wd / "writes" / f"{a.what}.json", {"lines": obj["lines"]})
     _write(terms_p, sorted(seen_terms))
     for d in dropped:
@@ -853,7 +860,7 @@ def main(argv: list[str] | None = None) -> int:
         return {"fill": _cmd_fill, "accept": _cmd_accept, "assemble": _cmd_assemble}[a.cmd](a)
     except CliError as e:
         if a.cmd == "accept":
-            return _refused(str(e))
+            return _refused(a, str(e))
         print(f"{a.cmd.upper()} FAILED {e}"[:400])
         return 1
 

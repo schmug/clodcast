@@ -644,3 +644,16 @@ def test_fetch_post_text_drops_a_notice_fragment_before_fetching(monkeypatch):
     text = w.fetch_post_text("https://alignment.openai.com/misalignment-reports#notice-rubygems")
     assert fetched == ["https://alignment.openai.com/misalignment-reports"]
     assert text == "The notice text."
+
+
+# --- M8: a refused writer or digest is logged, not only printed ------------------
+
+
+def test_a_refused_write_is_logged_to_dropped_jsonl(tmp_path):
+    wd = _workdir(tmp_path, PLAN)
+    out = tmp_path / "o.txt"
+    out.write_text(json.dumps({"ok": False, "reason": "the post is a job ad"}))
+    assert w.main(["accept", "feature", "--workdir", str(wd), "--output", str(out)]) == 2
+    [row] = [json.loads(ln) for ln in syw_gather.dropped_log_path().read_text().splitlines()]
+    assert (row["stage"], row["what"]) == ("accept", "feature")
+    assert "job ad" in row["reason"]
