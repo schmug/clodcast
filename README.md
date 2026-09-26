@@ -266,6 +266,26 @@ web-only gate by default, matching what every show ships; `--selftest --ship-mod
 probes the legacy CLI gate instead. On a successful real run the auto-created workdir is
 deleted (pass `--keep-workdir` to retain it; a failed run always keeps it for debugging).
 
+### Episode video (YouTube)
+
+`video.py` turns a **published** episode into a 1080p video — audio-reactive spectrum
+ring, per-story chapter cards, word-by-word captions, glitch transitions — and uploads
+it to YouTube with chapters, a caption track and a thumbnail. It runs on its own
+schedule after the episode ships and never touches the audio run.
+
+```bash
+pip install -e ".[video]"                                   # numpy, OpenCV, Pillow, mlx-whisper
+python3 skills/daily-podcast/video.py auth --client-secrets client_secret.json   # once
+python3 skills/daily-podcast/video.py --pending             # what the launchd job runs
+python3 skills/daily-podcast/video.py --slug <slug> --no-upload --out ep.mp4     # render only
+```
+
+Off until `config.json` has `"video": {"enabled": true, "youtube": {"enabled": true}}`;
+uploads are **private** by default (and YouTube forces private until the API project is
+audited). Config, the ledger and the launchd job are documented in
+[SKILL.md](skills/daily-podcast/SKILL.md#episode-video-youtube). For Spotify, upload the
+rendered mp4 to the episode by hand in Spotify for Creators — it already meets their spec.
+
 ### Retitling published episodes
 
 `retitle.py` rewrites the `title` field on entries already in the R2 manifest, so the

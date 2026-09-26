@@ -14,3 +14,6 @@ dist/
 
 # Security scan reports (security-diff-scan / security-scan skills)
 .security-scans/
+
+# Rendered episode videos (video.py --out). Large mp4s; never committed.
+video/
