@@ -640,6 +640,13 @@ def load_config() -> dict:
     unknown = set(user) - set(DEFAULT_CONFIG)
     if unknown:
         raise ConfigError(f"{p} has unknown key(s) {sorted(unknown)}")
+    # A typo'd adapter name would silently enable nothing for that source.
+    wanted = user.get("adapters")
+    known = {a.name for a in ADAPTERS}
+    if wanted is not None and (
+        not isinstance(wanted, list) or not all(isinstance(n, str) and n in known for n in wanted)
+    ):
+        raise ConfigError(f"{p} adapters must be null or a list of names from {sorted(known)}")
     return {**DEFAULT_CONFIG, **user}
 
 

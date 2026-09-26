@@ -383,6 +383,23 @@ def test_load_config_refuses_missing_and_unknown_keys():
     assert g.load_config()["max_briefs"] == 3
 
 
+@pytest.mark.parametrize("value", ['["metr", "metr-typo"]', '"metr"', "[1]"])
+def test_load_config_refuses_an_unknown_or_malformed_adapter_list(value):
+    # A typo'd name used to enable nothing for that source, silently.
+    g.config_path().parent.mkdir(parents=True, exist_ok=True)
+    g.config_path().write_text(f'{{"adapters": {value}}}')
+    with pytest.raises(g.ConfigError, match="adapters"):
+        g.load_config()
+
+
+def test_load_config_accepts_null_or_known_adapter_names():
+    g.config_path().parent.mkdir(parents=True, exist_ok=True)
+    g.config_path().write_text('{"adapters": null}')
+    assert g.load_config()["adapters"] is None
+    g.config_path().write_text('{"adapters": ["metr", "gdm-safety"]}')
+    assert g.load_config()["adapters"] == ["metr", "gdm-safety"]
+
+
 def test_gather_marks_new_items_and_records_first_observation(offline):
     out = g.gather(g.load_config(), "2026-09-26")
     assert out["errors"] == []
