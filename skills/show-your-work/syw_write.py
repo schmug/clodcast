@@ -19,6 +19,7 @@ import argparse
 import datetime as dt
 import hashlib
 import html
+import http.client
 import json
 import re
 import sys
@@ -109,6 +110,8 @@ BEAT_FIELDS = {
     "term": ("term", "definition"),
 }
 COMMON_BEAT_FIELDS = ("type", "line", "cue")
+# Beats whose guard reads the post text; without it they cannot be verified.
+TEXT_GUARDED_BEATS = ("number", "chart", "quote", "transcript")
 QUOTE_MAX_WORDS = 25
 TRANSCRIPT_MAX_CHARS = 600
 CHART_MAX_SERIES = 4
@@ -310,6 +313,28 @@ def fetch_post_text(url: str) -> str:
     return syw_gather.page_text(syw_gather.fetch_text(url.split("#", 1)[0]))
 
 
+# What a failed fetch raises: OSError covers URLError/HTTPError, timeouts, a reset
+# connection and a bad gzip body; HTTPException an IncompleteRead; ValueError a URL
+# urllib cannot open. Nothing broader — a programming error must still surface.
+FETCH_ERRORS = (OSError, http.client.HTTPException, ValueError)
+
+
+def post_text(urls: list[str], what: str) -> str:
+    """The joined text of `urls` for the guards, or "" for any that cannot be
+    fetched (logged). The audio never depends on beats (spec §4.5), so a 403 on the
+    validator's own fetch costs the text-guarded beats, never the scene."""
+    texts = []
+    for url in urls:
+        try:
+            texts.append(fetch_post_text(url))
+        except FETCH_ERRORS as e:
+            syw_gather.log(f"warn: fetch for {what} failed, text-guarded beats drop: {e}")
+            syw_gather.append_dropped(
+                {"stage": "fetch", "what": what, "url": url, "reason": str(e)}
+            )
+    return " ".join(texts)
+
+
 # --- beats ------------------------------------------------------------------------
 
 
@@ -332,6 +357,9 @@ def validate_beat(
     cue = beat.get("cue")
     if not isinstance(cue, str) or not cue.strip() or norm(cue) not in norm(lines[line]["text"]):
         beat["cue"] = None  # the video stage falls back to the start of the line
+    if kind in TEXT_GUARDED_BEATS and not source_text.strip():
+        # The fetch failed (post_text): nothing to check against, so nothing passes.
+        return None, "post text unavailable"
     src = norm(source_text)
     nums = numbers_in(source_text)
 
@@ -701,7 +729,7 @@ def _cmd_accept(a) -> int:
             return _refused(why)
         _write(digest_path(wd, a.url), digest)
     elif a.what == "feature":
-        v = validate_feature(obj, plan, fetch_post_text(plan["feature"]["url"]), seen_terms)
+        v = validate_feature(obj, plan, post_text([plan["feature"]["url"]], "feature"), seen_terms)
         if not v["ok"]:
             return _refused("; ".join(v["problems"]))
         # `url` names the plan this was written for; assemble refuses a mismatch.
@@ -714,7 +742,7 @@ def _cmd_accept(a) -> int:
         casebook = brief["kind"] == "casebook"
         if casebook and not _digests(wd, [it["url"] for it in brief["items"]]):
             return _refused("casebook has no digests")
-        text = " ".join(fetch_post_text(it["url"]) for it in brief["items"])
+        text = post_text([it["url"] for it in brief["items"]], f"brief {a.index}")
         v = validate_brief(obj, casebook, text, seen_terms)
         if not v["ok"]:
             return _refused("; ".join(v["problems"]))

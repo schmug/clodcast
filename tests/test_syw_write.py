@@ -597,3 +597,50 @@ def test_accept_refuses_a_casebook_with_no_digests(tmp_path, capsys, monkeypatch
     assert w.main(argv) == 2
     assert capsys.readouterr().out.strip() == "ACCEPT refused casebook has no digests"
     assert not (wd / "writes" / "brief_00.json").exists()
+
+
+# --- I3: a failed validator fetch drops the text-guarded beats, never the audio ---
+
+import urllib.error  # noqa: E402
+
+import syw_gather  # noqa: E402
+
+
+def test_a_failed_post_fetch_drops_only_the_text_guarded_beats(tmp_path, monkeypatch, capsys):
+    def forbidden(url):
+        raise urllib.error.HTTPError(url, 403, "Forbidden", None, None)
+
+    monkeypatch.setattr(syw_gather, "fetch_text", forbidden)
+    beats = [
+        {"type": "number", "line": 0, "cue": None, "value": "12", "unit": "%", "label": "x"},
+        {"type": "chart", "line": 0, "cue": None, "kind": "bar", "title": "t", "x_label": "x",
+         "y_label": "y", "series": [{"label": "a", "points": [["a", 12]]}]},
+        {"type": "quote", "line": 0, "cue": None, "text": "worm-like", "attribution": "OpenAI"},
+        {"type": "transcript", "line": 0, "cue": None, "role": "cot", "text": "GitHub token"},
+        {"type": "term", "line": 0, "cue": None, "term": "Reward hacking", "definition": "d"},
+        {"type": "diagram", "line": 0, "cue": None, "nodes": [{"id": "a", "label": "A"}],
+         "edges": []},
+    ]  # fmt: skip
+    wd = _workdir(tmp_path, PLAN)
+    out = tmp_path / "o.txt"
+    out.write_text(json.dumps(_feature(hook={"beats": beats})))
+    assert w.main(["accept", "feature", "--workdir", str(wd), "--output", str(out)]) == 0
+    assert capsys.readouterr().out.strip() == "ACCEPT ok feature dropped_beats=4"
+    hook = json.loads((wd / "writes" / "feature.json").read_text())["scenes"][0]
+    assert [b["type"] for b in hook["beats"]] == ["term", "diagram"]
+    rows = [json.loads(ln) for ln in syw_gather.dropped_log_path().read_text().splitlines()]
+    assert rows[0]["stage"] == "fetch" and "403" in rows[0]["reason"]
+    assert {r["reason"] for r in rows[1:]} == {"post text unavailable"}
+
+
+def test_fetch_post_text_drops_a_notice_fragment_before_fetching(monkeypatch):
+    fetched = []
+
+    def fake(url):
+        fetched.append(url)
+        return "<p>The notice text.</p>"
+
+    monkeypatch.setattr(syw_gather, "fetch_text", fake)
+    text = w.fetch_post_text("https://alignment.openai.com/misalignment-reports#notice-rubygems")
+    assert fetched == ["https://alignment.openai.com/misalignment-reports"]
+    assert text == "The notice text."
