@@ -5,7 +5,7 @@
   "source": "midnight-terminal.strudel",
   "composed_with": "Strudel (https://strudel.cc/)",
   "composed": "2026-09-10",
-  "exported_by": "Cory Rothwell (schmug)",
+  "exported_by": "Schmug",
   "origin": "Composed for Frontier Commits in a Claude conversation; exported from Strudel by the user. The .strudel source beside this file is the full composition and carries a `theme` switch (set theme = 0 to export a narration bed).",
   "encoding": "WAV pcm_s16le, 48000 Hz, 2ch, 16-bit (443,120 bytes) — the user's export, byte-for-byte. render.py normalises it to mono 44.1 kHz at music_lufs before mixing (build_music_bed); the shipped file is never played directly. Unlike the daily show's Pixel Window this needed no transcode: at 433 KB it is already under the repo's check-added-large-files ceiling, so the exact supplied bytes ship.",
   "bpm": 104,

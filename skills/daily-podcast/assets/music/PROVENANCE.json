@@ -5,7 +5,7 @@
   "source": "pixel-window.strudel",
   "composed_with": "Strudel (https://strudel.cc/)",
   "composed": "2026-09-10",
-  "exported_by": "Cory Rothwell (schmug)",
+  "exported_by": "Schmug",
   "origin": "Composed for this show in a Claude conversation; exported from Strudel by the user as pixel-window-full.wav. The .strudel source beside this file is the composition itself and is what regenerates the audio.",
   "encoding": {
     "shipped": "FLAC, 48000 Hz, 2ch, 16-bit (1,097,323 bytes)",
