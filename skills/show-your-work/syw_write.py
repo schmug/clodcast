@@ -71,7 +71,7 @@ PROMPTS_DIR = _HERE / "prompts"
 # Recorded clips, cloned on the base model (one load) — never presets: the
 # production Qwen3 Base checkpoint has no preset speakers, so mlx-audio <=0.5.0
 # silently rendered an unconditioned voice for "Ryan" and 0.5.1 dies on the first
-# take (#243). Cory's picks by ear at the rehearsal gate (2026-09-26):
+# take (#243). Schmug's picks by ear at the rehearsal gate (2026-09-26):
 # - explainer: the daily show's BUNDLED house voice (not the user-editable copy
 #   under ~/.config/daily-podcast/voices/). Shared with that show; render keys each
 #   take on the clip's BYTES, so a re-recording there re-renders here.

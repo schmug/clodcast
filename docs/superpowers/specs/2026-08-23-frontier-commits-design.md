@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-23
 **Status:** Approved design, pre-implementation
-**Decisions locked by Cory:** weekly cadence · orgs = anthropics, openai, xai-org, google (filtered) + google-deepmind · /labs/ page v1 = dashboard only · show name = **Frontier Commits** · Approach A (second skill in clodcast, reusing render.py)
+**Decisions locked by Schmug:** weekly cadence · orgs = anthropics, openai, xai-org, google (filtered) + google-deepmind · /labs/ page v1 = dashboard only · show name = **Frontier Commits** · Approach A (second skill in clodcast, reusing render.py)
 
 ## 1. What this is
 
@@ -86,7 +86,7 @@ New config dir, sibling to `~/.config/daily-podcast/`. Keys:
 {
   "show_id": "spotify:show:<created at setup>",
   "show_name": "Frontier Commits",
-  "host_name": "Cory",
+  "host_name": "Schmug",
   "orgs": [
     {"name": "anthropics", "filter": "none"},
     {"name": "openai", "filter": "none"},

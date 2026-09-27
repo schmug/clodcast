@@ -22,7 +22,7 @@
 
 **Scope:**
 - This plan implements spec §4.1–§4.6, §4.8 and §5–§9 phases 1, 2, 3 and 5.
-- **Spec §4.7 (video) and phase 4 are a separate plan.** Its first step is sending Cory static mock frames and waiting for approval, so it can't be planned honestly before that.
+- **Spec §4.7 (video) and phase 4 are a separate plan.** Its first step is sending Schmug static mock frames and waiting for approval, so it can't be planned honestly before that.
 - The cortech.online page and feed are schmug/cortech.online#256, also out of scope here.
 
 ## Global Constraints
@@ -43,7 +43,7 @@
 - **`seen.json` is written only by `seed` or by a `commit` that verified `status == "web-ready"` and `r2_status == "published"`** in render.py's final JSON.
 - **Tests never touch real user state.** Register the new config dir in `tests/conftest.py` (Task 1).
 - The unattended procedure has exactly one home, SKILL.md's *Unattended weekly run*. `prompts/weekly.md` is a stub.
-- **Commits:** conventional prefixes (`feat:`, `test:`, `docs:`, `chore:`), ending with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Never add a `Signed-off-by` for Cory.
+- **Commits:** conventional prefixes (`feat:`, `test:`, `docs:`, `chore:`), ending with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Never add a `Signed-off-by` for Schmug.
 - **Every task's gate:**
 
   ```bash
@@ -3990,7 +3990,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 10: Seed the host and rehearse a first episode (dry run, human listening gate)
 
-This task is operational, with no new code. It exercises every step of the procedure against live sources, with `--dry-run` on the render so nothing publishes. **Stop at Step 6 and wait for Cory.**
+This task is operational, with no new code. It exercises every step of the procedure against live sources, with `--dry-run` on the render so nothing publishes. **Stop at Step 6 and wait for Schmug.**
 
 **Files:**
 - Possibly modify: `skills/show-your-work/syw_write.py` (band constants, `CAST`) based on Steps 5–6. Any change reruns the Task 7/8 tests.
@@ -4038,7 +4038,7 @@ From `$W/timeline.json` and the render log, record:
 
 If the feature is more than 15% off its target, adjust `FEATURE_SCENE_BAND` proportionally. Do the same for briefs.
 
-- [ ] **Step 6: HUMAN GATE — send Cory the episode**
+- [ ] **Step 6: HUMAN GATE — send Schmug the episode**
 
 Send `$W/episode.mp3` (SendUserFile) with the measurements. Ask two things:
 1. Do the two presets (`Ryan` explainer, `Chelsie` skeptic) work, or should they swap or change?
@@ -4054,13 +4054,13 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 - [ ] **Step 7: Restore the real seed**
 
-`mv ~/.config/show-your-work/seen.rehearsal.json ~/.config/show-your-work/seen.json`, then rerun `seed --date <today>`. That way the first live episode covers only posts published after launch, not the rehearsal's pool. If Cory would rather episode one feature the rehearsal's pick, skip the reseed and say so in the Task 11 summary.
+`mv ~/.config/show-your-work/seen.rehearsal.json ~/.config/show-your-work/seen.json`, then rerun `seed --date <today>`. That way the first live episode covers only posts published after launch, not the rehearsal's pool. If Schmug would rather episode one feature the rehearsal's pick, skip the reseed and say so in the Task 11 summary.
 
 ---
 
 ### Task 11: Cover art, sandbox-namespace proof, first live episode
 
-Outward-facing: this publishes to a public feed. **Get Cory's explicit go-ahead in chat before Step 4.**
+Outward-facing: this publishes to a public feed. **Get Schmug's explicit go-ahead in chat before Step 4.**
 
 **Files:**
 - Create: `skills/show-your-work/refs/cover.jpg`
@@ -4068,7 +4068,7 @@ Outward-facing: this publishes to a public feed. **Get Cory's explicit go-ahead 
 
 - [ ] **Step 1: Make the cover and pin it**
 
-Produce a square 3000×3000 JPEG at `skills/show-your-work/refs/cover.jpg`. It is original art: no lab logo or brand mark, and "SHOW YOUR WORK" legible at 200 px. Send it to Cory (SendUserFile) and wait for approval before committing. Then append this test:
+Produce a square 3000×3000 JPEG at `skills/show-your-work/refs/cover.jpg`. It is original art: no lab logo or brand mark, and "SHOW YOUR WORK" legible at 200 px. Send it to Schmug (SendUserFile) and wait for approval before committing. Then append this test:
 
 ```python
 def test_the_cover_is_square_and_large_enough():
@@ -4104,7 +4104,7 @@ Follow SKILL.md *Unattended weekly run* steps 1–7 **without** `--allow-missing
 
 - [ ] **Step 4: HUMAN GATE, then render for real**
 
-Tell Cory the feature, briefs and title from `$W/plan.json` and `$W/manifest.json`, and ask for a go-ahead to publish. **Only on a clear yes**, run step 8 of the procedure: the real render in the background. Then run step 9 (`commit`).
+Tell Schmug the feature, briefs and title from `$W/plan.json` and `$W/manifest.json`, and ask for a go-ahead to publish. **Only on a clear yes**, run step 8 of the procedure: the real render in the background. Then run step 9 (`commit`).
 
 Expected:
 - the render log's final JSON has `"status": "web-ready"` and `"r2_status": "published"`
@@ -4127,17 +4127,17 @@ A drift in the daily manifest could be an unrelated daily run in the meantime. C
 
 - [ ] **Step 6: Report**
 
-Send Cory the SHIPPED line, the mp3 URL and the hash comparison. Note that cortech.online#256 must land before the feed has a public page.
+Send Schmug the SHIPPED line, the mp3 URL and the hash comparison. Note that cortech.online#256 must land before the feed has a public page.
 
 ---
 
 ### Task 12: The weekly routine
 
-Persistent configuration: **ask Cory before creating it.**
+Persistent configuration: **ask Schmug before creating it.**
 
 - [ ] **Step 1: Pick the day**
 
-Load `mcp__scheduled-tasks__list_scheduled_tasks` (via ToolSearch) and list the existing Frontier Commits, Surface Tension and daily schedules. Pick a day and hour when none of them runs, so no two runs share the Mac's TTS. Propose it to Cory and wait for a yes.
+Load `mcp__scheduled-tasks__list_scheduled_tasks` (via ToolSearch) and list the existing Frontier Commits, Surface Tension and daily schedules. Pick a day and hour when none of them runs, so no two runs share the Mac's TTS. Propose it to Schmug and wait for a yes.
 
 - [ ] **Step 2: Create the routine**
 
@@ -4151,6 +4151,6 @@ Save a memory under `/Users/cory/.claude/projects/-Users-cory-clodcast/memory/` 
 
 ## After this plan
 
-- **Video (spec §4.7, phase 4):** a separate plan. Its first step is static mock frames per beat type, sent to Cory for approval. `beats.json` from Task 8 is its input.
+- **Video (spec §4.7, phase 4):** a separate plan. Its first step is static mock frames per beat type, sent to Schmug for approval. `beats.json` from Task 8 is its input.
 - **Open a PR** for this branch after Task 9 at the latest, so the code lands through the required-checks gate. Tasks 10–12 are operational and do not block the PR. Use `/shipofclaudius:ship`.
 - **Follow-up, flagged in this session:** `tests/test_sandbox_fixture.py` guards the sandbox against the daily show and Frontier Commits but not Surface Tension.

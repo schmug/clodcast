@@ -1,7 +1,7 @@
 # TTS engine registry: `tts_engine` on the manifest, Breeze-TTS-2 as engine two
 
 **Date:** 2026-09-04
-**Status:** approved in design walk (four decisions confirmed by Cory: approach A —
+**Status:** approved in design walk (four decisions confirmed by Schmug: approach A —
 registry inside `render.py`; selectable only, no show switches engine in this slice;
 the universal "`voice_instruct` + `lines` cast dies" rule stays; the cache key folds
 in engine and model id unconditionally)
@@ -21,7 +21,7 @@ vocal events (`(laugh)`, `(sigh)`) are performed rather than read aloud, a clone
 be *directed* with an instruction, and voice design runs on the same weights as
 cloning. It is also ~4× slower to render and its weights are non-commercial.
 
-Cory wants two things this makes possible: to **evaluate new models regularly**, and
+Schmug wants two things this makes possible: to **evaluate new models regularly**, and
 to **use the features Qwen3 cannot do**. Both need the renderer to run more than one
 engine, chosen per show, through one adapter that the eval bench will later reuse —
 so that "writing the adapter" is how a model gets evaluated and "naming it in the

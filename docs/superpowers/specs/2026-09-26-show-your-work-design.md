@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-26
 **Status:** Approved design, pre-implementation. Amended 2026-09-26 during planning (§4.2 `observed.json` + `commit`, §4.3 banks + casebook rule, §4.4 fixed Anthropic reminder + casebook template + inline `basis`, §4.5 band semantics), and again for #236 (§4.3 undated items, §4.8 a crash between render and commit), #243 (the cast is clip clones) and #245 (§2.1 openai.com cross-posts excluded); each amendment is marked *Amended*.
-**Decisions locked by Cory:**
+**Decisions locked by Schmug:**
 - audience = **public explainer** (newcomers, YouTube-forward)
 - shape = **one feature + short briefs**, weekly
 - voices = **two: Explainer + Skeptic**
@@ -433,7 +433,7 @@ extra line keys. Relying on that tolerance would couple this show to an accident
 | `r2_manifest_name` | `"manifest-show-your-work.json"` | never upserts into another show's feed |
 | `r2_key_prefix` | `"show-your-work/"` | a same-day slug can't overwrite another show's mp3 (#142) |
 | `slug_prefix` | `"syw-week-of"` | permalink and `isPermaLink` guid namespace; matches `[a-z0-9]+(-[a-z0-9]+)*` |
-| `cast` | `{explainer: {ref_audio, ref_text}, skeptic: {ref_audio, ref_text}}` | *Amended (#243):* recorded clip clones on the base model, never presets — the production Qwen3 checkpoint has no preset speakers. Explainer = the bundled house voice, skeptic = `refs/skeptic.wav`, Surface Tension's Ethan clip pitched down 1.5 semitones (Cory, by ear, 2026-09-26). |
+| `cast` | `{explainer: {ref_audio, ref_text}, skeptic: {ref_audio, ref_text}}` | *Amended (#243):* recorded clip clones on the base model, never presets — the production Qwen3 checkpoint has no preset speakers. Explainer = the bundled house voice, skeptic = `refs/skeptic.wav`, Surface Tension's Ethan clip pitched down 1.5 semitones (Schmug, by ear, 2026-09-26). |
 | `description_footer_text` | the disclosure + "charts are redrawn from numbers reported in each post" | show notes |
 | `segments[].source_url` | the feature's first scene and each brief; `null` elsewhere | chapter links |
 
@@ -513,7 +513,7 @@ The **beat panel** draws the active beat:
 
 The cold open carries a disclosure lower-third.
 
-**Visual design is its own approval gate.** A static mock frame for each beat type goes to Cory
+**Visual design is its own approval gate.** A static mock frame for each beat type goes to Schmug
 before the template is built (Phase 4). It is a new look, not the daily "field notes" template.
 
 **Renderer:** its own frame loop, modeled on the spike's `render_ep.py`, not the kit's code
@@ -544,7 +544,7 @@ A failure is `VIDEO FAILED`.
 **Upload** stays manual. A YouTube API upload is locked to private until the API project passes
 Google's audit.
 
-**Recommendation (Cory's call):** do *not* add this show's RSS feed to YouTube's RSS ingestion.
+**Recommendation (Schmug's call):** do *not* add this show's RSS feed to YouTube's RSS ingestion.
 Otherwise every episode also appears as audio over a static cover next to the real video.
 
 ### 4.8 Unattended weekly run
@@ -670,7 +670,7 @@ This mirrors the existing suites. Commit tests sized like the neighbours'.
    - Confirm both other shows' manifests are byte-identical afterwards (the 2026-09-10 sandbox
      check).
 4. **Video.**
-   - Send Cory static mock frames for each beat type and **wait for approval**.
+   - Send Schmug static mock frames for each beat type and **wait for approval**.
    - Then build the template, `syw_video.py` and tests.
    - Run it on episode one's kept workdir.
 5. **Schedule.** Pick the run day (§4.8), then create the weekly routine.

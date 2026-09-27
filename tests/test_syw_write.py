@@ -867,7 +867,7 @@ def test_a_non_object_plan_is_the_commands_line(tmp_path, capsys, argv, line):
 def test_the_cast_is_recorded_clips_never_presets():
     """#243: the production Qwen3 Base checkpoint has no preset speakers — mlx-audio
     <=0.5.0 silently ignored "Ryan"/"Chelsie", 0.5.1 dies on the first take. Both
-    roles clone a recorded clip (Cory, 2026-09-26, by ear): the explainer is the
+    roles clone a recorded clip (Schmug, 2026-09-26, by ear): the explainer is the
     house voice, the skeptic this show's own clip derived from Surface Tension's
     Ethan."""
     manifest, _ = _assemble()
