@@ -307,7 +307,8 @@ def hrefs(raw_html: str, base: str) -> set[str]:
 
 
 # --------------------------------------------------------------------------
-# Lead parsers — pure: {url: page text} -> [Item]
+# Lead parsers — pure: {url: page text} -> [Item]. One exception:
+# parse_openai_alignment logs its host exclusions to dropped.jsonl (#245).
 # --------------------------------------------------------------------------
 
 ANTHROPIC_ALIGNMENT_URL = "https://alignment.anthropic.com/"
@@ -318,6 +319,12 @@ ANTHROPIC_RESEARCH_URLS = (
 TRANSFORMER_CIRCUITS_URL = "https://transformer-circuits.pub/feed.xml"
 OPENAI_ALIGNMENT_RSS = "https://alignment.openai.com/rss.xml"
 OPENAI_ALIGNMENT_INDEX = "https://alignment.openai.com/"
+# Hosts the writers cannot read. WebFetch, their only read path, gets 403
+# host-wide on openai.com article pages; urllib's occasional 200 does not help,
+# because the writers never read through urllib. Matched on the exact parsed
+# hostname, never a substring (alignment.openai.com is readable). Revisit if a
+# WebFetch probe of an openai.com/index/... post ever succeeds (#245).
+WRITER_UNREADABLE_HOSTS = frozenset({"openai.com", "www.openai.com"})
 OPENAI_MISALIGNMENT_URL = "https://alignment.openai.com/misalignment-reports/"
 GDM_MEDIUM_URL = "https://deepmindsafetyresearch.medium.com/feed"
 GDM_BLOG_URL = "https://deepmind.google/blog/rss.xml"
@@ -423,7 +430,9 @@ def parse_transformer_circuits(pages: dict[str, str]) -> list[Item]:
 def parse_openai_alignment(pages: dict[str, str]) -> list[Item]:
     """rss.xml UNION the index page. The RSS omits openai.com cross-posts (the ↗
     rows) and the Metagaming post, so the index is authoritative for coverage; the
-    RSS still contributes anything the index has scrolled past. Index rows win."""
+    RSS still contributes anything the index has scrolled past. Index rows win.
+    Items on WRITER_UNREADABLE_HOSTS are then dropped and each one is logged to
+    dropped.jsonl (#245), the one side effect in this otherwise pure parser."""
     root = parse_html(pages[OPENAI_ALIGNMENT_INDEX])
     merged: dict[str, Item] = {}
     for art in find_all(root, "article", "ap-post"):
@@ -446,7 +455,20 @@ def parse_openai_alignment(pages: dict[str, str]) -> list[Item]:
     rss = feed_items(pages[OPENAI_ALIGNMENT_RSS], "openai-alignment", "openai", "research", LEAD)
     for it in rss:
         merged.setdefault(it.url, it)
-    return list(merged.values())
+    kept = []
+    for it in merged.values():
+        if urlsplit(it.url).hostname in WRITER_UNREADABLE_HOSTS:
+            append_dropped(
+                {
+                    "stage": "gather",
+                    "adapter": "openai-alignment",
+                    "url": it.url,
+                    "reason": "host not readable by writers (#245)",
+                }
+            )
+            continue
+        kept.append(it)
+    return kept
 
 
 def parse_openai_misalignment(pages: dict[str, str]) -> list[Item]:

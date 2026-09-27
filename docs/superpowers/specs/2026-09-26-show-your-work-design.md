@@ -1,7 +1,7 @@
 # Show Your Work — design spec
 
 **Date:** 2026-09-26
-**Status:** Approved design, pre-implementation. Amended 2026-09-26 during planning (§4.2 `observed.json` + `commit`, §4.3 banks + casebook rule, §4.4 fixed Anthropic reminder + casebook template + inline `basis`, §4.5 band semantics), and again for #236 (§4.3 undated items, §4.8 a crash between render and commit) and #243 (the cast is clip clones); each amendment is marked *Amended*.
+**Status:** Approved design, pre-implementation. Amended 2026-09-26 during planning (§4.2 `observed.json` + `commit`, §4.3 banks + casebook rule, §4.4 fixed Anthropic reminder + casebook template + inline `basis`, §4.5 band semantics), and again for #236 (§4.3 undated items, §4.8 a crash between render and commit), #243 (the cast is clip clones) and #245 (§2.1 openai.com cross-posts excluded); each amendment is marked *Amended*.
 **Decisions locked by Cory:**
 - audience = **public explainer** (newcomers, YouTube-forward)
 - shape = **one feature + short briefs**, weekly
@@ -52,7 +52,7 @@ UNVERIFIED.
 | Anthropic Alignment Science blog | lead | `https://alignment.anthropic.com/` | **none** (rss/feed/atom/index.xml and sitemap all 404); static HTML, **month-level dates only** | 8 | heavy, some interactive |
 | Anthropic research (alignment + interpretability teams) | lead | `anthropic.com/research/team/alignment`, `…/interpretability` | none; server-rendered, dates in raw HTML; sitemap `lastmod` was bulk-rewritten Sep 10–11 and is **useless for dating** | 3 + 1 | yes, plus PDFs |
 | transformer-circuits.pub | lead | `https://transformer-circuits.pub/` | `https://transformer-circuits.pub/feed.xml` (Atom, valid, 56 entries) | 3 | heavy |
-| OpenAI Alignment Research blog | lead | `https://alignment.openai.com/` | `https://alignment.openai.com/rss.xml` (valid, 19 items) — **incomplete**: omits openai.com cross-posts (↗ on the index), all misalignment reports, and the Mar 16 "Metagaming" post | 4 listed | 5–7 images/post |
+| OpenAI Alignment Research blog | lead | `https://alignment.openai.com/` | `https://alignment.openai.com/rss.xml` (valid, 19 items) — **incomplete**: omits openai.com cross-posts (↗ on the index), all misalignment reports, and the Mar 16 "Metagaming" post. *Amended (#245):* the index's openai.com cross-posts are excluded at gather, because the writers read only through WebFetch, which gets 403 on openai.com article pages; each exclusion is logged to `dropped.jsonl` | 4 listed | 5–7 images/post |
 | OpenAI Misalignment Reports | lead | `https://alignment.openai.com/misalignment-reports/` | **none**; static `<details class="cb-entry" data-date data-title>` markup | 9 reports + 3 notices (since 2026-08-26) | ~none |
 | Google DeepMind safety | lead (low yield) | `deepmindsafetyresearch.medium.com`; `deepmind.google/blog/` | Medium `/feed` (valid, 10-item cap); `deepmind.google/blog/rss.xml` (valid, **no categories**) | 0 on Medium since 2026-05-29; ~0–1 safety posts on the main blog | yes |
 | METR | check | `metr.org` | `https://metr.org/feed.xml` (valid) | 14 | yes |

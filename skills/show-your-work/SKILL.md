@@ -22,6 +22,7 @@ Design: `docs/superpowers/specs/2026-09-26-show-your-work-design.md`.
 ## Layout
 
 - `./syw_gather.py`: sources → items; `gather` / `seed` / `commit`. Metadata only.
+  It drops the OpenAI alignment index's `openai.com` cross-posts, because the writers' WebFetch gets 403 there, and logs each one to `dropped.jsonl` (#245).
 - `./syw_script_plan.py`: the deterministic plan: feature pick, briefs, casebook, checks, rotations.
 - `./syw_write.py`: prompt filling (`fill`), output validation (`accept`), manifest + beats assembly (`assemble`).
 - `./prompts/digest.md`: a one-body fact sheet for a check or a casebook incident.
