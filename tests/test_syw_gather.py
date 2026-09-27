@@ -4,6 +4,7 @@ captured 2026-09-26 from the live sources; assertions name what was captured."""
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import syw_gather as g
 
@@ -135,11 +136,30 @@ def test_openai_alignment_unions_rss_with_the_index():
         (g.OPENAI_ALIGNMENT_INDEX, "openai-alignment.html"),
     )
     urls = {i.url for i in g.parse_openai_alignment(pages)}
-    assert len(urls) == 27
-    # openai.com cross-posts are on the index only (the RSS omits them) …
-    assert "https://openai.com/index/an-alien-mind" in urls
-    # … and so is the on-site Metagaming post (recon §2.1).
+    assert len(urls) == 20
+    # The on-site Metagaming post is on the index only; the RSS omits it (recon §2.1).
     assert "https://alignment.openai.com/metagaming" in urls
+
+
+def test_openai_alignment_drops_writer_unreadable_openai_com_cross_posts():
+    """#245: the writers read only through WebFetch, which gets 403 on every
+    openai.com article page, so a planned cross-post is a refused brief or a failed
+    week. The exclusion is logged, never silent."""
+    pages = _pages(
+        (g.OPENAI_ALIGNMENT_RSS, "openai-alignment.xml"),
+        (g.OPENAI_ALIGNMENT_INDEX, "openai-alignment.html"),
+    )
+    urls = {i.url for i in g.parse_openai_alignment(pages)}
+    assert not {u for u in urls if urlsplit(u).hostname in {"openai.com", "www.openai.com"}}
+    assert "https://openai.com/index/an-alien-mind" not in urls
+    assert "https://alignment.openai.com/metagaming" in urls
+    rows = [json.loads(ln) for ln in g.dropped_log_path().read_text().splitlines()]
+    assert len(rows) == 7
+    assert "https://openai.com/index/an-alien-mind" in {r["url"] for r in rows}
+    assert all(
+        (r["stage"], r["adapter"]) == ("gather", "openai-alignment") and "#245" in r["reason"]
+        for r in rows
+    )
 
 
 def test_openai_alignment_keeps_an_rss_only_post():
@@ -158,7 +178,7 @@ def test_openai_alignment_keeps_an_rss_only_post():
         "</channel>", full_extra, 1
     )
     urls = {i.url for i in g.parse_openai_alignment(pages)}
-    assert "https://alignment.openai.com/rss-only" in urls and len(urls) == 28
+    assert "https://alignment.openai.com/rss-only" in urls and len(urls) == 21
 
 
 def test_openai_misalignment_reports_and_notices():
@@ -408,9 +428,9 @@ def test_load_config_accepts_null_or_known_adapter_names():
 def test_gather_marks_new_items_and_records_first_observation(offline):
     out = g.gather(g.load_config(), "2026-09-26")
     assert out["errors"] == []
-    # 149 parsed; alignment.anthropic.com/2025/activation-oracles is listed by both
+    # 142 parsed; alignment.anthropic.com/2025/activation-oracles is listed by both
     # anthropic-alignment and transformer-circuits, and gather dedupes by URL.
-    assert len(out["lead"]) == 148
+    assert len(out["lead"]) == 141
     assert not any(it["seen"] for it in out["lead"])
     assert {it["first_observed"] for it in out["lead"]} == {"2026-09-26"}
     # A later gather never moves a first observation forward.
@@ -469,7 +489,7 @@ def test_the_gather_cli_refuses_until_seeded(offline, capsys, tmp_path):
     assert not out.exists()
     g.seen_path().write_text("{}")
     assert g.main(["gather", "--date", "2026-09-26", "--out", str(out)]) == 0
-    assert capsys.readouterr().out.strip().splitlines()[-1].startswith("GATHER ok lead=148 ")
+    assert capsys.readouterr().out.strip().splitlines()[-1].startswith("GATHER ok lead=141 ")
 
 
 def test_seed_refuses_when_any_lead_adapter_failed(offline, capsys):
@@ -484,7 +504,7 @@ def test_seed_refuses_when_any_lead_adapter_failed(offline, capsys):
 
 def test_seed_marks_everything_seen(offline, capsys):
     assert g.main(["seed", "--date", "2026-09-26"]) == 0
-    assert capsys.readouterr().out.strip().splitlines()[-1] == "SEED ok marked=148"
+    assert capsys.readouterr().out.strip().splitlines()[-1] == "SEED ok marked=141"
     out = g.gather(g.load_config(), "2026-09-26")
     assert all(it["seen"] for it in out["lead"])
 
