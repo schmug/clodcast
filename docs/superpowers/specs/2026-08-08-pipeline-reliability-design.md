@@ -1,7 +1,7 @@
 # Pipeline reliability: pre-flight, durable state, incident capture
 
 **Date:** 2026-08-08
-**Status:** approved (audit + four design decisions confirmed by Cory)
+**Status:** approved (audit + four design decisions confirmed by Schmug)
 
 ## Problem
 

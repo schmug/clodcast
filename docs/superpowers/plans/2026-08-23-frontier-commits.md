@@ -249,7 +249,7 @@ SNAPSHOT_RE = r"\d{4}-\d{2}-\d{2}\.json"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "show_name": "Frontier Commits",
-    "host_name": "Cory",
+    "host_name": "Schmug",
     "orgs": [
         {"name": "anthropics", "filter": "none"},
         {"name": "openai", "filter": "none"},
@@ -1947,7 +1947,7 @@ Acceptance (all required):
 - [ ] Every segment respects its assigned shape and band, labels speculation as speculation, anchors it to an observable, and ends on substance.
 - [ ] `render.py --dry-run` produces mp3 + cover + timeline.json; listen to at least two segments (house voice, no truncation, segues land).
 - [ ] The manifest carries `show_id` (placeholder OK pre-Task-13) and `r2_manifest_name: "manifest-frontier-commits.json"` and passes `validate_manifest` (unknown key ignored today; validated after Task 12).
-- [ ] Report the rehearsal artifacts' paths + a verdict to Cory before starting P3.
+- [ ] Report the rehearsal artifacts' paths + a verdict to Schmug before starting P3.
 
 Open the P2 PR (Tasks 9–11) with test counts + rehearsal evidence.
 

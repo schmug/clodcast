@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-24
 **Status:** Approved design, pre-implementation
-**Decisions locked by Cory:** source = bubbles.town **and** the OPML "blogs" category · cast = 4 voices, presets first / recorded `ref_audio` clips later · format = hybrid (variety-desk skeleton + assigned stances), framed as a **call-in radio show** · show name = **Surface Tension** · third skill in clodcast, reusing `render.py` in web-only mode
+**Decisions locked by Schmug:** source = bubbles.town **and** the OPML "blogs" category · cast = 4 voices, presets first / recorded `ref_audio` clips later · format = hybrid (variety-desk skeleton + assigned stances), framed as a **call-in radio show** · show name = **Surface Tension** · third skill in clodcast, reusing `render.py` in web-only mode
 
 ## 1. What this is
 

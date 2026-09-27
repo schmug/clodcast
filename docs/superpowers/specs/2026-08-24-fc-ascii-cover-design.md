@@ -63,7 +63,7 @@ Surviving and reused unchanged: `_cover_face`, `_draw_tracked`, `_tracked_width`
 ## Revision: vector rail (2026-09-02)
 
 The ASCII rail specified below was built exactly as written, passed every gate, and was then
-**rejected on looks** at design review: shown the rendered cover, Cory said the ASCII version did
+**rejected on looks** at design review: shown the rendered cover, Schmug said the ASCII version did
 not look right, and asked to see the previous `refs/cover.jpg` graphic in the new layout instead.
 That is the whole reason this revision exists. What replaced it, in
 [#192](https://github.com/schmug/clodcast/pull/192):
