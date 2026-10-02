@@ -50,9 +50,9 @@ video = [
 dev = [
     "pytest>=8.0",
     # ruff is pinned exactly (not a floor) so lint results are reproducible across
-    # local dev, the pre-commit rev (v0.14.10), and CI — a linter's version decides
+    # local dev, the pre-commit rev (v0.16.10), and CI — a linter's version decides
     # pass/fail. Bump all three sites together.
-    "ruff==0.14.10",
+    "ruff==0.16.10",
 ]
 
 [project.urls]
@@ -74,6 +74,12 @@ target-version = "py310"
 # The reference clip's transcript must stay byte-exact (it has to match the audio);
 # never let a formatter or whitespace rule touch the refs.
 extend-exclude = ["skills/daily-podcast/refs"]
+
+[tool.ruff.format]
+# ruff >= 0.16 also formats Python code blocks inside Markdown. The docs/ plans and
+# specs keep hand-aligned snippets (column-aligned trailing comments), so the format
+# gate stays Python-only, as it was under 0.14.
+exclude = ["*.md"]
 
 [tool.ruff.lint]
 # Small ruleset: pycodestyle (E/W), pyflakes (F), import-sort (I), pyupgrade (UP),
