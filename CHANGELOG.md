@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 This file is generated from conventional commits by [git-cliff](https://git-cliff.org).
 
+## [0.1.19](https://github.com/schmug/clodcast/compare/v0.1.18...v0.1.19) (2026-10-11)
+
+
+### Features
+
+* **tts:** register voxcpm2, zonos2, chatterbox and higgs engines for evaluation ([#260](https://github.com/schmug/clodcast/issues/260)) ([74e7781](https://github.com/schmug/clodcast/commit/74e77812619768e710c1048d516e03985caccabd))
+
+
+### Bug Fixes
+
+* **syw:** exclude writer-unreadable openai.com cross-posts ([#245](https://github.com/schmug/clodcast/issues/245)) ([#249](https://github.com/schmug/clodcast/issues/249)) ([c8cb7b0](https://github.com/schmug/clodcast/commit/c8cb7b06cd1501f0fc0b79fbea30882238dfec03))
+
 ## [0.1.18](https://github.com/schmug/clodcast/compare/v0.1.17...v0.1.18) (2026-09-26)
 
 
