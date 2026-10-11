@@ -59,7 +59,7 @@ Already-written segments. Skip straight to rendering.
   "date": "2026-05-22",                    // optional ISO date; stamps the cover AND keys the web slug/guid. Omit to use today (re-renders of a dated manifest reproduce its date)
   "voice": "house",                        // default; or "random" / preset name; set voice_instruct for custom VoiceDesign
   "ship_mode": "web",                      // THIS SHOW SETS "web" (#218). Optional key, but the default when absent is "spotify", which uploads through save-to-spotify — see "Web-only shipping"
-  "tts_engine": "qwen3",                   // optional; "qwen3" (default), "breeze", "voxcpm2", "zonos2" or "chatterbox". Closed whitelist that lives on the manifest like ship_mode — see "TTS engines"
+  "tts_engine": "qwen3",                   // optional; "qwen3" (default), "breeze", "voxcpm2", "zonos2", "chatterbox" or "higgs". Closed whitelist that lives on the manifest like ship_mode — see "TTS engines"
   "description_footer_text": "Sources: …", // optional; replaces the standard credit footer on the episode description (see "Episode description footer"). PLAIN TEXT: render.py escapes it into one <p> and rejects markup. Set it when rendering a SECOND show — the default footer credits the daily show's feeds
   "cast": {"anchor": "Ryan", "skeptic": "Ethan"}, // optional; speaker -> preset name OR {"ref_audio","ref_text"} clip, for multi-voice `lines` segments (see "Multi-voice scenes"). The daily show does not use this
   "music": {                               // THIS SHOW SETS THIS (approved 2026-09-10). Omitting it renders
@@ -433,6 +433,7 @@ The engine is a property of the show, chosen by the manifest's `tts_engine` key 
 | `voxcpm2` | `mlx-community/VoxCPM2-8bit` | clone, design | none | 0.4.4 | Apache 2.0 | yes |
 | `zonos2` | `mlx-community/Zyphra-ZONOS2` | clone | 500 chars | 0.4.5 | Apache 2.0 | yes |
 | `chatterbox` | `mlx-community/chatterbox-multilingual-v3` | clone | 500 chars | 0.4.7 | MIT | yes |
+| `higgs` | `bosonai/higgs-tts-3-4b` | clone, events | 500 chars | 0.4.4 | Boson Higgs Audio v3 Research and Non-Commercial, with a creator-use grant | yes |
 
 - `qwen3` designs on a second model (`VoiceDesign-bf16`); `breeze` designs on the same model it clones with, so a Breeze episode always pays one load.
 - `breeze` has no presets: `voice: "random"`, a preset name, or a preset cast entry dies naming the engine. Clones (`house`, cast clips) and `voice_instruct` work.
@@ -442,6 +443,7 @@ The engine is a property of the show, chosen by the manifest's `tts_engine` key 
 - `direction`: a scene line may carry `"instruct"`, rendered through the clone-plus-instruct form (`generate(text, ref_audio, ref_text, instruct=…, cfg_scale=4.0)`) and folded into that take's cache key. On an engine without it the line is **refused** naming the engine, never stripped — a dropped direction is a different performance. It is an instruction over a clone, so a preset speaker cannot be directed. See *Multi-voice scenes*.
 - Breeze's weights are non-commercial with no creator or monetization exception: no sponsor reads or paid tiers on a show that renders with it.
 - `voxcpm2`, `zonos2` and `chatterbox` were registered for the 2026-10-11 engine evaluation; no show selects them. All three clone from the clip (only `voxcpm2` uses its transcript, as a continuation prompt), none has presets, events or direction, and only `voxcpm2` designs a voice (on its base model). Their audio comes out at 48, 44.1 and 24 kHz; `render.py` writes each take at the engine's declared rate and dies if the loaded model reports another. The `zonos2` and `chatterbox` ceilings keep a take well inside each model's token cap, not a measured derailment point.
+- `higgs` (Higgs Audio v3) was added to the same evaluation. It clones from the clip and its transcript, and performs `(laugh)` / `(sigh)` as its own inline sfx tags (with a "Haha," / "Haah," attached, which a transcript will hear). It ends a take at about 24 s on its own, so its 500-character ceiling is the bench corpus's floor rather than a clean point. Its weights are non-commercial except under Boson's creator-use grant, which requires crediting Higgs Audio on every episode and keeping consent records for any cloned voice.
 
 ### Multi-voice scenes (`lines`)
 

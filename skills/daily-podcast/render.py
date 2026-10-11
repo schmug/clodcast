@@ -85,12 +85,14 @@ TTS_ENGINE_BREEZE = "breeze"
 TTS_ENGINE_VOXCPM2 = "voxcpm2"
 TTS_ENGINE_ZONOS2 = "zonos2"
 TTS_ENGINE_CHATTERBOX = "chatterbox"
+TTS_ENGINE_HIGGS = "higgs"
 TTS_ENGINES = (
     TTS_ENGINE_QWEN3,
     TTS_ENGINE_BREEZE,
     TTS_ENGINE_VOXCPM2,
     TTS_ENGINE_ZONOS2,
     TTS_ENGINE_CHATTERBOX,
+    TTS_ENGINE_HIGGS,
 )
 ENGINE_CAPABILITIES = frozenset({"preset", "clone", "design", "events", "direction"})
 
@@ -123,6 +125,9 @@ class EngineSpec:
     # would pitch-shift every take with no error, so _render_take dies when a loaded
     # model reports a different one. 24 kHz is Qwen3's and Breeze's (SAMPLE_RATE).
     sample_rate: int = 24000
+    # mlx-audio's architecture key, passed to load_model only when set. None for an
+    # engine whose config names an architecture mlx-audio resolves on its own.
+    model_type: str | None = None
 
     def has(self, capability: str) -> bool:
         return capability in self.capabilities
@@ -214,6 +219,29 @@ ENGINES: dict[str, EngineSpec] = {
         min_mlx_audio="0.4.7",
         license="MIT",
         detect_derailment=True,
+    ),
+    TTS_ENGINE_HIGGS: EngineSpec(
+        name=TTS_ENGINE_HIGGS,
+        label="Higgs Audio v3 4B",
+        base_model_id="bosonai/higgs-tts-3-4b",
+        design_model_id=None,
+        capabilities=frozenset({"clone", "events"}),
+        presets=(),
+        # Measured 2026-10-11 on the house clip: a 384-char take rendered clean in
+        # 21-24 s (3 of 3), while an 834-char take stopped at 23-24 s every time
+        # with half the script unsaid, even with the cap raised to 6000. The model
+        # ends a take at ~24 s on its own, so 500 is the corpus floor, not a
+        # measured clean point: the bench's longest lines sit right at the edge.
+        max_take_chars=500,
+        # The library default, 2048, is the same ~24 s; explicit so a derailed take
+        # is bounded rather than inheriting whatever the default becomes.
+        max_tokens=4800,
+        min_mlx_audio="0.4.4",
+        license="Boson Higgs Audio v3 Research and Non-Commercial, with a creator-use grant",
+        detect_derailment=True,
+        # The config's model_type (higgs_multimodal_qwen3) does not resolve from the
+        # repo id in mlx-audio 0.5.8; without this the load dies "not supported".
+        model_type="higgs_audio_v3",
     ),
 }
 
@@ -2055,12 +2083,38 @@ def _generate_chatterbox(
     )
 
 
+# Higgs performs an event as an inline sfx tag with its onomatopoeia attached
+# (PROMPTING.md: "tag first, onomatopoeia attached"); the bare marker would be read.
+HIGGS_EVENT_TAGS = {"laugh": "<|sfx:laughter|>Haha,", "sigh": "<|sfx:sigh|>Haah,"}
+
+
+def _generate_higgs(
+    model: Any,
+    spec: EngineSpec,
+    *,
+    text: str,
+    mode: str,
+    voice: str,
+    voice_instruct: str | None,
+    ref_audio: str | None,
+    ref_text: str | None,
+    instruct: str | None = None,
+) -> list[Any]:
+    """Higgs v3 clones from the clip and its transcript. Events reach it as the
+    closed EVENT_MARKERS and are rewritten to its own sfx tags here, at the seam,
+    so the script and every measurement keep the marker vocabulary."""
+    _refuse_take(spec, mode=mode, voice=voice, instruct=instruct)
+    spoken = EVENT_MARKER_RE.sub(lambda m: HIGGS_EVENT_TAGS[m.group(0)[1:-1]], text)
+    return list(model.generate(text=spoken, ref_audio=ref_audio, ref_text=ref_text, **_cap(spec)))
+
+
 _ENGINE_GENERATORS = {
     TTS_ENGINE_QWEN3: _generate_qwen3,
     TTS_ENGINE_BREEZE: _generate_breeze,
     TTS_ENGINE_VOXCPM2: _generate_voxcpm2,
     TTS_ENGINE_ZONOS2: _generate_zonos2,
     TTS_ENGINE_CHATTERBOX: _generate_chatterbox,
+    TTS_ENGINE_HIGGS: _generate_higgs,
 }
 
 
@@ -2346,7 +2400,7 @@ def render_segments(
         t0 = time.time()
         from mlx_audio.tts.utils import load_model
 
-        model = load_model(model_id)
+        model = load_model(model_id, **({"model_type": eng.model_type} if eng.model_type else {}))
         log(f"  model loaded in {time.time() - t0:.1f}s")
     elif n_hits == len(segments):
         log("cache: all segments cached, skipping model load")

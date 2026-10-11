@@ -27,7 +27,7 @@ def test_tts_engine_defaults_to_qwen3_when_the_key_is_absent():
     assert render.engine_spec(_manifest()) is render.ENGINES["qwen3"]
 
 
-@pytest.mark.parametrize("name", ["qwen3", "breeze", "voxcpm2", "zonos2", "chatterbox"])
+@pytest.mark.parametrize("name", ["qwen3", "breeze", "voxcpm2", "zonos2", "chatterbox", "higgs"])
 def test_tts_engine_accepts_every_documented_engine(name):
     render.validate_manifest(_manifest(tts_engine=name))
     assert render.resolve_tts_engine(_manifest(tts_engine=name)) == name
@@ -41,7 +41,7 @@ def test_validate_manifest_rejects_an_unknown_engine(bad):
 
 def test_the_engine_table_is_internally_consistent():
     assert tuple(render.ENGINES) == render.TTS_ENGINES
-    assert render.TTS_ENGINES == ("qwen3", "breeze", "voxcpm2", "zonos2", "chatterbox")
+    assert render.TTS_ENGINES == ("qwen3", "breeze", "voxcpm2", "zonos2", "chatterbox", "higgs")
     for name, spec in render.ENGINES.items():
         assert spec.name == name
         assert spec.capabilities <= render.ENGINE_CAPABILITIES
@@ -180,6 +180,7 @@ def fake_tts(monkeypatch):
     name, because this file is about the kwargs each engine receives."""
     calls: list[dict] = []
     model_loads: list[str] = []
+    load_kwargs: list[dict] = []
 
     class FakeModel:
         def generate(self, text, **kw):
@@ -207,8 +208,9 @@ def fake_tts(monkeypatch):
     mlx_tts = types.ModuleType("mlx_audio.tts")
     mlx_utils = types.ModuleType("mlx_audio.tts.utils")
 
-    def _load_model(model_id):
+    def _load_model(model_id, **kw):
         model_loads.append(model_id)
+        load_kwargs.append(kw)
         return FakeModel()
 
     mlx_utils.load_model = _load_model
@@ -225,7 +227,9 @@ def fake_tts(monkeypatch):
     # each engine receives, so the transcriber hears every take exactly as written.
     # (The real one would import mlx_whisper — absent on CI — against the fake numpy.)
     monkeypatch.setattr(render, "transcribe_take", lambda path: calls[-1]["text"])
-    return types.SimpleNamespace(calls=calls, model_loads=model_loads, sample_rates=sample_rates)
+    return types.SimpleNamespace(
+        calls=calls, model_loads=model_loads, load_kwargs=load_kwargs, sample_rates=sample_rates
+    )
 
 
 def _clip(tmp_path):
@@ -384,6 +388,46 @@ def test_chatterbox_clone_passes_the_cap_and_english(tmp_path, fake_tts):
     assert fake_tts.sample_rates == [24000]
 
 
+def test_higgs_clone_loads_with_its_model_type_and_passes_the_transcript(tmp_path, fake_tts):
+    # mlx-audio 0.5.8 cannot resolve Higgs v3's config model_type
+    # (higgs_multimodal_qwen3) from the repo id; without the explicit type the
+    # load dies with "not supported for tts".
+    ref = _clip(tmp_path)
+    render.render_segments(
+        [{"text": "hello there"}], "house", tmp_path, ref_audio=ref, ref_text="hi", engine="higgs"
+    )
+    assert fake_tts.model_loads == [render.ENGINES["higgs"].base_model_id]
+    assert fake_tts.load_kwargs == [{"model_type": "higgs_audio_v3"}]
+    assert fake_tts.calls == [
+        {
+            "method": "generate",
+            "text": "hello there",
+            "ref_audio": ref,
+            "ref_text": "hi",
+            "max_tokens": 4800,
+        }
+    ]
+
+
+def test_qwen3_loads_with_no_extra_kwargs(tmp_path, fake_tts):
+    ref = _clip(tmp_path)
+    render.render_segments(
+        [{"text": "hello there"}], "house", tmp_path, ref_audio=ref, ref_text="hi", engine="qwen3"
+    )
+    assert fake_tts.load_kwargs == [{}]
+
+
+def test_higgs_performs_events_as_its_sfx_tags(tmp_path, fake_tts):
+    # Higgs' sfx form is the tag first with the onomatopoeia attached; a bare
+    # "(laugh)" would be read aloud like on any engine without events.
+    ref = _clip(tmp_path)
+    seg = {"lines": [{"speaker": "a", "text": "Okay (laugh) fine. (sigh) Again."}]}
+    render.render_segments(
+        [seg], "house", tmp_path, cast={"a": {"ref_audio": ref, "ref_text": "hi"}}, engine="higgs"
+    )
+    assert fake_tts.calls[0]["text"] == "Okay <|sfx:laughter|>Haha, fine. <|sfx:sigh|>Haah, Again."
+
+
 def test_qwen3_still_writes_at_24k(tmp_path, fake_tts):
     ref = _clip(tmp_path)
     render.render_segments(
@@ -392,13 +436,13 @@ def test_qwen3_still_writes_at_24k(tmp_path, fake_tts):
     assert fake_tts.sample_rates == [24000]
 
 
-@pytest.mark.parametrize("engine", ["zonos2", "chatterbox"])
+@pytest.mark.parametrize("engine", ["zonos2", "chatterbox", "higgs"])
 def test_an_engine_without_design_refuses_voice_instruct(engine):
     with pytest.raises(SystemExit):
         render.validate_manifest(_manifest(tts_engine=engine, voice_instruct="a calm man"))
 
 
-@pytest.mark.parametrize("engine", ["voxcpm2", "zonos2", "chatterbox"])
+@pytest.mark.parametrize("engine", ["voxcpm2", "zonos2", "chatterbox", "higgs"])
 @pytest.mark.parametrize("mode", ["preset", "design"])
 def test_new_engines_die_on_a_mode_they_lack(tmp_path, fake_tts, engine, mode):
     spec = render.ENGINES[engine]
@@ -418,7 +462,7 @@ def test_new_engines_die_on_a_mode_they_lack(tmp_path, fake_tts, engine, mode):
         )
 
 
-@pytest.mark.parametrize("engine", ["voxcpm2", "zonos2", "chatterbox"])
+@pytest.mark.parametrize("engine", ["voxcpm2", "zonos2", "chatterbox", "higgs"])
 def test_new_engines_refuse_a_directed_line(engine):
     seg = {"lines": [{"speaker": "a", "text": "one", "instruct": "laughing"}]}
     m = _manifest(
