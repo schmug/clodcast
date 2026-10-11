@@ -27,8 +27,8 @@ def test_tts_engine_defaults_to_qwen3_when_the_key_is_absent():
     assert render.engine_spec(_manifest()) is render.ENGINES["qwen3"]
 
 
-@pytest.mark.parametrize("name", ["qwen3", "breeze"])
-def test_tts_engine_accepts_both_documented_engines(name):
+@pytest.mark.parametrize("name", ["qwen3", "breeze", "voxcpm2", "zonos2", "chatterbox", "higgs"])
+def test_tts_engine_accepts_every_documented_engine(name):
     render.validate_manifest(_manifest(tts_engine=name))
     assert render.resolve_tts_engine(_manifest(tts_engine=name)) == name
 
@@ -40,12 +40,17 @@ def test_validate_manifest_rejects_an_unknown_engine(bad):
 
 
 def test_the_engine_table_is_internally_consistent():
-    assert tuple(render.ENGINES) == render.TTS_ENGINES == ("qwen3", "breeze")
+    assert tuple(render.ENGINES) == render.TTS_ENGINES
+    assert render.TTS_ENGINES == ("qwen3", "breeze", "voxcpm2", "zonos2", "chatterbox", "higgs")
     for name, spec in render.ENGINES.items():
         assert spec.name == name
         assert spec.capabilities <= render.ENGINE_CAPABILITIES
         assert bool(spec.presets) == spec.has("preset")
-        assert spec.has("clone") and spec.has("design")
+        # Every show's voice is a clip clone ("house", cast clips): an engine that
+        # cannot clone could not render any of them.
+        assert spec.has("clone")
+        assert spec.sample_rate > 0
+    assert render.ENGINES["qwen3"].sample_rate == render.SAMPLE_RATE == 24000
     breeze = render.ENGINES["breeze"]
     assert breeze.design_model_id is None
     assert breeze.max_take_chars == 500 and breeze.max_tokens == 750
@@ -175,6 +180,7 @@ def fake_tts(monkeypatch):
     name, because this file is about the kwargs each engine receives."""
     calls: list[dict] = []
     model_loads: list[str] = []
+    load_kwargs: list[dict] = []
 
     class FakeModel:
         def generate(self, text, **kw):
@@ -190,14 +196,21 @@ def fake_tts(monkeypatch):
     fake_np.array = lambda x: list(x)
     monkeypatch.setitem(sys.modules, "numpy", fake_np)
     fake_sf = types.ModuleType("soundfile")
-    fake_sf.write = lambda path, audio, sr: Path(path).write_bytes(b"\x00")
+    sample_rates: list[int] = []
+
+    def _sf_write(path, audio, sr):
+        sample_rates.append(sr)
+        Path(path).write_bytes(b"\x00")
+
+    fake_sf.write = _sf_write
     monkeypatch.setitem(sys.modules, "soundfile", fake_sf)
     mlx_audio = types.ModuleType("mlx_audio")
     mlx_tts = types.ModuleType("mlx_audio.tts")
     mlx_utils = types.ModuleType("mlx_audio.tts.utils")
 
-    def _load_model(model_id):
+    def _load_model(model_id, **kw):
         model_loads.append(model_id)
+        load_kwargs.append(kw)
         return FakeModel()
 
     mlx_utils.load_model = _load_model
@@ -214,7 +227,9 @@ def fake_tts(monkeypatch):
     # each engine receives, so the transcriber hears every take exactly as written.
     # (The real one would import mlx_whisper — absent on CI — against the fake numpy.)
     monkeypatch.setattr(render, "transcribe_take", lambda path: calls[-1]["text"])
-    return types.SimpleNamespace(calls=calls, model_loads=model_loads)
+    return types.SimpleNamespace(
+        calls=calls, model_loads=model_loads, load_kwargs=load_kwargs, sample_rates=sample_rates
+    )
 
 
 def _clip(tmp_path):
@@ -304,6 +319,157 @@ def test_breeze_cast_clip_lines_render_through_the_clone_form(tmp_path, fake_tts
     assert fake_tts.model_loads == [render.ENGINES["breeze"].base_model_id]
     assert [c["text"] for c in fake_tts.calls] == ["one", "two"]
     assert all(c["max_tokens"] == 750 and "language" not in c for c in fake_tts.calls)
+
+
+def test_voxcpm2_clone_is_the_reference_plus_continuation_form(tmp_path, fake_tts):
+    # VoxCPM2 ignores ref_text; the clip's transcript only conditions the voice as a
+    # continuation prompt. Measured 2026-10-11 on the house clip: speaker similarity
+    # 0.949 with the prompt, 0.917 without it.
+    ref = _clip(tmp_path)
+    render.render_segments(
+        [{"text": "hello there"}], "house", tmp_path, ref_audio=ref, ref_text="hi", engine="voxcpm2"
+    )
+    assert fake_tts.model_loads == [render.ENGINES["voxcpm2"].base_model_id]
+    assert fake_tts.calls == [
+        {
+            "method": "generate",
+            "text": "hello there",
+            "ref_audio": ref,
+            "prompt_audio": ref,
+            "prompt_text": "hi",
+        }
+    ]
+    assert fake_tts.sample_rates == [48000]
+
+
+def test_voxcpm2_design_runs_on_the_base_model(tmp_path, fake_tts):
+    render.render_segments(
+        [{"text": "hello there"}], "custom", tmp_path, voice_instruct="a calm man", engine="voxcpm2"
+    )
+    assert fake_tts.model_loads == [render.ENGINES["voxcpm2"].base_model_id]
+    assert fake_tts.calls == [
+        {"method": "generate", "text": "hello there", "instruct": "a calm man"}
+    ]
+
+
+def test_zonos2_clone_passes_the_cap_and_no_transcript(tmp_path, fake_tts):
+    # mlx-audio's ZONOS2 default cap is 1024 frames, 11.9 s at 44.1 kHz: it cut the
+    # 2026-10-11 smoke take off mid-sentence. The explicit cap is the only fix.
+    ref = _clip(tmp_path)
+    render.render_segments(
+        [{"text": "hello there"}], "house", tmp_path, ref_audio=ref, ref_text="hi", engine="zonos2"
+    )
+    assert fake_tts.calls == [
+        {"method": "generate", "text": "hello there", "ref_audio": ref, "max_tokens": 4300}
+    ]
+    assert fake_tts.sample_rates == [44100]
+
+
+def test_chatterbox_clone_passes_the_cap_and_english(tmp_path, fake_tts):
+    ref = _clip(tmp_path)
+    render.render_segments(
+        [{"text": "hello there"}],
+        "house",
+        tmp_path,
+        ref_audio=ref,
+        ref_text="hi",
+        engine="chatterbox",
+    )
+    assert fake_tts.calls == [
+        {
+            "method": "generate",
+            "text": "hello there",
+            "ref_audio": ref,
+            "lang_code": "en",
+            "max_tokens": 1500,
+            "verbose": False,
+        }
+    ]
+    assert fake_tts.sample_rates == [24000]
+
+
+def test_higgs_clone_loads_with_its_model_type_and_passes_the_transcript(tmp_path, fake_tts):
+    # mlx-audio 0.5.8 cannot resolve Higgs v3's config model_type
+    # (higgs_multimodal_qwen3) from the repo id; without the explicit type the
+    # load dies with "not supported for tts".
+    ref = _clip(tmp_path)
+    render.render_segments(
+        [{"text": "hello there"}], "house", tmp_path, ref_audio=ref, ref_text="hi", engine="higgs"
+    )
+    assert fake_tts.model_loads == [render.ENGINES["higgs"].base_model_id]
+    assert fake_tts.load_kwargs == [{"model_type": "higgs_audio_v3"}]
+    assert fake_tts.calls == [
+        {
+            "method": "generate",
+            "text": "hello there",
+            "ref_audio": ref,
+            "ref_text": "hi",
+            "max_tokens": 4800,
+        }
+    ]
+
+
+def test_qwen3_loads_with_no_extra_kwargs(tmp_path, fake_tts):
+    ref = _clip(tmp_path)
+    render.render_segments(
+        [{"text": "hello there"}], "house", tmp_path, ref_audio=ref, ref_text="hi", engine="qwen3"
+    )
+    assert fake_tts.load_kwargs == [{}]
+
+
+def test_higgs_performs_events_as_its_sfx_tags(tmp_path, fake_tts):
+    # Higgs' sfx form is the tag first with the onomatopoeia attached; a bare
+    # "(laugh)" would be read aloud like on any engine without events.
+    ref = _clip(tmp_path)
+    seg = {"lines": [{"speaker": "a", "text": "Okay (laugh) fine. (sigh) Again."}]}
+    render.render_segments(
+        [seg], "house", tmp_path, cast={"a": {"ref_audio": ref, "ref_text": "hi"}}, engine="higgs"
+    )
+    assert fake_tts.calls[0]["text"] == "Okay <|sfx:laughter|>Haha, fine. <|sfx:sigh|>Haah, Again."
+
+
+def test_qwen3_still_writes_at_24k(tmp_path, fake_tts):
+    ref = _clip(tmp_path)
+    render.render_segments(
+        [{"text": "hello there"}], "house", tmp_path, ref_audio=ref, ref_text="hi", engine="qwen3"
+    )
+    assert fake_tts.sample_rates == [24000]
+
+
+@pytest.mark.parametrize("engine", ["zonos2", "chatterbox", "higgs"])
+def test_an_engine_without_design_refuses_voice_instruct(engine):
+    with pytest.raises(SystemExit):
+        render.validate_manifest(_manifest(tts_engine=engine, voice_instruct="a calm man"))
+
+
+@pytest.mark.parametrize("engine", ["voxcpm2", "zonos2", "chatterbox", "higgs"])
+@pytest.mark.parametrize("mode", ["preset", "design"])
+def test_new_engines_die_on_a_mode_they_lack(tmp_path, fake_tts, engine, mode):
+    spec = render.ENGINES[engine]
+    if mode == "design" and spec.has("design"):
+        pytest.skip("this engine designs")
+    with pytest.raises(SystemExit):
+        render._render_take(
+            object(),
+            spec=spec,
+            text="x",
+            mode=mode,
+            voice="Ryan",
+            voice_instruct="a calm man",
+            ref_audio=None,
+            ref_text=None,
+            mp3=tmp_path / "a.mp3",
+        )
+
+
+@pytest.mark.parametrize("engine", ["voxcpm2", "zonos2", "chatterbox", "higgs"])
+def test_new_engines_refuse_a_directed_line(engine):
+    seg = {"lines": [{"speaker": "a", "text": "one", "instruct": "laughing"}]}
+    m = _manifest(
+        tts_engine=engine, segments=[seg], cast={"a": {"ref_audio": "a.wav", "ref_text": "hi"}}
+    )
+    with pytest.raises(SystemExit):
+        render.validate_manifest(m)
 
 
 def test_a_breeze_preset_take_dies_rather_than_rendering_a_stranger(tmp_path, fake_tts):

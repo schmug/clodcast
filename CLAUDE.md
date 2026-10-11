@@ -170,7 +170,7 @@ left alone — disposing of them is the operator's call, not this repo's.
 
 ### One renderer, two engines (`tts_engine`)
 
-`render.py` renders on the engine its manifest names — `"qwen3"` (the default when absent) or `"breeze"` — through a frozen `EngineSpec` per engine in `ENGINES` (design: [docs/superpowers/specs/2026-09-04-tts-engine-registry-design.md](docs/superpowers/specs/2026-09-04-tts-engine-registry-design.md)). Five things are load-bearing.
+`render.py` renders on the engine its manifest names — `"qwen3"` (the default when absent), `"breeze"`, or one of the four registered for the 2026-10-11 evaluation (`"voxcpm2"`, `"zonos2"`, `"chatterbox"`, `"higgs"`; no show selects them) — through a frozen `EngineSpec` per engine in `ENGINES` (design: [docs/superpowers/specs/2026-09-04-tts-engine-registry-design.md](docs/superpowers/specs/2026-09-04-tts-engine-registry-design.md)). Five things are load-bearing.
 
 - **The engine lives on the MANIFEST, closed whitelist, same posture as `ship_mode`.** A re-run must render the way it rendered before, and a flag that can go missing on one invocation would silently render a different voice. No CLI flag, no `config.json` default; a typo dies.
 - **Capabilities gate validation, before the model load.** `_validate_engine_capabilities` refuses `voice: "random"`, a preset name, or a preset cast entry on an engine without `preset`, and `voice_instruct` on one without `design`. The alternative on Breeze is passing a Qwen3 preset name through as a speaker tag and rendering a stranger with no error — the silent wrong-voice class #177 closed. `events` / `direction` are consumed since #201 — the last bullet in this section.
