@@ -24,7 +24,7 @@ need:
 
 ```bash
 # Tooling only (lint + tests) — works on any platform, no MLX:
-pip install ruff==0.14.10 "pytest>=8.0" boto3
+pip install ruff==0.16.10 "pytest>=8.0" boto3
 
 # Or, for a full editable env on an Apple Silicon Mac:
 pip install -e ".[dev]"
