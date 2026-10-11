@@ -124,6 +124,9 @@ No headings, no lists, no URLs read aloud, no stage directions. Spell out anythi
 | --- | --- | --- | --- |
 | `qwen3` | none | none | 0 |
 | `breeze` | (laugh), (sigh) | slower, faster, amused, exasperated, weary, urgent, warm | 1 |
+| `voxcpm2` | none | none | 0 |
+| `zonos2` | none | none | 0 |
+| `chatterbox` | none | none | 0 |
 
 - **Markers** are the closed `render.EVENT_MARKERS` list: performed inline by an engine with `events`, read aloud as words ("Loff", "Sigh") by one without. On that engine `st_write.lines_for_engine` strips them at assembly and `render.py` strips them again before the render — stripped, never refused, because a stripped marker is the same line. Every measurement (the scene floor, the speech-rate gate) reads the spoken text with the markers gone on every engine, so an event never lengthens the measured script. A parenthesised word outside the list is refused at `classify_scene` and costs that one scene: nobody performs it, so it could only be a stage direction.
 - **Direction** is a per-line `instruct` over a clone. The writer emits one WORD from `st_write.DIRECTIONS` (pace or affect) and the engine hears the instruct that word maps to, so the phrasing can be tuned after a listen without changing the writer contract. Free text is not accepted: a full voice description bent identity in the 2026-09-04 eval (Ethan 93 Hz → 183 Hz, similarity 0.96 → 0.88). At most one directed line per scene until that drift is measured against a listen; a second is refused at `classify_scene`. On an engine without `direction` a directed line is **refused** at assembly, naming the engine, never stripped — a dropped direction is a different performance and nothing would say so.

@@ -82,7 +82,16 @@ CAST_CLIP_FIELDS = ("ref_audio", "ref_text")
 # 2026-09-04-tts-engine-registry-design.md.
 TTS_ENGINE_QWEN3 = "qwen3"
 TTS_ENGINE_BREEZE = "breeze"
-TTS_ENGINES = (TTS_ENGINE_QWEN3, TTS_ENGINE_BREEZE)
+TTS_ENGINE_VOXCPM2 = "voxcpm2"
+TTS_ENGINE_ZONOS2 = "zonos2"
+TTS_ENGINE_CHATTERBOX = "chatterbox"
+TTS_ENGINES = (
+    TTS_ENGINE_QWEN3,
+    TTS_ENGINE_BREEZE,
+    TTS_ENGINE_VOXCPM2,
+    TTS_ENGINE_ZONOS2,
+    TTS_ENGINE_CHATTERBOX,
+)
 ENGINE_CAPABILITIES = frozenset({"preset", "clone", "design", "events", "direction"})
 
 
@@ -109,6 +118,11 @@ class EngineSpec:
     # engine because it costs a whisper load per run and a transcription per take,
     # and because the only engine known to derail on a clean script is Breeze.
     detect_derailment: bool = False
+    # The rate the model's audio comes out at, written verbatim into the take's wav
+    # before the mono-44.1k encode. Declared, not read off the model: a wrong rate
+    # would pitch-shift every take with no error, so _render_take dies when a loaded
+    # model reports a different one. 24 kHz is Qwen3's and Breeze's (SAMPLE_RATE).
+    sample_rate: int = 24000
 
     def has(self, capability: str) -> bool:
         return capability in self.capabilities
@@ -144,6 +158,61 @@ ENGINES: dict[str, EngineSpec] = {
         max_tokens=750,
         min_mlx_audio="0.5.1",
         license="BreezeBlue Research and Non-Commercial",
+        detect_derailment=True,
+    ),
+    # The three below were registered for the 2026-10-11 evaluation; no show selects
+    # any of them. Each declares the derailment detector because none has a
+    # production record yet, and that check is what sees a derailment the speech-rate
+    # gate cannot.
+    TTS_ENGINE_VOXCPM2: EngineSpec(
+        name=TTS_ENGINE_VOXCPM2,
+        label="VoxCPM2 2B",
+        base_model_id="mlx-community/VoxCPM2-8bit",
+        design_model_id=None,
+        capabilities=frozenset({"clone", "design"}),
+        presets=(),
+        # No observed ceiling and no cap passed: the model's own default (2000
+        # patches) runs to minutes, far past any band a show writes.
+        max_take_chars=None,
+        max_tokens=None,
+        min_mlx_audio="0.4.4",
+        license="Apache 2.0",
+        detect_derailment=True,
+        sample_rate=48000,
+    ),
+    TTS_ENGINE_ZONOS2: EngineSpec(
+        name=TTS_ENGINE_ZONOS2,
+        label="ZONOS2 8B MoE",
+        base_model_id="mlx-community/Zyphra-ZONOS2",
+        design_model_id=None,
+        capabilities=frozenset({"clone"}),
+        presets=(),
+        # Zyphra documents about one minute per generation. 500 chars is ~35 s, the
+        # Breeze ceiling's posture: chunk well inside the model's own limit.
+        max_take_chars=500,
+        # Frames at 86.1/s (44.1 kHz DAC). The library default, 1024, is 11.9 s and
+        # truncated the 2026-10-11 smoke take mid-sentence; 4300 is ~50 s, which
+        # bounds a derailed take while clearing every 500-char one.
+        max_tokens=4300,
+        min_mlx_audio="0.4.5",
+        license="Apache 2.0",
+        detect_derailment=True,
+        sample_rate=44100,
+    ),
+    TTS_ENGINE_CHATTERBOX: EngineSpec(
+        name=TTS_ENGINE_CHATTERBOX,
+        label="Chatterbox Multilingual v3 0.5B",
+        base_model_id="mlx-community/chatterbox-multilingual-v3",
+        design_model_id=None,
+        capabilities=frozenset({"clone"}),
+        presets=(),
+        # The library default, 1000 speech tokens at 25/s, is 40 s; 500 chars is
+        # ~35 s and chunks a daily band before the cap could clip it.
+        max_take_chars=500,
+        # 60 s, so a 500-char take never meets the cap and a derailed one stops.
+        max_tokens=1500,
+        min_mlx_audio="0.4.7",
+        license="MIT",
         detect_derailment=True,
     ),
 }
@@ -1902,9 +1971,96 @@ def _generate_breeze(
     return []  # unreachable; die() exits
 
 
+def _refuse_take(spec: EngineSpec, *, mode: str, voice: str, instruct: str | None) -> None:
+    """The shared refusals for an engine that only clones (and maybe designs): no
+    per-line direction and no presets. validate_manifest refuses both upstream; a
+    direct caller dies here rather than rendering a stranger or an undirected line."""
+    if instruct:
+        die(f"engine {spec.name} cannot direct a voice; refusing a take with instruct {instruct!r}")
+    if mode == "preset" or (mode == "design" and not spec.has("design")):
+        die(f"engine {spec.name} cannot render mode {mode!r} (voice {voice!r})")
+
+
+def _cap(spec: EngineSpec) -> dict[str, int]:
+    return {} if spec.max_tokens is None else {"max_tokens": spec.max_tokens}
+
+
+def _generate_voxcpm2(
+    model: Any,
+    spec: EngineSpec,
+    *,
+    text: str,
+    mode: str,
+    voice: str,
+    voice_instruct: str | None,
+    ref_audio: str | None,
+    ref_text: str | None,
+    instruct: str | None = None,
+) -> list[Any]:
+    """VoxCPM2 ignores `ref_text`. The clip conditions the voice twice — as the
+    reference and as a continuation prompt with its transcript — which is the
+    publisher's highest-fidelity clone form and measured closer to the house clip
+    (0.949 vs 0.917 speaker similarity, 2026-10-11). Design is `instruct` on the
+    same model."""
+    _refuse_take(spec, mode=mode, voice=voice, instruct=instruct)
+    if mode == "design":
+        return list(model.generate(text=text, instruct=voice_instruct, **_cap(spec)))
+    return list(
+        model.generate(
+            text=text,
+            ref_audio=ref_audio,
+            prompt_audio=ref_audio,
+            prompt_text=ref_text,
+            **_cap(spec),
+        )
+    )
+
+
+def _generate_zonos2(
+    model: Any,
+    spec: EngineSpec,
+    *,
+    text: str,
+    mode: str,
+    voice: str,
+    voice_instruct: str | None,
+    ref_audio: str | None,
+    ref_text: str | None,
+    instruct: str | None = None,
+) -> list[Any]:
+    """ZONOS2 clones from a speaker embedding of the clip and discards `ref_text`,
+    so none is passed. The cap is explicit: the library default truncates at 11.9 s."""
+    _refuse_take(spec, mode=mode, voice=voice, instruct=instruct)
+    return list(model.generate(text=text, ref_audio=ref_audio, **_cap(spec)))
+
+
+def _generate_chatterbox(
+    model: Any,
+    spec: EngineSpec,
+    *,
+    text: str,
+    mode: str,
+    voice: str,
+    voice_instruct: str | None,
+    ref_audio: str | None,
+    ref_text: str | None,
+    instruct: str | None = None,
+) -> list[Any]:
+    """Chatterbox clones from the clip alone. `lang_code` selects the multilingual
+    checkpoint's English head; `verbose=False` keeps its per-take progress out of
+    the run log."""
+    _refuse_take(spec, mode=mode, voice=voice, instruct=instruct)
+    return list(
+        model.generate(text=text, ref_audio=ref_audio, lang_code="en", **_cap(spec), verbose=False)
+    )
+
+
 _ENGINE_GENERATORS = {
     TTS_ENGINE_QWEN3: _generate_qwen3,
     TTS_ENGINE_BREEZE: _generate_breeze,
+    TTS_ENGINE_VOXCPM2: _generate_voxcpm2,
+    TTS_ENGINE_ZONOS2: _generate_zonos2,
+    TTS_ENGINE_CHATTERBOX: _generate_chatterbox,
 }
 
 
@@ -1945,9 +2101,15 @@ def _render_take(
         ref_text=ref_text,
         instruct=instruct,
     )
+    reported = getattr(model, "sample_rate", None)
+    if isinstance(reported, int) and reported != spec.sample_rate:
+        die(
+            f"engine {spec.name} declares {spec.sample_rate} Hz but the loaded model "
+            f"reports {reported} Hz; refusing to write a pitch-shifted take"
+        )
     audio = np.concatenate([np.array(r.audio) for r in results])
     wav = mp3.with_suffix(".wav")
-    sf.write(wav, audio, SAMPLE_RATE)
+    sf.write(wav, audio, spec.sample_rate)
     # convert to mp3 at 44.1k mono so concat is clean
     run(
         [
@@ -1966,7 +2128,7 @@ def _render_take(
             str(mp3),
         ]
     )
-    return len(audio) / SAMPLE_RATE
+    return len(audio) / spec.sample_rate
 
 
 def render_segments(
